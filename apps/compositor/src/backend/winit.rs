@@ -249,9 +249,7 @@ fn handle_input(
                 let pos = event.position_transformed(output_geo.size);
                 tracing::trace!(x = pos.x, y = pos.y, "winit pointer motion");
                 if let Some(pointer) = state.seat.get_pointer() {
-                    if move_dragged_window(state, drag.as_ref(), pos) {
-                        return;
-                    }
+                    move_dragged_window(state, drag.as_ref(), pos);
                     let serial = SERIAL_COUNTER.next_serial();
                     let focus = upper_layer_surface_under(state, pos)
                         .map(|(surface, loc, _)| (surface, loc))
@@ -298,6 +296,8 @@ fn handle_input(
                             if let Some(keyboard) = state.seat.get_keyboard() {
                                 keyboard.set_focus(state, Some(surface), serial);
                             }
+                        } else if let Some(keyboard) = state.seat.get_keyboard() {
+                            keyboard.set_focus(state, None, serial);
                         }
                     } else if let Some(window) = window_under_including_decoration(state, pos) {
                         tracing::debug!(x = pos.x, y = pos.y, "click hit a window");
@@ -320,6 +320,8 @@ fn handle_input(
                             if let Some(keyboard) = state.seat.get_keyboard() {
                                 keyboard.set_focus(state, Some(surface), serial);
                             }
+                        } else if let Some(keyboard) = state.seat.get_keyboard() {
+                            keyboard.set_focus(state, None, serial);
                         }
                     } else {
                         tracing::debug!(x = pos.x, y = pos.y, "click hit nothing — clearing focus");
