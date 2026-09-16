@@ -8,10 +8,9 @@ use smithay::{
             AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
             PointerButtonEvent,
         },
-        renderer::{gles::GlesRenderer, utils::draw_render_elements, Color32F, Frame, Renderer},
+        renderer::{gles::GlesRenderer, utils::draw_render_elements, Frame, Renderer},
         winit::{self, WinitEvent, WinitInput},
     },
-    desktop::space::space_render_elements,
     input::keyboard::FilterResult,
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::wayland_server::Display,
@@ -22,12 +21,16 @@ use wayland_server::ListeningSocket;
 use crate::{
     config::CompositorConfig,
     dbus,
+    decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
         upper_layer_surface_under, window_surface_under, window_under_including_decoration,
         WindowDrag,
     },
-    render::{draw_server_decorations, send_frame_callbacks},
+    render::{
+        bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
+        send_frame_callbacks, top_layer_elements, window_content_elements, BACKGROUND_COLOR,
+    },
     state::{BlairState, ClientState},
 };
 
@@ -59,6 +62,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
     let mut clients = Vec::new();
+    let mut rounded_corner_shader: Option<RoundedCornerShaders> = None;
 
     let output = Output::new(
         "winit-0".to_string(),
@@ -156,20 +160,31 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                 }
             };
 
-            let elements = match space_render_elements(renderer, [&state.space], &output, 1.0) {
-                Ok(elements) => elements,
-                Err(err) => {
-                    tracing::warn!(?err, "failed to collect render elements");
-                    Vec::new()
-                }
-            };
+            let bottom_elements = bottom_layer_elements(renderer, &output);
+            let window_content = window_content_elements(renderer, &state);
+            let top_elements = top_layer_elements(renderer, &output);
+            let popups = popup_elements(renderer, &state);
+            let corner_shader = ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
 
             // Winit's framebuffer has an inverted Y axis.
             match renderer.render(&mut framebuffer, size, Transform::Flipped180) {
                 Ok(mut frame) => {
-                    let _ = frame.clear(Color32F::new(0.08, 0.08, 0.12, 1.0), &[damage]);
-                    let _ = draw_render_elements(&mut frame, 1.0, &elements, &[damage]);
-                    let _ = draw_server_decorations(&mut frame, &[damage], &state);
+                    let _ = frame.clear(BACKGROUND_COLOR, &[damage]);
+                    let _ = draw_render_elements(&mut frame, 1.0, &bottom_elements, &[damage]);
+                    for (window, content) in &window_content {
+                        if let Err(err) = draw_window(
+                            &mut frame,
+                            &state,
+                            window,
+                            content,
+                            &[damage],
+                            corner_shader.as_ref(),
+                        ) {
+                            tracing::warn!(%err, "failed to draw window");
+                        }
+                    }
+                    let _ = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]);
+                    let _ = draw_render_elements(&mut frame, 1.0, &popups, &[damage]);
                     let _ = frame.finish();
                 }
                 Err(err) => tracing::warn!(%err, "render error"),

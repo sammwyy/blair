@@ -69,6 +69,12 @@ pub fn begin_window_drag(
     window: Window,
     pointer_pos: Point<f64, Logical>,
 ) -> bool {
+    if matches!(
+        state.config.window.layout,
+        crate::config::WindowLayout::Tiling
+    ) {
+        return false;
+    }
     let Some(window_loc) = state.space.element_location(&window) else {
         return false;
     };
@@ -233,6 +239,7 @@ pub fn window_under_including_decoration(
                     height: client.size.h,
                 },
                 &theme,
+                true,
             );
             geom.frame.contains(point)
         })

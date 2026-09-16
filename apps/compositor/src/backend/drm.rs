@@ -30,7 +30,6 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::UdevBackend,
     },
-    desktop::space::space_render_elements,
     input::keyboard::FilterResult,
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
@@ -52,12 +51,16 @@ use wayland_server::ListeningSocket;
 use crate::{
     config::CompositorConfig,
     dbus,
+    decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
         upper_layer_surface_under, window_surface_under, window_under_including_decoration,
         WindowDrag,
     },
-    render::draw_server_decorations,
+    render::{
+        bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
+        top_layer_elements, window_content_elements, BACKGROUND_COLOR,
+    },
     shortcuts::{physical_vt_from_keycode, update_physical_mods, vt_from_keysym, PhysicalMods},
     state::{BlairState, ClientState},
 };
@@ -77,6 +80,7 @@ struct LoopData {
     // libseat activation must precede DRM master acquisition.
     drm: Option<DrmDevice>,
     renderer: Option<GlesRenderer>,
+    rounded_corner_shader: Option<RoundedCornerShaders>,
     surface: Option<GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>>,
     output: Option<Output>,
     physical_mods: PhysicalMods,
@@ -192,6 +196,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         frame_counter: Arc::clone(&frame_counter),
         drm: None,
         renderer: None,
+        rounded_corner_shader: None,
         surface: None,
         output: None,
         physical_mods: PhysicalMods::default(),
@@ -488,6 +493,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             );
             let LoopData {
                 renderer: Some(renderer),
+                rounded_corner_shader,
                 surface: Some(surface),
                 state,
                 output: Some(output),
@@ -501,6 +507,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             };
             if render_frame(
                 renderer,
+                rounded_corner_shader,
                 surface,
                 state,
                 output,
@@ -581,6 +588,7 @@ fn drain_pending_move_request(data: &mut LoopData) {
 
 fn render_frame(
     renderer: &mut GlesRenderer,
+    rounded_corner_shader: &mut Option<RoundedCornerShaders>,
     surface: &mut GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>,
     state: &mut BlairState,
     output: &Output,
@@ -609,13 +617,11 @@ fn render_frame(
         }
     };
 
-    let elements = match space_render_elements(renderer, [&state.space], output, 1.0) {
-        Ok(elements) => elements,
-        Err(err) => {
-            tracing::warn!(?err, "failed to collect render elements");
-            Vec::new()
-        }
-    };
+    let bottom_elements = bottom_layer_elements(renderer, output);
+    let window_content = window_content_elements(renderer, state);
+    let top_elements = top_layer_elements(renderer, output);
+    let popups = popup_elements(renderer, state);
+    let corner_shader = ensure_rounded_corner_shader(renderer, rounded_corner_shader);
 
     let mut framebuffer = match renderer.bind(&mut dmabuf) {
         Ok(framebuffer) => framebuffer,
@@ -641,14 +647,29 @@ fn render_frame(
 
     match renderer.render(&mut framebuffer, phys, Transform::Normal) {
         Ok(mut frame) => {
-            if let Err(err) = frame.clear(Color32F::new(0.08, 0.08, 0.12, 1.0), &[damage]) {
+            if let Err(err) = frame.clear(BACKGROUND_COLOR, &[damage]) {
                 tracing::warn!("frame.clear: {err}");
             }
-            if let Err(err) = draw_render_elements(&mut frame, 1.0, &elements, &[damage]) {
+            if let Err(err) = draw_render_elements(&mut frame, 1.0, &bottom_elements, &[damage]) {
                 tracing::warn!("draw_render_elements: {err}");
             }
-            if let Err(err) = draw_server_decorations(&mut frame, &[damage], state) {
-                tracing::warn!("server decorations: {err}");
+            for (window, content) in &window_content {
+                if let Err(err) = draw_window(
+                    &mut frame,
+                    state,
+                    window,
+                    content,
+                    &[damage],
+                    corner_shader.as_ref(),
+                ) {
+                    tracing::warn!(%err, "failed to draw window");
+                }
+            }
+            if let Err(err) = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]) {
+                tracing::warn!("draw_render_elements: {err}");
+            }
+            if let Err(err) = draw_render_elements(&mut frame, 1.0, &popups, &[damage]) {
+                tracing::warn!("draw_render_elements: {err}");
             }
             #[cfg(debug_assertions)]
             if let Err(err) = draw_debug_overlay(&mut frame, &[damage], debug_overlay) {

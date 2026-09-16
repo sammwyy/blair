@@ -188,6 +188,9 @@ impl BlairState {
             tracing::debug!(output = %output.name(), "rearranged layer surfaces after output resize");
             self.emit_work_area_changed(output);
         }
+        if self.config.window.layout == WindowLayout::Tiling {
+            self.tile_focused_window();
+        }
     }
 
     fn reflow_layer_surface(&mut self, surface: &WlSurface) {

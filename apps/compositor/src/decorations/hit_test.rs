@@ -23,7 +23,7 @@ pub enum DecorationPart {
 const GRAB_MARGIN: f64 = 8.0;
 
 pub fn hit_test_frame(client: Rect, point: Point, theme: &DecorationTheme) -> DecorationPart {
-    let geom = DecorationFrame::compute(client, theme);
+    let geom = DecorationFrame::compute(client, theme, true);
 
     let fx = geom.frame.x as f64;
     let fy = geom.frame.y as f64;
