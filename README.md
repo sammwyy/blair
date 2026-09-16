@@ -93,6 +93,22 @@ Blair opens a nested window. Its default configuration starts `coconut` as the
 primary client; set `spawn_primary_client = false` or choose another command
 to use a different shell. `scripts/dev.sh` runs the freshly built binary.
 
+## Shell selection
+
+Use `--primary-client` to override `compositor.toml` for one session. The
+override always starts the supplied command.
+
+```bash
+blair --primary-client coconut
+blair-session --primary-client "another-shell --config ~/.config/another-shell.toml"
+```
+
+This makes separate display-manager entries possible, for example:
+
+```ini
+Exec=blair-session --primary-client coconut
+```
+
 ## Install
 
 ```bash

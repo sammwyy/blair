@@ -23,7 +23,7 @@ if [ -n "$XDG_SESSION_ID" ] && command -v loginctl >/dev/null 2>&1; then
     loginctl activate "$XDG_SESSION_ID" 2>>"$LOGFILE" || true
 fi
 
-blair >> "$LOGFILE" 2>&1
+blair "$@" >> "$LOGFILE" 2>&1
 ec=$?
 
 echo "--- blair exited rc=$ec at $(date) ---" >> "$LOGFILE"
