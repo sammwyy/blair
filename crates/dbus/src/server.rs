@@ -4,6 +4,8 @@ use std::{
 };
 
 use blair_protocol::CompositorEvent;
+use futures_util::StreamExt;
+use zbus::{fdo::NameOwnerChanged, message::Type as MessageType, MatchRule, MessageStream};
 
 use crate::{
     command::Command,
@@ -34,7 +36,7 @@ pub fn serve(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> Jo
 }
 
 async fn run(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> zbus::Result<()> {
-    let interface = CompositorInterface::new(commands);
+    let interface = CompositorInterface::new(commands.clone());
     let connection = zbus::connection::Builder::session()?
         .name(SERVICE_NAME)?
         .serve_at(OBJECT_PATH, interface)?
@@ -59,6 +61,43 @@ async fn run(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> zb
             if forward_tx.send(event).is_err() {
                 break;
             }
+        }
+    });
+
+    let disconnect_commands = commands.clone();
+    let disconnect_connection = connection.clone();
+    tokio::spawn(async move {
+        let rule = match MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .interface("org.freedesktop.DBus")
+            .and_then(|builder| builder.member("NameOwnerChanged"))
+            .map(|builder| builder.build())
+        {
+            Ok(rule) => rule,
+            Err(err) => {
+                tracing::warn!(%err, "failed to subscribe to D-Bus client disconnects");
+                return;
+            }
+        };
+        let mut stream =
+            match MessageStream::for_match_rule(rule, &disconnect_connection, None).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    tracing::warn!(%err, "failed to monitor D-Bus client disconnects");
+                    return;
+                }
+            };
+        while let Some(Ok(message)) = stream.next().await {
+            let Some(signal) = NameOwnerChanged::from_message(message) else {
+                continue;
+            };
+            let Ok(args) = signal.args() else {
+                continue;
+            };
+            if !args.name().as_str().starts_with(':') || args.new_owner().is_some() {
+                continue;
+            }
+            let _ = disconnect_commands.send(Command::ClientDisconnected(args.name().to_string()));
         }
     });
 
@@ -110,6 +149,12 @@ async fn emit(
                 .work_area_changed(&output, area.x, area.y, area.width, area.height)
                 .await
         }
-        CompositorEvent::ShortcutActivated { id } => iface_ref.shortcut_activated(&id).await,
+        CompositorEvent::ShortcutActivated { client, id } => {
+            let emitter = iface_ref
+                .signal_emitter()
+                .clone()
+                .set_destination(client.as_str().try_into()?);
+            CompositorInterface::shortcut_activated(&emitter, &id).await
+        }
     }
 }

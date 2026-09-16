@@ -7,10 +7,13 @@ backend = "auto"
 default_width = 900
 default_height = 600
 server_side_decorations = true
+layout = "floating"
+work_area_padding = 16
 
 [decoration]
 titlebar_height = 32
 border_width = 4
+corner_radius = 12
 active_titlebar = "#1e1e2e"
 inactive_titlebar = "#11111b"
 active_border = "#89b4fa"

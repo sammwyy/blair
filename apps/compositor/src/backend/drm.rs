@@ -470,6 +470,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         loop_data.display.flush_clients().ok();
         drain_pending_move_request(&mut loop_data);
         dbus_service.drain(&mut loop_data.state);
+        if loop_data.state.take_redraw_request() {
+            loop_data.need_frame = true;
+        }
         if loop_data.state.exit_requested {
             loop_data.running = false;
         }
@@ -709,6 +712,7 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
             debug_overlay.last_key = format!("{keycode_u32}:{key_state:?}");
 
             update_physical_mods(physical_mods, keycode_u32, pressed);
+            state.shortcuts.update_key(keycode_u32, pressed);
             #[cfg(debug_assertions)]
             if pressed && physical_mods.ctrl && physical_mods.logo && keycode_u32 == 9 {
                 tracing::warn!("debug emergency exit requested by Ctrl+Super+Esc");
@@ -726,17 +730,21 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
                     return;
                 }
             }
-            if pressed {
-                if let Some(id) = state
-                    .shortcuts
-                    .maybe_activate_physical(*physical_mods, keycode_u32)
-                {
-                    let id = id.to_owned();
-                    tracing::debug!(keycode = keycode_u32, id, "physical shortcut consumed");
-                    debug_overlay.last_shortcut = id.clone();
-                    state.emit(blair_protocol::CompositorEvent::ShortcutActivated { id });
-                    return;
+            let activated = state.shortcuts.maybe_activate_physical(*physical_mods);
+            if pressed && !activated.is_empty() {
+                debug_overlay.last_shortcut = activated[0].id.clone();
+                for shortcut in activated {
+                    tracing::debug!(
+                        keycode = keycode_u32,
+                        id = shortcut.id,
+                        "physical shortcut consumed"
+                    );
+                    state.emit(blair_protocol::CompositorEvent::ShortcutActivated {
+                        client: shortcut.client,
+                        id: shortcut.id,
+                    });
                 }
+                return;
             }
 
             if let Some(keyboard) = state.seat.get_keyboard() {
@@ -747,7 +755,7 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
                     key_state,
                     serial,
                     time,
-                    |state, mods, keysym| {
+                    |_state, mods, keysym| {
                         let raw_sym = keysym
                             .raw_latin_sym_or_raw_current_sym()
                             .unwrap_or_else(|| keysym.modified_sym());
@@ -759,15 +767,6 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
                                 if let Err(err) = session.change_vt(vt) {
                                     tracing::warn!(%err, vt, "VT switch failed");
                                 }
-                                return FilterResult::Intercept(());
-                            }
-                        }
-                        if key_state == KeyState::Pressed {
-                            if let Some(id) = state.shortcuts.maybe_activate(mods, raw_sym) {
-                                let id = id.to_owned();
-                                state.emit(blair_protocol::CompositorEvent::ShortcutActivated {
-                                    id,
-                                });
                                 return FilterResult::Intercept(());
                             }
                         }

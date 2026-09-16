@@ -49,8 +49,8 @@ use smithay::{
     },
 };
 
-use crate::config::CompositorConfig;
-use crate::shortcuts::ShortcutRegistry;
+use crate::config::{CompositorConfig, WindowLayout};
+use crate::shortcuts::{PhysicalMods, ShortcutRegistry};
 
 #[derive(Default)]
 pub struct ClientState {
@@ -78,12 +78,14 @@ pub struct BlairState {
     pub layer_surfaces: Vec<DesktopLayerSurface>,
     pub minimized_windows: Vec<MinimizedWindow>,
     pub shortcuts: ShortcutRegistry,
+    pub physical_mods: PhysicalMods,
 
     pub seat: Seat<Self>,
     pub focused_window: Option<WindowId>,
 
     pub primary_client: Option<std::process::Child>,
     pub exit_requested: bool,
+    pub redraw_requested: bool,
 
     pub events: Sender<CompositorEvent>,
 
@@ -131,10 +133,12 @@ impl BlairState {
             layer_surfaces: Vec::new(),
             minimized_windows: Vec::new(),
             shortcuts: ShortcutRegistry::default(),
+            physical_mods: PhysicalMods::default(),
             seat,
             focused_window: None,
             primary_client: None,
             exit_requested: false,
+            redraw_requested: false,
             events,
             window_counter: 0,
             pending_move_request: None,
@@ -149,6 +153,14 @@ impl BlairState {
         tracing::info!("compositor exit requested");
         self.exit_requested = true;
         self.loop_signal.stop();
+    }
+
+    pub fn request_redraw(&mut self) {
+        self.redraw_requested = true;
+    }
+
+    pub fn take_redraw_request(&mut self) -> bool {
+        std::mem::take(&mut self.redraw_requested)
     }
 
     pub fn spawn_primary_client(&mut self) {
@@ -330,10 +342,43 @@ impl BlairState {
             return false;
         };
         self.space.raise_element(window, true);
+        self.tile_window(window);
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
         }
         true
+    }
+
+    pub fn tile_window(&mut self, window: &Window) {
+        if self.config.window.layout != WindowLayout::Tiling {
+            return;
+        }
+        let area = self.work_area("");
+        let padding = self
+            .config
+            .window
+            .work_area_padding
+            .clamp(0, area.width.min(area.height) / 2);
+        let width = (area.width - padding * 2).max(1);
+        let height = (area.height - padding * 2).max(1);
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        toplevel.with_pending_state(|state| state.size = Some((width, height).into()));
+        toplevel.send_configure();
+        let location = (area.x + padding, area.y + padding);
+        self.space.map_element(window.clone(), location, true);
+        self.window_geometry_changed(window, location);
+    }
+
+    pub fn tile_focused_window(&mut self) {
+        let Some(id) = self.focused_window else {
+            return;
+        };
+        let window = self.window_by_id(id);
+        if let Some(window) = window {
+            self.tile_window(&window);
+        }
     }
 
     pub fn focus_window_by_id(&mut self, id: WindowId) -> bool {

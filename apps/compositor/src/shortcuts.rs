@@ -1,17 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
+use smithay::input::keyboard::{keysyms, Keysym};
 
 #[derive(Debug, Default)]
 pub struct ShortcutRegistry {
     bindings: Vec<ShortcutBinding>,
+    pressed_keys: HashSet<u32>,
+    active_bindings: HashSet<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
 struct ShortcutBinding {
+    client: String,
     id: String,
     mods: ShortcutMods,
-    key: ShortcutKey,
+    keys: Vec<ShortcutKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivatedShortcut {
+    pub client: String,
+    pub id: String,
 }
 
 pub type PhysicalMods = ShortcutMods;
@@ -34,85 +43,101 @@ enum ShortcutKey {
 }
 
 impl ShortcutRegistry {
-    pub fn bind(&mut self, id: &str, accelerator: &str) -> bool {
-        let binding = match parse_binding(id, accelerator) {
+    pub fn bind(&mut self, client: &str, id: &str, accelerator: &str) -> bool {
+        let binding = match parse_binding(client, id, accelerator) {
             Ok(binding) => binding,
             Err(err) => {
                 tracing::warn!(id, accelerator, error = %err, "ignoring invalid shortcut binding");
                 return false;
             }
         };
-        self.bindings.retain(|existing| existing.id != id);
+        self.bindings
+            .retain(|existing| existing.client != client || existing.id != id);
+        self.active_bindings
+            .remove(&(client.to_string(), id.to_string()));
         self.bindings.push(binding);
         tracing::info!(id, accelerator, "shortcut bound");
         true
     }
 
-    pub fn unbind(&mut self, id: &str) {
-        self.bindings.retain(|existing| existing.id != id);
+    pub fn unbind(&mut self, client: &str, id: &str) {
+        self.bindings
+            .retain(|existing| existing.client != client || existing.id != id);
+        self.active_bindings
+            .remove(&(client.to_string(), id.to_string()));
+    }
+
+    pub fn unregister_client(&mut self, client: &str) {
+        let previous = self.bindings.len();
+        self.bindings.retain(|binding| binding.client != client);
+        self.active_bindings
+            .retain(|(binding_client, _)| binding_client != client);
+        let removed = previous - self.bindings.len();
+        if removed > 0 {
+            tracing::info!(client, removed, "client shortcuts unregistered");
+        }
     }
 
     pub fn binding_count(&self) -> usize {
         self.bindings.len()
     }
 
-    pub fn maybe_activate(&self, mods: &ModifiersState, raw_sym: Keysym) -> Option<&str> {
-        self.bindings
-            .iter()
-            .find(|binding| binding.matches(mods, raw_sym))
-            .map(|binding| binding.id.as_str())
+    pub fn update_key(&mut self, keycode: u32, pressed: bool) {
+        if pressed {
+            self.pressed_keys.insert(keycode);
+        } else {
+            self.pressed_keys.remove(&keycode);
+        }
     }
 
-    pub fn maybe_activate_physical(&self, mods: PhysicalMods, keycode: u32) -> Option<&str> {
-        self.bindings
+    pub fn maybe_activate_physical(&mut self, mods: PhysicalMods) -> Vec<ActivatedShortcut> {
+        let matching: HashSet<_> = self
+            .bindings
             .iter()
-            .find(|binding| binding.matches_physical(mods, keycode))
-            .map(|binding| binding.id.as_str())
+            .filter(|binding| binding.matches_physical(mods, &self.pressed_keys))
+            .map(|binding| (binding.client.clone(), binding.id.clone()))
+            .collect();
+        self.active_bindings
+            .retain(|binding| matching.contains(binding));
+        matching
+            .into_iter()
+            .filter(|binding| self.active_bindings.insert(binding.clone()))
+            .map(|(client, id)| ActivatedShortcut { client, id })
+            .collect()
     }
 }
 
 impl ShortcutBinding {
-    fn matches(&self, mods: &ModifiersState, raw_sym: Keysym) -> bool {
-        self.mods.ctrl == mods.ctrl
-            && self.mods.alt == mods.alt
-            && self.mods.shift == mods.shift
-            && self.mods.logo == mods.logo
-            && self.key.matches(raw_sym)
-    }
-
-    fn matches_physical(&self, mods: PhysicalMods, keycode: u32) -> bool {
-        self.mods == mods && self.key.matches_physical(keycode)
+    fn matches_physical(&self, mods: PhysicalMods, pressed_keys: &HashSet<u32>) -> bool {
+        self.mods == mods
+            && self
+                .keys
+                .iter()
+                .all(|key| key.matches_physical(pressed_keys))
     }
 }
 
 impl ShortcutKey {
-    fn matches(&self, raw_sym: Keysym) -> bool {
+    fn matches_physical(&self, pressed_keys: &HashSet<u32>) -> bool {
         match self {
-            ShortcutKey::Char(ch) => raw_sym
-                .key_char()
-                .map(|raw| raw.eq_ignore_ascii_case(ch))
-                .unwrap_or(false),
-            ShortcutKey::Return => u32::from(raw_sym) == keysyms::KEY_Return,
-            ShortcutKey::Space => u32::from(raw_sym) == keysyms::KEY_space,
-            ShortcutKey::Escape => u32::from(raw_sym) == keysyms::KEY_Escape,
-            ShortcutKey::F(n) => f_key_number(raw_sym) == Some(*n),
-        }
-    }
-
-    fn matches_physical(&self, keycode: u32) -> bool {
-        match self {
-            ShortcutKey::Char(' ') | ShortcutKey::Space => keycode == evdev_to_smithay(57),
-            ShortcutKey::Char(ch) => physical_letter_keycode(*ch) == Some(keycode),
-            ShortcutKey::Return => keycode == evdev_to_smithay(28),
-            ShortcutKey::Escape => keycode == evdev_to_smithay(1),
-            ShortcutKey::F(n) => physical_f_keycode(*n) == Some(keycode),
+            ShortcutKey::Char(' ') | ShortcutKey::Space => {
+                pressed_keys.contains(&evdev_to_smithay(57))
+            }
+            ShortcutKey::Char(ch) => {
+                physical_letter_keycode(*ch).is_some_and(|keycode| pressed_keys.contains(&keycode))
+            }
+            ShortcutKey::Return => pressed_keys.contains(&evdev_to_smithay(28)),
+            ShortcutKey::Escape => pressed_keys.contains(&evdev_to_smithay(1)),
+            ShortcutKey::F(n) => {
+                physical_f_keycode(*n).is_some_and(|keycode| pressed_keys.contains(&keycode))
+            }
         }
     }
 }
 
-fn parse_binding(id: &str, accelerator: &str) -> Result<ShortcutBinding, String> {
+fn parse_binding(client: &str, id: &str, accelerator: &str) -> Result<ShortcutBinding, String> {
     let mut mods = ShortcutMods::default();
-    let mut key = None;
+    let mut keys = Vec::new();
     let aliases = key_aliases();
 
     for token in accelerator.replace(',', "+").split('+') {
@@ -126,19 +151,26 @@ fn parse_binding(id: &str, accelerator: &str) -> Result<ShortcutBinding, String>
             "shift" => mods.shift = true,
             "super" | "logo" | "meta" | "mod4" | "win" => mods.logo = true,
             value => {
-                if key.is_some() {
-                    return Err("shortcut has more than one non-modifier key".to_string());
+                if keys.len() == 3 {
+                    return Err("shortcut has more than three non-modifier keys".to_string());
                 }
-                key = Some(parse_key(value, &aliases)?);
+                let key = parse_key(value, &aliases)?;
+                if keys.contains(&key) {
+                    return Err("shortcut repeats a non-modifier key".to_string());
+                }
+                keys.push(key);
             }
         }
     }
 
-    let key = key.ok_or_else(|| "shortcut has no non-modifier key".to_string())?;
+    if !mods.ctrl && !mods.alt && !mods.shift && !mods.logo {
+        return Err("shortcut has no modifier key".to_string());
+    }
     Ok(ShortcutBinding {
+        client: client.to_string(),
         id: id.to_string(),
         mods,
-        key,
+        keys,
     })
 }
 
@@ -273,76 +305,63 @@ fn physical_letter_keycode(ch: char) -> Option<u32> {
 mod tests {
     use super::*;
 
-    fn mods(ctrl: bool, alt: bool, shift: bool, logo: bool) -> ModifiersState {
-        ModifiersState {
-            ctrl,
-            alt,
-            shift,
-            logo,
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn binds_and_activates_a_char_shortcut() {
+    fn activates_a_shortcut_for_its_client() {
         let mut registry = ShortcutRegistry::default();
-        assert!(registry.bind("launcher", "Super+Space"));
+        assert!(registry.bind(":1.4", "launcher", "Super+Space"));
         assert_eq!(registry.binding_count(), 1);
-
-        let activated = registry.maybe_activate(
-            &mods(false, false, false, true),
-            Keysym::from(keysyms::KEY_space),
-        );
-        assert_eq!(activated, Some("launcher"));
-
-        let not_activated = registry.maybe_activate(
-            &mods(false, false, false, false),
-            Keysym::from(keysyms::KEY_space),
-        );
-        assert_eq!(not_activated, None);
-    }
-
-    #[test]
-    fn rebinding_the_same_id_replaces_the_old_binding() {
-        let mut registry = ShortcutRegistry::default();
-        registry.bind("toggle", "Ctrl+Alt+T");
-        registry.bind("toggle", "Super+T");
-        assert_eq!(registry.binding_count(), 1);
-
-        let activated = registry.maybe_activate(
-            &mods(false, false, false, true),
-            Keysym::from(keysyms::KEY_T),
-        );
-        assert_eq!(activated, Some("toggle"));
-    }
-
-    #[test]
-    fn unbind_removes_the_shortcut() {
-        let mut registry = ShortcutRegistry::default();
-        registry.bind("quit", "Ctrl+Q");
-        registry.unbind("quit");
-        assert_eq!(registry.binding_count(), 0);
-    }
-
-    #[test]
-    fn rejects_accelerators_without_a_key() {
-        let mut registry = ShortcutRegistry::default();
-        assert!(!registry.bind("broken", "Ctrl+Shift"));
-        assert_eq!(registry.binding_count(), 0);
-    }
-
-    #[test]
-    fn physical_shortcut_matches_by_keycode_and_mods() {
-        let mut registry = ShortcutRegistry::default();
-        registry.bind("launcher", "Super+Space");
-        let keycode = evdev_to_smithay(57);
-        let physical_mods = PhysicalMods {
-            logo: true,
-            ..Default::default()
-        };
+        registry.update_key(evdev_to_smithay(57), true);
         assert_eq!(
-            registry.maybe_activate_physical(physical_mods, keycode),
-            Some("launcher")
+            registry.maybe_activate_physical(PhysicalMods {
+                logo: true,
+                ..Default::default()
+            }),
+            vec![ActivatedShortcut {
+                client: ":1.4".to_string(),
+                id: "launcher".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rebinding_is_scoped_to_the_client() {
+        let mut registry = ShortcutRegistry::default();
+        registry.bind(":1.4", "toggle", "Ctrl+Alt+T");
+        registry.bind(":1.5", "toggle", "Super+T");
+        registry.bind(":1.4", "toggle", "Super+T");
+        assert_eq!(registry.binding_count(), 2);
+    }
+
+    #[test]
+    fn unregistering_a_client_removes_all_its_shortcuts() {
+        let mut registry = ShortcutRegistry::default();
+        registry.bind(":1.4", "quit", "Ctrl+Q");
+        registry.bind(":1.4", "launcher", "Super+Space");
+        registry.bind(":1.5", "launcher", "Super+Space");
+        registry.unregister_client(":1.4");
+        assert_eq!(registry.binding_count(), 1);
+    }
+
+    #[test]
+    fn rejects_accelerators_without_modifiers() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(!registry.bind(":1.4", "broken", "T"));
+        assert_eq!(registry.binding_count(), 0);
+    }
+
+    #[test]
+    fn supports_modifier_only_and_three_key_shortcuts() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind(":1.4", "overview", "Super"));
+        assert!(registry.bind(":1.4", "chord", "Ctrl+Alt+Q+W+E"));
+        assert_eq!(
+            registry
+                .maybe_activate_physical(PhysicalMods {
+                    logo: true,
+                    ..Default::default()
+                })
+                .len(),
+            1
         );
     }
 }

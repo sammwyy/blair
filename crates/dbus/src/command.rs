@@ -11,7 +11,20 @@ pub enum Command {
     MoveResizeWindow(u64, (i32, i32, i32, i32), oneshot::Sender<bool>),
     WorkArea(String, oneshot::Sender<(i32, i32, i32, i32)>),
     Outputs(oneshot::Sender<Vec<String>>),
-    BindShortcut(String, String, oneshot::Sender<bool>),
-    UnbindShortcut(String),
+    WindowSettings(oneshot::Sender<(i32, i32, i32, bool)>),
+    LayoutSettings(oneshot::Sender<(String, i32, i32)>),
+    SetLayoutSettings(String, i32, i32, oneshot::Sender<bool>),
+    SetWindowSettings(i32, i32, i32, bool, oneshot::Sender<bool>),
+    BindShortcut {
+        client: String,
+        id: String,
+        accelerator: String,
+        reply: oneshot::Sender<bool>,
+    },
+    UnbindShortcut {
+        client: String,
+        id: String,
+    },
+    ClientDisconnected(String),
     Quit,
 }

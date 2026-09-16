@@ -28,6 +28,12 @@ pub fn draw_server_decorations<F: Frame>(
     damage: &[Rectangle<i32, Physical>],
     state: &BlairState,
 ) -> Result<(), F::Error> {
+    if matches!(
+        state.config.window.layout,
+        crate::config::WindowLayout::Tiling
+    ) {
+        return Ok(());
+    }
     if !state.config.window.server_side_decorations {
         return Ok(());
     }

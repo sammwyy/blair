@@ -189,6 +189,7 @@ name = "blair-dbus"
 version = "0.1.0"
 dependencies = [
  "blair-protocol",
+ "futures-util",
  "serde",
  "tokio",
  "tracing",

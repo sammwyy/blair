@@ -1,7 +1,7 @@
 use std::sync::mpsc::Sender;
 
 use tokio::sync::oneshot;
-use zbus::{interface, object_server::SignalEmitter};
+use zbus::{interface, message::Header, object_server::SignalEmitter};
 
 use crate::{command::Command, wire::DbusWindow};
 
@@ -77,14 +77,74 @@ impl CompositorInterface {
         self.call(Command::Outputs).await.unwrap_or_default()
     }
 
-    async fn bind_shortcut(&self, id: &str, accelerator: &str) -> bool {
-        self.call(|reply| Command::BindShortcut(id.to_owned(), accelerator.to_owned(), reply))
-            .await
-            .unwrap_or(false)
+    async fn window_settings(&self) -> (i32, i32, i32, bool) {
+        self.call(Command::WindowSettings).await.unwrap_or_default()
     }
 
-    async fn unbind_shortcut(&self, id: &str) {
-        let _ = self.commands.send(Command::UnbindShortcut(id.to_owned()));
+    async fn layout_settings(&self) -> (String, i32, i32) {
+        self.call(Command::LayoutSettings).await.unwrap_or_default()
+    }
+
+    async fn set_layout_settings(
+        &self,
+        layout: &str,
+        work_area_padding: i32,
+        corner_radius: i32,
+    ) -> bool {
+        self.call(|reply| {
+            Command::SetLayoutSettings(layout.to_owned(), work_area_padding, corner_radius, reply)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn set_window_settings(
+        &self,
+        titlebar_height: i32,
+        border_width: i32,
+        corner_radius: i32,
+        server_side_decorations: bool,
+    ) -> bool {
+        self.call(|reply| {
+            Command::SetWindowSettings(
+                titlebar_height,
+                border_width,
+                corner_radius,
+                server_side_decorations,
+                reply,
+            )
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn bind_shortcut(
+        &self,
+        id: &str,
+        accelerator: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> bool {
+        let Some(client) = header.sender() else {
+            return false;
+        };
+        self.call(|reply| Command::BindShortcut {
+            client: client.to_string(),
+            id: id.to_owned(),
+            accelerator: accelerator.to_owned(),
+            reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn unbind_shortcut(&self, id: &str, #[zbus(header)] header: Header<'_>) {
+        let Some(client) = header.sender() else {
+            return;
+        };
+        let _ = self.commands.send(Command::UnbindShortcut {
+            client: client.to_string(),
+            id: id.to_owned(),
+        });
     }
 
     async fn quit(&self) {

@@ -224,18 +224,25 @@ fn handle_input(
                     key_state,
                     SERIAL_COUNTER.next_serial(),
                     event.time_msec(),
-                    move |state, mods, keysym| {
-                        if key_state == KeyState::Pressed {
-                            let raw_sym = keysym
-                                .raw_latin_sym_or_raw_current_sym()
-                                .unwrap_or_else(|| keysym.modified_sym());
-                            if let Some(id) = state.shortcuts.maybe_activate(mods, raw_sym) {
-                                let id = id.to_owned();
+                    move |state, _mods, _keysym| {
+                        let keycode = u32::from(event.key_code());
+                        let pressed = key_state == KeyState::Pressed;
+                        crate::shortcuts::update_physical_mods(
+                            &mut state.physical_mods,
+                            keycode,
+                            pressed,
+                        );
+                        state.shortcuts.update_key(keycode, pressed);
+                        let activated =
+                            state.shortcuts.maybe_activate_physical(state.physical_mods);
+                        if pressed && !activated.is_empty() {
+                            for shortcut in activated {
                                 state.emit(blair_protocol::CompositorEvent::ShortcutActivated {
-                                    id,
+                                    client: shortcut.client,
+                                    id: shortcut.id,
                                 });
-                                return FilterResult::Intercept(());
                             }
+                            return FilterResult::Intercept(());
                         }
                         FilterResult::Forward
                     },

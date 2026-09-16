@@ -116,10 +116,14 @@ fn decode(message: &Message) -> Option<CompositorEvent> {
                 },
             })
         }
-        "ShortcutActivated" => body
-            .deserialize::<String>()
-            .ok()
-            .map(|id| CompositorEvent::ShortcutActivated { id }),
+        "ShortcutActivated" => {
+            body.deserialize::<String>()
+                .ok()
+                .map(|id| CompositorEvent::ShortcutActivated {
+                    client: String::new(),
+                    id,
+                })
+        }
         _ => None,
     }
 }

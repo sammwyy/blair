@@ -70,6 +70,27 @@ impl BlairClient {
         self.proxy.outputs().await
     }
 
+    pub async fn window_settings(&self) -> zbus::Result<(i32, i32, i32, bool)> {
+        self.proxy.window_settings().await
+    }
+
+    pub async fn set_window_settings(
+        &self,
+        titlebar_height: i32,
+        border_width: i32,
+        corner_radius: i32,
+        server_side_decorations: bool,
+    ) -> zbus::Result<bool> {
+        self.proxy
+            .set_window_settings(
+                titlebar_height,
+                border_width,
+                corner_radius,
+                server_side_decorations,
+            )
+            .await
+    }
+
     /// Registers `accelerator` and identifies activations with `id`.
     pub async fn bind_shortcut(&self, id: &str, accelerator: &str) -> zbus::Result<bool> {
         self.proxy.bind_shortcut(id, accelerator).await

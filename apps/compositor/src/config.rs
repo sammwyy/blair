@@ -31,6 +31,16 @@ pub struct WindowConfig {
     pub default_width: i32,
     pub default_height: i32,
     pub server_side_decorations: bool,
+    pub layout: WindowLayout,
+    pub work_area_padding: i32,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowLayout {
+    #[default]
+    Floating,
+    Tiling,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +48,7 @@ pub struct WindowConfig {
 pub struct DecorationConfig {
     pub titlebar_height: i32,
     pub border_width: i32,
+    pub corner_radius: i32,
     pub active_titlebar: String,
     pub inactive_titlebar: String,
     pub active_border: String,
@@ -63,6 +74,8 @@ impl Default for WindowConfig {
             default_width: 900,
             default_height: 600,
             server_side_decorations: true,
+            layout: WindowLayout::Floating,
+            work_area_padding: 16,
         }
     }
 }
@@ -72,6 +85,7 @@ impl Default for DecorationConfig {
         Self {
             titlebar_height: 32,
             border_width: 4,
+            corner_radius: 12,
             active_titlebar: "#1e1e2e".to_string(),
             inactive_titlebar: "#11111b".to_string(),
             active_border: "#89b4fa".to_string(),
@@ -127,6 +141,12 @@ pub fn load_or_default() -> Result<CompositorConfig> {
         return write_default(&path);
     }
     read_config(&path)
+}
+
+pub fn save(config: &CompositorConfig) -> Result<()> {
+    let path = user_config_path();
+    let toml = toml::to_string_pretty(config).context("failed to serialize compositor config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write config to {}", path.display()))
 }
 
 fn read_config(path: &Path) -> Result<CompositorConfig> {

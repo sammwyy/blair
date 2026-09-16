@@ -43,6 +43,7 @@ pub enum CompositorEvent {
         area: Rect,
     },
     ShortcutActivated {
+        client: String,
         id: String,
     },
 }

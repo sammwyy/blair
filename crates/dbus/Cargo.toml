@@ -14,3 +14,4 @@ zbus.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

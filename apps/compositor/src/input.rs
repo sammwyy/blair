@@ -204,7 +204,12 @@ pub fn window_under_including_decoration(
     if let Some((window, _)) = state.space.element_under(pos) {
         return Some(window.clone());
     }
-    if !state.config.window.server_side_decorations {
+    if !state.config.window.server_side_decorations
+        || matches!(
+            state.config.window.layout,
+            crate::config::WindowLayout::Tiling
+        )
+    {
         return None;
     }
     let theme = decoration_theme(state);
@@ -239,7 +244,13 @@ pub fn handle_decoration_press(
     window: Window,
     pointer_pos: Point<f64, Logical>,
 ) -> bool {
-    if !state.config.window.server_side_decorations || !window_wants_server_decoration(&window) {
+    if !state.config.window.server_side_decorations
+        || matches!(
+            state.config.window.layout,
+            crate::config::WindowLayout::Tiling
+        )
+        || !window_wants_server_decoration(&window)
+    {
         return false;
     }
     let Some(window_loc) = state.space.element_location(&window) else {

@@ -45,7 +45,9 @@ Methods:
 | `MoveResizeWindow(t id, i x, i y, i width, i height) -> b` | |
 | `WorkArea(s output) -> (iiii)` | non-exclusive area of `output`; empty string = first output |
 | `Outputs() -> as` | |
-| `BindShortcut(s id, s accelerator) -> b` | accelerator syntax: `"Super+Space"`, `"Ctrl+Alt+T"` |
+| `WindowSettings() -> (iiib)` | titlebar height, border width, corner radius, server-side decorations |
+| `SetWindowSettings(i titlebar_height, i border_width, i corner_radius, b server_side_decorations) -> b` | applies and persists validated window settings |
+| `BindShortcut(s id, s accelerator) -> b` | accepts modifier-only shortcuts and one to three additional keys, e.g. `"Super"`, `"Super+Space"`, `"Ctrl+Alt+Q+W+E"` |
 | `UnbindShortcut(s id)` | |
 | `Quit()` | |
 
@@ -53,6 +55,11 @@ Signals: `WindowOpened`, `WindowClosed`, `WindowFocused`, `FocusCleared`,
 `WindowTitleChanged`, `WindowGeometryChanged`, `WindowMinimized`,
 `WindowRestored`, `WindowMaximized`, `OutputAdded`, `OutputRemoved`,
 `WorkAreaChanged`, `ShortcutActivated`.
+
+Shortcut registrations belong to the caller's D-Bus connection. Reusing an ID
+updates only that caller's registration; equal shortcuts from different clients
+are all delivered to their respective live clients. Blair removes a client's
+registrations when its D-Bus connection disappears.
 
 `blair-client` wraps all of this behind `BlairClient` and a single merged
 `Events` stream:
@@ -129,7 +136,8 @@ Each user gets their own config, created the first time `blair` runs for
 them. There is no system-wide config file — Blair never reads `/etc`.
 
 See `packaging/config/compositor.toml` for backend selection, the primary
-client command, window sizing, and server-side decoration fallback settings.
+client command, window sizing, and server-side decoration settings. Set
+`decoration.corner_radius` to control rounded server-side window frames.
 
 ## Session files
 
