@@ -1,0 +1,20 @@
+[general]
+primary_client = "coconut"
+spawn_primary_client = true
+backend = "auto"
+
+[window]
+default_width = 900
+default_height = 600
+server_side_decorations = true
+
+[decoration]
+titlebar_height = 32
+border_width = 4
+active_titlebar = "#1e1e2e"
+inactive_titlebar = "#11111b"
+active_border = "#89b4fa"
+inactive_border = "#313244"
+close_button = "#f38ba8"
+maximize_button = "#a6e3a1"
+minimize_button = "#f9e2af"

@@ -1,0 +1,45 @@
+#!/bin/sh
+export XDG_CURRENT_DESKTOP=Blair
+export XDG_SESSION_DESKTOP=Blair
+export XDG_SESSION_TYPE=wayland
+
+export RUST_LOG="${RUST_LOG:-blair=trace,warn}"
+export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+
+export EGL_LOG_LEVEL="${EGL_LOG_LEVEL:-warning}"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/blair"
+mkdir -p "$STATE_DIR"
+LOGFILE="$STATE_DIR/compositor.log"
+
+if [ -f "$LOGFILE" ]; then
+    mv -f "$LOGFILE" "$LOGFILE.1"
+fi
+
+echo "--- blair-session start $(date) (user=$USER, tty=$(tty 2>/dev/null)) ---" > "$LOGFILE"
+
+# TTY sessions need explicit activation for DRM master access.
+if [ -n "$XDG_SESSION_ID" ] && command -v loginctl >/dev/null 2>&1; then
+    loginctl activate "$XDG_SESSION_ID" 2>>"$LOGFILE" || true
+fi
+
+blair >> "$LOGFILE" 2>&1
+ec=$?
+
+echo "--- blair exited rc=$ec at $(date) ---" >> "$LOGFILE"
+
+if command -v setterm >/dev/null 2>&1; then
+    setterm --reset 2>/dev/null || true
+fi
+
+if [ "$ec" -ne 0 ] && [ -t 1 ]; then
+    echo
+    echo "============================================================"
+    echo "blair exited with code $ec"
+    echo "Last 40 log lines (full log: $LOGFILE):"
+    echo "============================================================"
+    tail -n 40 "$LOGFILE"
+    echo "============================================================"
+fi
+
+exit $ec

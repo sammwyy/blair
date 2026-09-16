@@ -1,0 +1,16 @@
+[package]
+name = "blair-dbus"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "D-Bus interface for the Blair Wayland compositor"
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+blair-protocol.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true

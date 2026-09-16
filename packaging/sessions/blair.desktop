@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Blair
+Comment=Blair compositor session
+Exec=blair-session
+Type=Application
+DesktopNames=Blair

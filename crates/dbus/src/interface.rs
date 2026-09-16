@@ -1,0 +1,159 @@
+use std::sync::mpsc::Sender;
+
+use tokio::sync::oneshot;
+use zbus::{interface, object_server::SignalEmitter};
+
+use crate::{command::Command, wire::DbusWindow};
+
+pub struct CompositorInterface {
+    commands: Sender<Command>,
+}
+
+impl CompositorInterface {
+    pub fn new(commands: Sender<Command>) -> Self {
+        Self { commands }
+    }
+
+    async fn call<T>(&self, build: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.commands.send(build(reply_tx)).ok()?;
+        reply_rx.await.ok()
+    }
+}
+
+#[interface(
+    interface = "org.blair.Compositor1",
+    proxy(
+        async_name = "CompositorProxy",
+        gen_blocking = false,
+        assume_defaults = true,
+        default_service = "org.blair.Compositor",
+        default_path = "/org/blair/Compositor",
+        visibility = "pub",
+    )
+)]
+impl CompositorInterface {
+    async fn list_windows(&self) -> Vec<DbusWindow> {
+        self.call(Command::ListWindows).await.unwrap_or_default()
+    }
+
+    async fn focus_window(&self, id: u64) -> bool {
+        self.call(|reply| Command::FocusWindow(id, reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn close_window(&self, id: u64) -> bool {
+        self.call(|reply| Command::CloseWindow(id, reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn minimize_window(&self, id: u64) -> bool {
+        self.call(|reply| Command::MinimizeWindow(id, reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn toggle_maximize_window(&self, id: u64) -> bool {
+        self.call(|reply| Command::ToggleMaximizeWindow(id, reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn move_resize_window(&self, id: u64, x: i32, y: i32, width: i32, height: i32) -> bool {
+        self.call(|reply| Command::MoveResizeWindow(id, (x, y, width, height), reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn work_area(&self, output: &str) -> (i32, i32, i32, i32) {
+        self.call(|reply| Command::WorkArea(output.to_owned(), reply))
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn outputs(&self) -> Vec<String> {
+        self.call(Command::Outputs).await.unwrap_or_default()
+    }
+
+    async fn bind_shortcut(&self, id: &str, accelerator: &str) -> bool {
+        self.call(|reply| Command::BindShortcut(id.to_owned(), accelerator.to_owned(), reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn unbind_shortcut(&self, id: &str) {
+        let _ = self.commands.send(Command::UnbindShortcut(id.to_owned()));
+    }
+
+    async fn quit(&self) {
+        let _ = self.commands.send(Command::Quit);
+    }
+
+    #[zbus(signal)]
+    pub async fn window_opened(
+        emitter: &SignalEmitter<'_>,
+        id: u64,
+        title: &str,
+        app_id: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_closed(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_focused(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn focus_cleared(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_title_changed(
+        emitter: &SignalEmitter<'_>,
+        id: u64,
+        title: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_geometry_changed(
+        emitter: &SignalEmitter<'_>,
+        id: u64,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_minimized(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_restored(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_maximized(
+        emitter: &SignalEmitter<'_>,
+        id: u64,
+        maximized: bool,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn output_added(emitter: &SignalEmitter<'_>, name: &str) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn output_removed(emitter: &SignalEmitter<'_>, name: &str) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn work_area_changed(
+        emitter: &SignalEmitter<'_>,
+        output: &str,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn shortcut_activated(emitter: &SignalEmitter<'_>, id: &str) -> zbus::Result<()>;
+}

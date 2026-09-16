@@ -1,0 +1,24 @@
+[package]
+name = "blair"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+signal-hook.workspace = true
+blair-protocol.workspace = true
+blair-dbus.workspace = true
+smithay.workspace = true
+wayland-server.workspace = true

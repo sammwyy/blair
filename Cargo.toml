@@ -1,0 +1,49 @@
+[workspace]
+members = [
+  "apps/compositor",
+  "crates/protocol",
+  "crates/dbus",
+  "crates/client",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+authors = ["Blair contributors"]
+description = "A small Wayland compositor built with Smithay"
+keywords = ["wayland", "compositor", "smithay"]
+categories = ["gui"]
+homepage = "https://github.com/sammwyy/blair"
+repository = "https://github.com/sammwyy/blair"
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+signal-hook = "0.3"
+smithay = { version = "0.7.0", features = [
+  "wayland_frontend",
+  "backend_winit",
+  "backend_drm",
+  "backend_gbm",
+  "backend_egl",
+  "backend_udev",
+  "backend_session_libseat",
+  "backend_libinput",
+  "use_system_lib",
+  "renderer_gl",
+  "renderer_pixman",
+  "desktop",
+] }
+wayland-server = "0.31"
+
+blair-protocol = { version = "0.1.0", path = "crates/protocol" }
+blair-dbus = { version = "0.1.0", path = "crates/dbus" }
+blair-client = { version = "0.1.0", path = "crates/client" }

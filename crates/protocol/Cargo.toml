@@ -1,0 +1,9 @@
+[package]
+name = "blair-protocol"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared protocol types for the Blair Wayland compositor"
+homepage.workspace = true
+repository.workspace = true
