@@ -201,6 +201,15 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             }
         }
 
+        // Service pending client requests before the render/submit below,
+        // which blocks on the host compositor's vsync — otherwise a
+        // freshly connected client (e.g. an autostarted one) can sit
+        // unanswered for a full host frame before its first response.
+        display
+            .dispatch_clients(&mut state)
+            .context("dispatch error")?;
+        display.flush_clients().context("flush error")?;
+
         sync_host_cursor(&state, backend.window());
 
         // Skip rendering entirely unless something actually changed.
@@ -262,10 +271,6 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             backend.submit(Some(&[damage])).ok();
         }
 
-        display
-            .dispatch_clients(&mut state)
-            .context("dispatch error")?;
-        display.flush_clients().context("flush error")?;
         if let Some(window) = state.take_pending_move_request() {
             if let Some(pointer) = state.seat.get_pointer() {
                 let pos = pointer.current_location();
