@@ -21,6 +21,17 @@ focus_new_windows = true
 focus_previous_on_close = true
 warp_cursor = false
 
+[animations]
+enabled = true
+
+[animations.window_open]
+duration = 150
+curve = "ease-out"
+
+[animations.workspace]
+duration = 200
+curve = "ease-in-out"
+
 [integrations]
 # Enables the built-in D-Bus transport integration.
 dbus = true

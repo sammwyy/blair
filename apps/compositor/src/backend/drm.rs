@@ -519,6 +519,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         }
         loop_data.state.space.refresh();
         loop_data.state.popup_manager.cleanup();
+        if loop_data.state.animations_active() {
+            loop_data.need_frame = true;
+        }
 
         if loop_data.need_frame && loop_data.session_active {
             loop_data.need_frame = false;

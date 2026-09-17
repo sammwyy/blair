@@ -144,6 +144,27 @@ focus new windows, and restore the most recently focused surviving window when
 the focused one closes. Cursor warping remains disabled by default and is not
 performed implicitly.
 
+## Animations
+
+```toml
+[animations]
+enabled = true
+
+[animations.window_open]
+duration = 150
+curve = "ease-out"
+
+[animations.workspace]
+duration = 200
+curve = "ease-in-out"
+```
+
+`linear`, `ease-in`, `ease-out`, and `ease-in-out` are supported. Window-open
+and workspace transitions currently animate with a compositor-side fade;
+disable all animation with `animations.enabled = false`. The schema also
+reserves `animations.window_close` and `animations.minimize` for future
+surface-snapshot transitions.
+
 ## Install
 
 ```bash

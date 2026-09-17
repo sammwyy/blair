@@ -20,6 +20,7 @@ pub struct CompositorConfig {
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
     pub focus: FocusConfig,
+    pub animations: AnimationsConfig,
     pub autostart: Vec<AutostartConfig>,
     pub rules: Vec<WindowRuleConfig>,
     pub input: InputConfig,
@@ -71,6 +72,73 @@ impl Default for FocusConfig {
             focus_previous_on_close: true,
             warp_cursor: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnimationsConfig {
+    pub enabled: bool,
+    pub window_open: AnimationConfig,
+    pub window_close: AnimationConfig,
+    pub workspace: AnimationConfig,
+    pub minimize: AnimationConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnimationConfig {
+    pub duration: u64,
+    pub curve: AnimationCurve,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnimationCurve {
+    Linear,
+    EaseIn,
+    EaseOut,
+    #[default]
+    EaseInOut,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            duration: 150,
+            curve: AnimationCurve::EaseOut,
+        }
+    }
+}
+
+impl Default for AnimationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_open: AnimationConfig::default(),
+            window_close: AnimationConfig::default(),
+            workspace: AnimationConfig {
+                duration: 200,
+                curve: AnimationCurve::EaseInOut,
+            },
+            minimize: AnimationConfig::default(),
+        }
+    }
+}
+
+impl AnimationsConfig {
+    fn validate(&self) -> Result<()> {
+        for (name, animation) in [
+            ("window_open", &self.window_open),
+            ("window_close", &self.window_close),
+            ("workspace", &self.workspace),
+            ("minimize", &self.minimize),
+        ] {
+            if animation.duration > 10_000 {
+                anyhow::bail!("animations.{name}.duration must be at most 10000 ms");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -723,6 +791,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     config.input.validate()?;
     config.workspaces.validate()?;
     config.decorations.validate()?;
+    config.animations.validate()?;
     Ok(config)
 }
 
@@ -1110,5 +1179,16 @@ mod tests {
         assert!(config.focus.focus_new_windows);
         assert!(config.focus.focus_previous_on_close);
         assert!(!config.focus.warp_cursor);
+    }
+
+    #[test]
+    fn parses_animation_settings() {
+        let config: CompositorConfig = toml::from_str(
+            "[animations]\nenabled = true\n\n[animations.window_open]\nduration = 150\ncurve = \"ease-out\"\n\n[animations.workspace]\nduration = 200\ncurve = \"ease-in-out\"\n",
+        )
+        .unwrap();
+        config.animations.validate().unwrap();
+        assert_eq!(config.animations.window_open.duration, 150);
+        assert_eq!(config.animations.workspace.curve, AnimationCurve::EaseInOut);
     }
 }

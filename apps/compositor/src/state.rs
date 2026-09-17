@@ -58,8 +58,8 @@ use smithay::{
 };
 
 use crate::config::{
-    BindingConfig, CompositorConfig, DecorationModeConfig, WindowLayout, WindowRuleConfig,
-    WorkspacesConfig,
+    AnimationConfig, AnimationCurve, BindingConfig, CompositorConfig, DecorationModeConfig,
+    WindowLayout, WindowRuleConfig, WorkspacesConfig,
 };
 use crate::shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry};
 
@@ -96,6 +96,8 @@ pub struct BlairState {
     /// keeps every non-minimized window mapped for multi-output rendering.
     window_workspaces: HashMap<WindowId, u64>,
     window_rule_state: HashMap<WindowId, AppliedWindowRule>,
+    window_opened_at: HashMap<WindowId, Instant>,
+    workspace_animation_started: HashMap<String, Instant>,
     temporary_rules: HashMap<String, HashMap<String, WindowRuleConfig>>,
     next_workspace_id: u64,
     pub shortcuts: ShortcutRegistry,
@@ -254,6 +256,8 @@ impl BlairState {
             focused_output: None,
             window_workspaces: HashMap::new(),
             window_rule_state: HashMap::new(),
+            window_opened_at: HashMap::new(),
+            workspace_animation_started: HashMap::new(),
             temporary_rules: HashMap::new(),
             next_workspace_id,
             shortcuts: ShortcutRegistry::default(),
@@ -622,11 +626,26 @@ impl BlairState {
             .is_some_and(|workspace| *workspace == self.workspace_for_output(output))
     }
 
-    pub fn window_opacity(&self, window: &Window) -> f32 {
-        self.window_id(window)
+    pub fn window_opacity(&self, window: &Window, output: &Output) -> f32 {
+        let rule_opacity = self
+            .window_id(window)
             .and_then(|id| self.window_rule_state.get(&id))
             .and_then(|rule| rule.opacity)
-            .unwrap_or(1.0)
+            .unwrap_or(1.0);
+        if !self.config.animations.enabled {
+            return rule_opacity;
+        }
+        let opened = self
+            .window_id(window)
+            .and_then(|id| self.window_opened_at.get(&id))
+            .map(|started| animation_progress(*started, &self.config.animations.window_open))
+            .unwrap_or(1.0);
+        let workspace = self
+            .workspace_animation_started
+            .get(&output.name())
+            .map(|started| animation_progress(*started, &self.config.animations.workspace))
+            .unwrap_or(1.0);
+        rule_opacity * opened * workspace
     }
 
     pub fn window_always_on_top(&self, window: &Window) -> bool {
@@ -634,6 +653,15 @@ impl BlairState {
             .and_then(|id| self.window_rule_state.get(&id))
             .and_then(|rule| rule.always_on_top)
             .unwrap_or(false)
+    }
+
+    pub fn animations_active(&self) -> bool {
+        self.config.animations.enabled
+            && (self.window_opened_at.values().any(|started| {
+                started.elapsed().as_millis() < self.config.animations.window_open.duration as u128
+            }) || self.workspace_animation_started.values().any(|started| {
+                started.elapsed().as_millis() < self.config.animations.workspace.duration as u128
+            }))
     }
 
     /// Registers a non-persistent rule owned by an integration client.
@@ -788,8 +816,12 @@ impl BlairState {
             .find(|(name, workspace)| **workspace == id && **name != output)
             .map(|(name, workspace)| (name.clone(), *workspace))
         {
+            self.workspace_animation_started
+                .insert(other_output.clone(), Instant::now());
             self.output_workspaces.insert(other_output, current_id);
         }
+        self.workspace_animation_started
+            .insert(output.clone(), Instant::now());
         self.output_workspaces.insert(output, id);
         self.focused_window = None;
 
@@ -1238,6 +1270,25 @@ fn spawn_autostart_command(command: &str) -> std::io::Result<Child> {
     Command::new("sh").arg("-c").arg(command).spawn()
 }
 
+fn animation_progress(started: Instant, animation: &AnimationConfig) -> f32 {
+    if animation.duration == 0 {
+        return 1.0;
+    }
+    let t = (started.elapsed().as_secs_f32() * 1_000.0 / animation.duration as f32).min(1.0);
+    match animation.curve {
+        AnimationCurve::Linear => t,
+        AnimationCurve::EaseIn => t * t,
+        AnimationCurve::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+        AnimationCurve::EaseInOut => {
+            if t < 0.5 {
+                2.0 * t * t
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+            }
+        }
+    }
+}
+
 fn rule_matches(rule: &WindowRuleConfig, title: &str, app_id: Option<&str>) -> bool {
     if rule
         .app_id
@@ -1437,6 +1488,8 @@ impl XdgShellHandler for BlairState {
         self.space.map_element(window.clone(), pos, true);
         self.window_workspaces.insert(id, workspace_id);
         self.window_rule_state.insert(id, rules.clone());
+        self.window_opened_at.insert(id, Instant::now());
+        self.request_redraw();
         if let Some(decoration) = rules.decoration {
             let mode = if decoration {
                 DecorationMode::ServerSide
@@ -1475,6 +1528,7 @@ impl XdgShellHandler for BlairState {
         if let Some(id) = Self::toplevel_window_id(&surface) {
             let workspace_id = self.window_workspaces.remove(&id);
             self.window_rule_state.remove(&id);
+            self.window_opened_at.remove(&id);
             for workspace in &mut self.workspaces {
                 workspace
                     .minimized_windows

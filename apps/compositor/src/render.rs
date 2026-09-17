@@ -124,7 +124,7 @@ pub fn window_content_elements(
                 &wl_surface,
                 (loc.x, loc.y),
                 1.0,
-                state.window_opacity(&window),
+                state.window_opacity(&window, output),
                 Kind::Unspecified,
             );
             Some((window, elements))
@@ -160,7 +160,7 @@ pub fn popup_elements(
                 popup.wl_surface(),
                 (x, y),
                 1.0,
-                state.window_opacity(&window),
+                state.window_opacity(&window, output),
                 Kind::Unspecified,
             ));
         }
