@@ -1,33 +1,37 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::decorations::DecorationTheme;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GeneralConfig {
     /// Command started after the Wayland socket is ready.
     pub primary_client: String,
     pub spawn_primary_client: bool,
     pub backend: String,
+    pub hot_reload: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     pub default_width: i32,
     pub default_height: i32,
@@ -44,8 +48,8 @@ pub enum WindowLayout {
     Tiling,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DecorationConfig {
     pub titlebar_height: i32,
     pub border_width: i32,
@@ -65,6 +69,7 @@ impl Default for GeneralConfig {
             primary_client: "coconut".to_string(),
             spawn_primary_client: true,
             backend: "auto".to_string(),
+            hot_reload: true,
         }
     }
 }
@@ -189,6 +194,83 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     merged
         .try_into()
         .context("merged compositor configuration does not match the schema")
+}
+
+const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
+
+/// Watches the configuration roots and reports a reload after changes settle.
+///
+/// The watcher intentionally only observes existing roots. Creating a new
+/// configuration root still requires a compositor restart, while edits to an
+/// active configuration are picked up immediately.
+pub struct ConfigWatcher {
+    _watcher: RecommendedWatcher,
+    events: Receiver<notify::Result<notify::Event>>,
+    last_event: Option<Instant>,
+    paths: ConfigPaths,
+}
+
+impl ConfigWatcher {
+    pub fn new(paths: &ConfigPaths) -> Result<Self> {
+        let (sender, events) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event| {
+            let _ = sender.send(event);
+        })
+        .context("failed to initialize configuration watcher")?;
+
+        for directory in [&paths.system_dir, &paths.user_dir] {
+            if directory.is_dir() {
+                watcher
+                    .watch(directory, RecursiveMode::Recursive)
+                    .with_context(|| {
+                        format!("failed to watch config directory {}", directory.display())
+                    })?;
+                tracing::debug!(path = %directory.display(), "watching config directory");
+            }
+        }
+
+        Ok(Self {
+            _watcher: watcher,
+            events,
+            last_event: None,
+            paths: paths.clone(),
+        })
+    }
+
+    /// Returns true once filesystem activity has been quiet for the debounce
+    /// interval. Files are deliberately parsed only by the caller at that
+    /// point, never from the notify callback.
+    pub fn reload_due(&mut self) -> bool {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Ok(event) => {
+                    tracing::debug!(?event.kind, paths = ?event.paths, "config filesystem event");
+                    self.last_event = Some(Instant::now());
+                }
+                Err(error) => tracing::warn!(%error, "config watcher error"),
+            }
+        }
+
+        self.last_event
+            .is_some_and(|last_event| last_event.elapsed() >= RELOAD_DEBOUNCE)
+            && self.last_event.take().is_some()
+    }
+
+    pub fn reload_if_due(&mut self, state: &mut crate::state::BlairState) {
+        if !state.config.general.hot_reload || !self.reload_due() {
+            return;
+        }
+
+        match load_from_paths(&self.paths) {
+            Ok(next) => {
+                state.apply_config(next);
+                tracing::info!("configuration reloaded");
+            }
+            Err(error) => {
+                tracing::error!(%error, "configuration reload failed; keeping previous configuration")
+            }
+        }
+    }
 }
 
 fn config_fragments(directory: &Path) -> Result<Vec<PathBuf>> {
@@ -355,6 +437,25 @@ mod tests {
         let config = load_from_paths(&paths).unwrap();
         assert_eq!(config.general.primary_client, "coconut");
         assert!(!paths.user_config_path().exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn invalid_layer_is_rejected_before_any_config_is_applied() {
+        let root = scratch_dir("invalid-layer");
+        let paths = ConfigPaths {
+            system_dir: root.join("etc").join("blair"),
+            user_dir: root.join("user").join("blair"),
+        };
+        fs::create_dir_all(&paths.user_dir).unwrap();
+        fs::write(
+            paths.user_config_path(),
+            "[window]\ndefault_width = \"hello\"\n",
+        )
+        .unwrap();
+
+        assert!(load_from_paths(&paths).is_err());
 
         fs::remove_dir_all(&root).ok();
     }

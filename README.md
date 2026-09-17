@@ -143,6 +143,12 @@ Fragment files are read in lexicographic order, so numeric prefixes such as
 file uses the same schema, and a user may simply keep all settings in
 `~/.config/blair/config.toml`; `conf.d` is optional.
 
+Blair hot-reloads these existing paths by default, after a 100 ms debounce.
+Set `general.hot_reload = false` and restart to disable it. Reloads parse and
+validate every layer before applying the configuration; an invalid edit is
+logged and the last valid configuration remains active. Backend changes still
+require a compositor restart.
+
 See `packaging/config/config.toml` for backend selection, the primary client
 command, window sizing, and server-side decoration settings. Set
 `decoration.corner_radius` to control rounded server-side window frames.

@@ -26,6 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+notify = "6"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 signal-hook = "0.3"
 smithay = { version = "0.7.0", features = [

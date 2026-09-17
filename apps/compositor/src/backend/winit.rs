@@ -19,7 +19,7 @@ use smithay::{
 use wayland_server::ListeningSocket;
 
 use crate::{
-    config::CompositorConfig,
+    config::{CompositorConfig, ConfigPaths, ConfigWatcher},
     dbus,
     decorations::RoundedCornerShaders,
     input::{
@@ -47,6 +47,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     drop(temp_loop);
 
     let (dbus_service, events_tx) = dbus::start();
+    let mut config_watcher = start_config_watcher(&config);
     let mut state = BlairState::new(dh.clone(), loop_signal, config, events_tx);
 
     let (mut backend, mut winit) = winit::init::<GlesRenderer>()
@@ -135,6 +136,10 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             break;
         }
 
+        if let Some(watcher) = config_watcher.as_mut() {
+            watcher.reload_if_due(&mut state);
+        }
+
         if let Ok(Some(stream)) = listener.accept() {
             match display
                 .handle()
@@ -217,6 +222,21 @@ pub fn run(config: CompositorConfig) -> Result<()> {
 
     tracing::info!("compositor exiting");
     Ok(())
+}
+
+fn start_config_watcher(config: &CompositorConfig) -> Option<ConfigWatcher> {
+    if !config.general.hot_reload {
+        tracing::info!("configuration hot reload disabled");
+        return None;
+    }
+
+    match ConfigWatcher::new(&ConfigPaths::default()) {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            tracing::error!(%error, "failed to start config watcher; continuing without hot reload");
+            None
+        }
+    }
 }
 
 fn handle_input(

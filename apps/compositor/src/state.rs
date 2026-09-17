@@ -163,6 +163,37 @@ impl BlairState {
         std::mem::take(&mut self.redraw_requested)
     }
 
+    /// Applies the parts of a successfully parsed configuration that can
+    /// safely change while the compositor is running.
+    pub fn apply_config(&mut self, mut next: CompositorConfig) {
+        if self.config.general.backend != next.general.backend {
+            tracing::warn!(
+                old = %self.config.general.backend,
+                new = %next.general.backend,
+                "backend changes require a compositor restart"
+            );
+            next.general.backend = self.config.general.backend.clone();
+        }
+
+        if self.config.general.primary_client != next.general.primary_client
+            || self.config.general.spawn_primary_client != next.general.spawn_primary_client
+        {
+            tracing::info!("primary client settings will be used on the next compositor start");
+        }
+
+        let window_changed = self.config.window != next.window;
+        let decoration_changed = self.config.decoration != next.decoration;
+        let layout_changed = self.config.window.layout != next.window.layout;
+        self.config = next;
+
+        if layout_changed && self.config.window.layout == WindowLayout::Tiling {
+            self.tile_focused_window();
+        }
+        if window_changed || decoration_changed {
+            self.request_redraw();
+        }
+    }
+
     pub fn spawn_primary_client(&mut self) {
         if !self.config.general.spawn_primary_client {
             return;

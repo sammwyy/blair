@@ -2,6 +2,8 @@
 primary_client = "coconut"
 spawn_primary_client = true
 backend = "auto"
+# Watches existing configuration files and directories after startup.
+hot_reload = true
 
 [window]
 default_width = 900
