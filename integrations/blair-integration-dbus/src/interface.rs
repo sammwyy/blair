@@ -7,6 +7,7 @@ use crate::{
     command::Command,
     wire::{DbusWindow, DbusWorkspace},
 };
+use blair_protocol::{ShortcutBinding, ShortcutCommand};
 
 pub struct CompositorInterface {
     commands: Sender<Command>,
@@ -141,6 +142,50 @@ impl CompositorInterface {
         })
         .await
         .unwrap_or(false)
+    }
+
+    async fn configuration(&self) -> String {
+        self.call(Command::Configuration).await.unwrap_or_default()
+    }
+
+    async fn set_configuration(&self, configuration: &str) -> bool {
+        self.call(|reply| Command::SetConfiguration(configuration.to_owned(), reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Returns `(accelerator, command, argument)` records.  Command names
+    /// are defined by `blair-protocol::ShortcutCommand`.
+    async fn configured_shortcuts(&self) -> Vec<(String, String, String)> {
+        self.call(Command::ConfiguredShortcuts)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|binding| {
+                (
+                    binding.accelerator,
+                    binding.command.id().to_owned(),
+                    binding.argument.unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    async fn set_configured_shortcuts(&self, bindings: Vec<(String, String, String)>) -> bool {
+        let mut parsed = Vec::with_capacity(bindings.len());
+        for (accelerator, command, argument) in bindings {
+            let Some(command) = ShortcutCommand::parse(&command) else {
+                return false;
+            };
+            parsed.push(ShortcutBinding {
+                accelerator,
+                command,
+                argument: (!argument.trim().is_empty()).then_some(argument),
+            });
+        }
+        self.call(|reply| Command::SetConfiguredShortcuts(parsed, reply))
+            .await
+            .unwrap_or(false)
     }
 
     async fn bind_shortcut(

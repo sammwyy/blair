@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use blair_protocol::{CompositorEvent, Rect, WindowId, WindowInfo, WorkspaceInfo};
+use blair_protocol::{CompositorEvent, Rect, ShortcutBinding, WindowId, WindowInfo, WorkspaceInfo};
 
 /// Receives compositor events. Integrations provide implementations for their
 /// own transport; the compositor never needs to know the transport details.
@@ -56,6 +56,12 @@ pub trait CompositorApi {
         corner_radius: i32,
         server_side_decorations: bool,
     ) -> bool;
+    fn configuration(&self) -> String;
+    fn set_configuration(&mut self, configuration: &str) -> bool;
+    /// Persistent shortcuts owned by Blair's configuration, rather than a
+    /// temporary shortcut registration owned by a D-Bus client.
+    fn configured_shortcuts(&self) -> Vec<ShortcutBinding>;
+    fn set_configured_shortcuts(&mut self, bindings: Vec<ShortcutBinding>) -> bool;
     fn bind_shortcut(&mut self, client: &str, id: &str, accelerator: &str) -> bool;
     fn unbind_shortcut(&mut self, client: &str, id: &str);
     /// Register a temporary rule using the same TOML table schema as `[[rules]]`.

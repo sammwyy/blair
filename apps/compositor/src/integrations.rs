@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use blair_integration::{CompositorApi, EventChannel, EventFanout, Transport};
 use blair_integration_dbus::DbusIntegration;
-use blair_protocol::{Rect, WindowId, WindowInfo};
+use blair_protocol::{Rect, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
 
-use crate::config::{DecorationModeConfig, WindowLayout};
+use crate::config::{BindingConfig, DecorationModeConfig, WindowLayout};
 use crate::state::BlairState;
 
 pub struct Integrations {
@@ -174,6 +174,116 @@ impl CompositorApi for BlairState {
             server_side_decorations,
             "window settings updated"
         );
+        true
+    }
+
+    fn configuration(&self) -> String {
+        toml::to_string_pretty(&self.config).unwrap_or_default()
+    }
+
+    fn set_configuration(&mut self, configuration: &str) -> bool {
+        let Ok(next) = toml::from_str(configuration) else {
+            return false;
+        };
+        if crate::config::validate(&next).is_err() || crate::config::save(&next).is_err() {
+            return false;
+        }
+        self.apply_config(next);
+        true
+    }
+
+    fn configured_shortcuts(&self) -> Vec<ShortcutBinding> {
+        self.config
+            .bindings
+            .iter()
+            .filter_map(
+                |binding| match (&binding.action, &binding.exec, binding.value) {
+                    (Some(action), None, None) if action == "close" => Some(ShortcutBinding {
+                        accelerator: binding.accelerator(),
+                        command: ShortcutCommand::Close,
+                        argument: None,
+                    }),
+                    (Some(action), None, Some(value)) if action == "workspace" => {
+                        Some(ShortcutBinding {
+                            accelerator: binding.accelerator(),
+                            command: ShortcutCommand::Workspace,
+                            argument: Some(value.to_string()),
+                        })
+                    }
+                    (Some(action), None, Some(value)) if action == "move-to-workspace" => {
+                        Some(ShortcutBinding {
+                            accelerator: binding.accelerator(),
+                            command: ShortcutCommand::MoveToWorkspace,
+                            argument: Some(value.to_string()),
+                        })
+                    }
+                    (None, Some(command), None) => Some(ShortcutBinding {
+                        accelerator: binding.accelerator(),
+                        command: ShortcutCommand::Execute,
+                        argument: Some(command.clone()),
+                    }),
+                    _ => None,
+                },
+            )
+            .collect()
+    }
+
+    fn set_configured_shortcuts(&mut self, bindings: Vec<ShortcutBinding>) -> bool {
+        let mut configured = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let keys = binding
+                .accelerator
+                .split('+')
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let next = match binding.command {
+                ShortcutCommand::Close if binding.argument.is_none() => BindingConfig {
+                    keys,
+                    action: Some("close".to_owned()),
+                    exec: None,
+                    value: None,
+                },
+                ShortcutCommand::Workspace | ShortcutCommand::MoveToWorkspace => {
+                    let Some(value) = binding
+                        .argument
+                        .as_deref()
+                        .and_then(|value| value.parse().ok())
+                    else {
+                        return false;
+                    };
+                    BindingConfig {
+                        keys,
+                        action: Some(binding.command.id().to_owned()),
+                        exec: None,
+                        value: Some(value),
+                    }
+                }
+                ShortcutCommand::Execute => {
+                    let Some(command) = binding.argument.filter(|value| !value.trim().is_empty())
+                    else {
+                        return false;
+                    };
+                    BindingConfig {
+                        keys,
+                        action: None,
+                        exec: Some(command),
+                        value: None,
+                    }
+                }
+                _ => return false,
+            };
+            if next.validate(configured.len() + 1).is_err() {
+                return false;
+            }
+            configured.push(next);
+        }
+        self.config.bindings = configured;
+        if crate::config::save(&self.config).is_err() {
+            return false;
+        }
+        self.replace_static_bindings(&self.config.bindings.clone());
         true
     }
 

@@ -776,6 +776,13 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     let config: CompositorConfig = merged
         .try_into()
         .context("merged compositor configuration does not match the schema")?;
+    validate(&config)?;
+    Ok(config)
+}
+
+/// Validate a configuration received through an integration before it is
+/// persisted or applied to the running compositor.
+pub fn validate(config: &CompositorConfig) -> Result<()> {
     for (index, binding) in config.bindings.iter().enumerate() {
         binding.validate(index + 1)?;
     }
@@ -792,7 +799,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     config.workspaces.validate()?;
     config.decorations.validate()?;
     config.animations.validate()?;
-    Ok(config)
+    Ok(())
 }
 
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);

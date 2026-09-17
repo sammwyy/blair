@@ -1,5 +1,5 @@
 use blair_integration_dbus::CompositorProxy;
-use blair_protocol::{Rect, WindowId, WindowInfo};
+use blair_protocol::{Rect, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
 use zbus::Connection;
 
 use crate::Events;
@@ -87,6 +87,50 @@ impl BlairClient {
                 border_width,
                 corner_radius,
                 server_side_decorations,
+            )
+            .await
+    }
+
+    pub async fn configuration(&self) -> zbus::Result<String> {
+        self.proxy.configuration().await
+    }
+
+    pub async fn set_configuration(&self, configuration: &str) -> zbus::Result<bool> {
+        self.proxy.set_configuration(configuration).await
+    }
+
+    pub async fn configured_shortcuts(&self) -> zbus::Result<Vec<ShortcutBinding>> {
+        Ok(self
+            .proxy
+            .configured_shortcuts()
+            .await?
+            .into_iter()
+            .filter_map(|(accelerator, command, argument)| {
+                Some(ShortcutBinding {
+                    accelerator,
+                    command: ShortcutCommand::parse(&command)?,
+                    argument: (!argument.trim().is_empty()).then_some(argument),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn set_configured_shortcuts(
+        &self,
+        bindings: &[ShortcutBinding],
+    ) -> zbus::Result<bool> {
+        self.proxy
+            .set_configured_shortcuts(
+                bindings
+                    .iter()
+                    .map(|binding| {
+                        (
+                            binding.accelerator.clone(),
+                            binding.command.id().to_owned(),
+                            binding.argument.clone().unwrap_or_default(),
+                        )
+                    })
+                    .collect(),
             )
             .await
     }

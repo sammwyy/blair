@@ -287,7 +287,7 @@ impl BlairState {
         self.events.publish(event);
     }
 
-    fn replace_static_bindings(&mut self, bindings: &[BindingConfig]) {
+    pub(crate) fn replace_static_bindings(&mut self, bindings: &[BindingConfig]) {
         self.shortcuts.unregister_client(CONFIG_BINDING_OWNER);
         self.static_bindings.clear();
         for (index, binding) in bindings.iter().enumerate() {

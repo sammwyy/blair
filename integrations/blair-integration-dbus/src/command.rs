@@ -1,3 +1,4 @@
+use blair_protocol::ShortcutBinding;
 use tokio::sync::oneshot;
 
 use crate::wire::{DbusWindow, DbusWorkspace};
@@ -19,6 +20,10 @@ pub enum Command {
     LayoutSettings(oneshot::Sender<(String, i32, i32)>),
     SetLayoutSettings(String, i32, i32, oneshot::Sender<bool>),
     SetWindowSettings(i32, i32, i32, bool, oneshot::Sender<bool>),
+    Configuration(oneshot::Sender<String>),
+    SetConfiguration(String, oneshot::Sender<bool>),
+    ConfiguredShortcuts(oneshot::Sender<Vec<ShortcutBinding>>),
+    SetConfiguredShortcuts(Vec<ShortcutBinding>, oneshot::Sender<bool>),
     BindShortcut {
         client: String,
         id: String,

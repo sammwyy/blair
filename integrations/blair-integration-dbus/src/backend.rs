@@ -131,6 +131,18 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
                     server_side_decorations,
                 ));
             }
+            Command::Configuration(reply) => {
+                let _ = reply.send(backend.configuration());
+            }
+            Command::SetConfiguration(configuration, reply) => {
+                let _ = reply.send(backend.set_configuration(&configuration));
+            }
+            Command::ConfiguredShortcuts(reply) => {
+                let _ = reply.send(backend.configured_shortcuts());
+            }
+            Command::SetConfiguredShortcuts(bindings, reply) => {
+                let _ = reply.send(backend.set_configured_shortcuts(bindings));
+            }
             Command::BindShortcut {
                 client,
                 id,
