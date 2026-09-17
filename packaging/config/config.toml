@@ -9,6 +9,21 @@ hot_reload = true
 # Enables the built-in D-Bus transport integration.
 dbus = true
 
+[input.keyboard]
+layout = "us"
+variant = ""
+repeat_delay = 250
+repeat_rate = 35
+
+[input.mouse]
+sensitivity = 0.0
+acceleration = "adaptive"
+
+[input.touchpad]
+tap = true
+natural_scroll = true
+disable_while_typing = true
+
 [[bindings]]
 keys = ["SUPER", "Q"]
 action = "close"

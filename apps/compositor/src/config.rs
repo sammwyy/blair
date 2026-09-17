@@ -19,6 +19,7 @@ pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
+    pub input: InputConfig,
     pub outputs: BTreeMap<String, OutputConfig>,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
@@ -38,6 +39,98 @@ pub struct GeneralConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct IntegrationsConfig {
     pub dbus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InputConfig {
+    pub keyboard: KeyboardConfig,
+    pub mouse: MouseConfig,
+    pub touchpad: TouchpadConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeyboardConfig {
+    pub layout: String,
+    pub variant: String,
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MouseConfig {
+    pub sensitivity: f64,
+    pub acceleration: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TouchpadConfig {
+    pub tap: bool,
+    pub natural_scroll: bool,
+    pub disable_while_typing: bool,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            keyboard: KeyboardConfig::default(),
+            mouse: MouseConfig::default(),
+            touchpad: TouchpadConfig::default(),
+        }
+    }
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        Self {
+            layout: "us".to_string(),
+            variant: String::new(),
+            repeat_delay: 250,
+            repeat_rate: 35,
+        }
+    }
+}
+
+impl Default for MouseConfig {
+    fn default() -> Self {
+        Self {
+            sensitivity: 0.0,
+            acceleration: "adaptive".to_string(),
+        }
+    }
+}
+
+impl Default for TouchpadConfig {
+    fn default() -> Self {
+        Self {
+            tap: true,
+            natural_scroll: true,
+            disable_while_typing: true,
+        }
+    }
+}
+
+impl InputConfig {
+    fn validate(&self) -> Result<()> {
+        if self.keyboard.layout.trim().is_empty() {
+            anyhow::bail!("keyboard layout cannot be empty");
+        }
+        if !(0..=2_000).contains(&self.keyboard.repeat_delay)
+            || !(1..=100).contains(&self.keyboard.repeat_rate)
+        {
+            anyhow::bail!("keyboard repeat_delay must be 0..=2000 and repeat_rate 1..=100");
+        }
+        if !self.mouse.sensitivity.is_finite() || !(-1.0..=1.0).contains(&self.mouse.sensitivity) {
+            anyhow::bail!("mouse sensitivity must be between -1.0 and 1.0");
+        }
+        if !matches!(self.mouse.acceleration.as_str(), "adaptive" | "flat") {
+            anyhow::bail!("mouse acceleration must be adaptive or flat");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +446,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     for (name, output) in &config.outputs {
         output.validate(name)?;
     }
+    config.input.validate()?;
     Ok(config)
 }
 
@@ -658,5 +752,15 @@ mod tests {
         }
         .validate("DP-1")
         .is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_input_settings() {
+        let mut input = InputConfig::default();
+        input.mouse.sensitivity = 1.1;
+        assert!(input.validate().is_err());
+        input.mouse.sensitivity = 0.0;
+        input.mouse.acceleration = "invalid".to_string();
+        assert!(input.validate().is_err());
     }
 }

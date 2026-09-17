@@ -218,6 +218,29 @@ The built-in D-Bus transport is enabled by default with
 transport; additional transports can implement the transport-neutral
 `blair-integration` contracts.
 
+## Input
+
+    [input.keyboard]
+    layout = "us"
+    variant = ""
+    repeat_delay = 250
+    repeat_rate = 35
+
+    [input.mouse]
+    sensitivity = 0.0
+    acceleration = "adaptive" # or "flat"
+
+    [input.touchpad]
+    tap = true
+    natural_scroll = true
+    disable_while_typing = true
+
+Keyboard layout and repeat are applied through XKB. On DRM, mouse acceleration
+and sensitivity plus touchpad tap, natural scrolling, and disable-while-typing
+are applied through libinput when each device appears; unsupported options are
+ignored per-device. The nested backend receives its pointer configuration from
+its host compositor. Input configuration changes require a restart.
+
 ## Workspaces
 
 Blair starts with workspace `1`. The D-Bus interface

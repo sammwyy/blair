@@ -146,8 +146,17 @@ impl BlairState {
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "blair-seat-0");
-        seat.add_keyboard(XkbConfig::default(), 200, 25)
-            .expect("failed to init keyboard");
+        let keyboard_config = XkbConfig {
+            layout: &config.input.keyboard.layout,
+            variant: &config.input.keyboard.variant,
+            ..Default::default()
+        };
+        seat.add_keyboard(
+            keyboard_config,
+            config.input.keyboard.repeat_delay,
+            config.input.keyboard.repeat_rate,
+        )
+        .expect("failed to init keyboard");
         seat.add_pointer();
 
         let mut state = Self {
@@ -293,6 +302,10 @@ impl BlairState {
         if self.config.outputs != next.outputs {
             tracing::warn!("output changes require a compositor restart");
             next.outputs = self.config.outputs.clone();
+        }
+        if self.config.input != next.input {
+            tracing::warn!("input changes require a compositor restart");
+            next.input = self.config.input.clone();
         }
 
         if self.config.general.primary_client != next.general.primary_client

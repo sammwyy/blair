@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use smithay::reexports::input::Libinput;
+use smithay::reexports::input::{AccelProfile, Device as LibinputDevice, Libinput};
 use smithay::{
     backend::{
         allocator::{
@@ -49,7 +49,9 @@ use smithay::{
 use wayland_server::ListeningSocket;
 
 use crate::{
-    config::{CompositorConfig, ConfigPaths, ConfigWatcher, OutputConfig, OutputTransform},
+    config::{
+        CompositorConfig, ConfigPaths, ConfigWatcher, InputConfig, OutputConfig, OutputTransform,
+    },
     decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
@@ -761,7 +763,8 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
         ..
     } = data;
     match event {
-        InputEvent::DeviceAdded { device } => {
+        InputEvent::DeviceAdded { mut device } => {
+            configure_input_device(&mut device, &state.config.input);
             debug_overlay.device_count += 1;
             debug_overlay.last_device = device.name().to_string();
             log_input_device("input device added", &device);
@@ -994,6 +997,30 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
             }
         }
         _ => {}
+    }
+}
+
+fn configure_input_device(device: &mut LibinputDevice, config: &InputConfig) {
+    let profile = match config.mouse.acceleration.as_str() {
+        "flat" => AccelProfile::Flat,
+        _ => AccelProfile::Adaptive,
+    };
+    if let Err(error) = device.config_accel_set_profile(profile) {
+        tracing::debug!(?error, device = %device.name(), "pointer acceleration profile unsupported");
+    }
+    if let Err(error) = device.config_accel_set_speed(config.mouse.sensitivity) {
+        tracing::debug!(?error, device = %device.name(), "pointer sensitivity unsupported");
+    }
+    if let Err(error) = device.config_tap_set_enabled(config.touchpad.tap) {
+        tracing::debug!(?error, device = %device.name(), "tap-to-click unsupported");
+    }
+    if let Err(error) =
+        device.config_scroll_set_natural_scroll_enabled(config.touchpad.natural_scroll)
+    {
+        tracing::debug!(?error, device = %device.name(), "natural scrolling unsupported");
+    }
+    if let Err(error) = device.config_dwt_set_enabled(config.touchpad.disable_while_typing) {
+        tracing::debug!(?error, device = %device.name(), "disable-while-typing unsupported");
     }
 }
 
