@@ -207,8 +207,25 @@ pub fn window_under_including_decoration(
     state: &BlairState,
     pos: Point<f64, Logical>,
 ) -> Option<Window> {
-    if let Some((window, _)) = state.space.element_under(pos) {
-        return Some(window.clone());
+    let output = state.space.outputs().find(|output| {
+        state
+            .space
+            .output_geometry(output)
+            .is_some_and(|geometry| geometry.to_f64().contains(pos))
+    })?;
+    if let Some(window) = crate::render::z_ordered_windows(state, output)
+        .into_iter()
+        .rev()
+        .find(|window| {
+            state.space.element_location(window).is_some_and(|loc| {
+                let relative = pos - loc.to_f64();
+                window
+                    .surface_under(relative, WindowSurfaceType::ALL)
+                    .is_some()
+            })
+        })
+    {
+        return Some(window);
     }
     if !state.config.window.server_side_decorations
         || matches!(
@@ -220,7 +237,7 @@ pub fn window_under_including_decoration(
     }
     let theme = decoration_theme(state);
     let point = CorePoint { x: pos.x, y: pos.y };
-    crate::render::z_ordered_windows(state)
+    crate::render::z_ordered_windows(state, output)
         .into_iter()
         .rev()
         .find(|window| {
@@ -298,10 +315,21 @@ pub fn window_surface_under(
     state: &BlairState,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
-    let (window, render_loc) = state.space.element_under(pos)?;
-    let relative = pos - render_loc.to_f64();
-    let (surface, surface_loc) = window.surface_under(relative, WindowSurfaceType::ALL)?;
-    Some((surface, (render_loc + surface_loc).to_f64()))
+    let output = state.space.outputs().find(|output| {
+        state
+            .space
+            .output_geometry(output)
+            .is_some_and(|geometry| geometry.to_f64().contains(pos))
+    })?;
+    crate::render::z_ordered_windows(state, output)
+        .into_iter()
+        .rev()
+        .find_map(|window| {
+            let render_loc = state.space.element_location(&window)?;
+            let relative = pos - render_loc.to_f64();
+            let (surface, surface_loc) = window.surface_under(relative, WindowSurfaceType::ALL)?;
+            Some((surface, (render_loc + surface_loc).to_f64()))
+        })
 }
 
 fn layer_surface_under_in(
@@ -309,7 +337,16 @@ fn layer_surface_under_in(
     pos: Point<f64, Logical>,
     layers: &[WlrLayer],
 ) -> Option<(WlSurface, Point<f64, Logical>, bool)> {
-    let output = state.space.outputs().next()?.clone();
+    let output = state
+        .space
+        .outputs()
+        .find(|output| {
+            state
+                .space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.to_f64().contains(pos))
+        })
+        .cloned()?;
     let layer_map = layer_map_for_output(&output);
     for &layer in layers {
         for layer_surface in layer_map.layers_on(layer).rev() {

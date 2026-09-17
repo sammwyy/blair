@@ -668,9 +668,9 @@ fn render_frame(
     };
 
     let bottom_elements = bottom_layer_elements(renderer, output);
-    let window_content = window_content_elements(renderer, state);
+    let window_content = window_content_elements(renderer, state, output);
     let top_elements = top_layer_elements(renderer, output);
-    let popups = popup_elements(renderer, state);
+    let popups = popup_elements(renderer, state, output);
     let corner_shader = ensure_rounded_corner_shader(renderer, rounded_corner_shader);
 
     let mut framebuffer = match renderer.bind(&mut dmabuf) {
@@ -842,6 +842,7 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
             if let Some(pointer) = state.seat.get_pointer() {
                 let serial = SERIAL_COUNTER.next_serial();
                 let pos = clamp_pointer_position(state, pointer.current_location() + event.delta());
+                state.set_focused_output_at(pos);
                 debug_overlay.last_pointer = (pos.x.round() as i32, pos.y.round() as i32);
                 if move_dragged_window(state, drag.as_ref(), pos) {
                     *need_frame = true;
@@ -872,6 +873,7 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
                 let output_geo = state.space.output_geometry(&output).unwrap_or_default();
                 let pos =
                     clamp_pointer_position(state, event.position_transformed(output_geo.size));
+                state.set_focused_output_at(pos);
                 debug_overlay.last_pointer = (pos.x.round() as i32, pos.y.round() as i32);
                 if let Some(pointer) = state.seat.get_pointer() {
                     if move_dragged_window(state, drag.as_ref(), pos) {

@@ -209,9 +209,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             };
 
             let bottom_elements = bottom_layer_elements(renderer, &output);
-            let window_content = window_content_elements(renderer, &state);
+            let window_content = window_content_elements(renderer, &state, &output);
             let top_elements = top_layer_elements(renderer, &output);
-            let popups = popup_elements(renderer, &state);
+            let popups = popup_elements(renderer, &state, &output);
             let corner_shader = ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
 
             // Winit's framebuffer has an inverted Y axis.
@@ -339,6 +339,7 @@ fn handle_input(
             if let Some(output) = output {
                 let output_geo = state.space.output_geometry(&output).unwrap_or_default();
                 let pos = event.position_transformed(output_geo.size);
+                state.set_focused_output_at(pos);
                 tracing::trace!(x = pos.x, y = pos.y, "winit pointer motion");
                 if let Some(pointer) = state.seat.get_pointer() {
                     move_dragged_window(state, drag.as_ref(), pos);

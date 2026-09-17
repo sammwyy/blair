@@ -22,6 +22,7 @@ pub struct DbusWorkspace {
     pub id: u64,
     pub name: String,
     pub active: bool,
+    pub output: String,
     pub window_count: u32,
 }
 
@@ -31,6 +32,7 @@ impl From<&WorkspaceInfo> for DbusWorkspace {
             id: info.id,
             name: info.name.clone(),
             active: info.active,
+            output: info.output.clone().unwrap_or_default(),
             window_count: info.window_count.try_into().unwrap_or(u32::MAX),
         }
     }
@@ -83,7 +85,7 @@ mod tests {
 
     #[test]
     fn workspace_signature_contains_identity_and_state() {
-        assert_eq!(<DbusWorkspace as Type>::SIGNATURE.to_string(), "(tsbu)");
+        assert_eq!(<DbusWorkspace as Type>::SIGNATURE.to_string(), "(tsbsu)");
     }
 
     #[test]

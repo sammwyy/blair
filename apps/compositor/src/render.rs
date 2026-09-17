@@ -47,11 +47,13 @@ pub fn ensure_rounded_corner_shader(
     cache.clone()
 }
 
-pub fn z_ordered_windows(state: &BlairState) -> Vec<Window> {
-    match state.space.outputs().next() {
-        Some(output) => state.space.elements_for_output(output).cloned().collect(),
-        None => state.space.elements().cloned().collect(),
-    }
+pub fn z_ordered_windows(state: &BlairState, output: &Output) -> Vec<Window> {
+    state
+        .space
+        .elements_for_output(output)
+        .filter(|window| state.window_visible_on_output(window, output))
+        .cloned()
+        .collect()
 }
 
 fn layer_elements(
@@ -105,8 +107,9 @@ pub fn top_layer_elements(
 pub fn window_content_elements(
     renderer: &mut GlesRenderer,
     state: &BlairState,
+    output: &Output,
 ) -> Vec<(Window, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> {
-    z_ordered_windows(state)
+    z_ordered_windows(state, output)
         .into_iter()
         .filter_map(|window| {
             let loc = state.space.element_location(&window)?;
@@ -132,9 +135,10 @@ pub fn window_content_elements(
 pub fn popup_elements(
     renderer: &mut GlesRenderer,
     state: &BlairState,
+    output: &Output,
 ) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     let mut elements = Vec::new();
-    for window in z_ordered_windows(state) {
+    for window in z_ordered_windows(state, output) {
         let Some(loc) = state.space.element_location(&window) else {
             continue;
         };

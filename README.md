@@ -257,18 +257,26 @@ its host compositor. Input configuration changes require a restart.
 
 Workspaces 1 through count are created at startup and remain available for the
 whole session. With dynamic disabled, CreateWorkspace through an integration
-returns 0 and does not alter the declared topology. An output assignment is a
-preferred target for new windows in that workspace, with a safe fallback if
-the named connector is unavailable. Workspace topology changes require a
-restart.
+returns 0 and does not alter the declared topology. An output assignment seeds
+which workspace that connector shows when it appears; there is always a safe
+automatic assignment when the connector is unavailable. Workspace topology
+changes require a restart.
 
 ## Workspaces
+
+Workspaces are global identities, but every output displays its own workspace.
+Windows belong to exactly one workspace and are rendered only on the output
+displaying it. Switching changes the workspace on the focused output; the
+other outputs remain unchanged. If the target is already visible on another
+output, Blair swaps the two assignments so a workspace is never shown twice.
 
 Blair starts with workspace `1`. The D-Bus interface
 `org.blair.Compositor1` provides `CreateWorkspace(name)`,
 `ListWorkspaces()`, `SwitchWorkspace(id)`, and
 `MoveWindowToWorkspace(window_id, workspace_id)`. `ListWindows()` and all
-window/focus operations are scoped to the active workspace.
+window/focus operations are scoped to the workspace shown on the focused
+output. `ListWorkspaces()` includes the output currently showing each active
+workspace.
 
 See `packaging/config/config.toml` for backend selection, the primary client
 command, window sizing, and server-side decoration settings. Set
