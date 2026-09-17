@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use toml::Value;
 
 use crate::decorations::DecorationTheme;
 
@@ -128,44 +129,138 @@ fn parse_color(hex: &str) -> [u8; 4] {
     }
 }
 
-pub fn user_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("blair")
-        .join("compositor.toml")
+const CONFIG_FILE_NAME: &str = "config.toml";
+
+/// Locations contributing configuration, in increasing precedence order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPaths {
+    pub system_dir: PathBuf,
+    pub user_dir: PathBuf,
 }
 
-pub fn load_or_default() -> Result<CompositorConfig> {
-    let path = user_config_path();
-    if !path.exists() {
-        return write_default(&path);
+impl Default for ConfigPaths {
+    fn default() -> Self {
+        Self {
+            system_dir: PathBuf::from("/etc/blair"),
+            user_dir: dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from(".config"))
+                .join("blair"),
+        }
     }
-    read_config(&path)
+}
+
+impl ConfigPaths {
+    fn main_file(&self, directory: &Path) -> PathBuf {
+        directory.join(CONFIG_FILE_NAME)
+    }
+
+    fn fragments_dir(&self, directory: &Path) -> PathBuf {
+        directory.join("conf.d")
+    }
+
+    pub fn user_config_path(&self) -> PathBuf {
+        self.main_file(&self.user_dir)
+    }
+}
+
+pub fn user_config_path() -> PathBuf {
+    ConfigPaths::default().user_config_path()
+}
+
+/// Loads built-in defaults followed by system and user configuration.
+///
+/// Scalars and arrays in a later layer replace earlier values. TOML tables
+/// merge recursively. Fragments are loaded in lexicographic filename order.
+pub fn load_or_default() -> Result<CompositorConfig> {
+    load_from_paths(&ConfigPaths::default())
+}
+
+pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
+    let mut merged = Value::try_from(CompositorConfig::default())
+        .context("failed to serialize built-in compositor config")?;
+
+    for directory in [&paths.system_dir, &paths.user_dir] {
+        merge_file_if_present(&mut merged, &paths.main_file(directory))?;
+        for fragment in config_fragments(&paths.fragments_dir(directory))? {
+            merge_file_if_present(&mut merged, &fragment)?;
+        }
+    }
+
+    merged
+        .try_into()
+        .context("merged compositor configuration does not match the schema")
+}
+
+fn config_fragments(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut fragments = Vec::new();
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fragments),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read config directory {}", directory.display())
+            })
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read {}", directory.display()))?;
+        let path = entry.path();
+        if entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?
+            .is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "toml")
+        {
+            fragments.push(path);
+        }
+    }
+    fragments.sort();
+    Ok(fragments)
+}
+
+fn merge_file_if_present(target: &mut Value, path: &Path) -> Result<()> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let layer: Value = toml::from_str(&contents)
+                .with_context(|| format!("invalid TOML in {}", path.display()))?;
+            merge_toml(target, layer);
+            tracing::debug!(path = %path.display(), "loaded config layer");
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read config {}", path.display()))
+        }
+    }
+}
+
+fn merge_toml(base: &mut Value, override_value: Value) {
+    match (base, override_value) {
+        (Value::Table(base), Value::Table(override_table)) => {
+            for (key, value) in override_table {
+                match base.get_mut(&key) {
+                    Some(existing) => merge_toml(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, override_value) => *base = override_value,
+    }
 }
 
 pub fn save(config: &CompositorConfig) -> Result<()> {
     let path = user_config_path();
-    let toml = toml::to_string_pretty(config).context("failed to serialize compositor config")?;
-    fs::write(&path, toml).with_context(|| format!("failed to write config to {}", path.display()))
-}
-
-fn read_config(path: &Path) -> Result<CompositorConfig> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read config {}", path.display()))?;
-    toml::from_str(&contents).with_context(|| format!("invalid TOML in {}", path.display()))
-}
-
-fn write_default(path: &Path) -> Result<CompositorConfig> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config dir {}", parent.display()))?;
     }
-    let config = CompositorConfig::default();
-    let toml_str = toml::to_string_pretty(&config).context("failed to serialize default config")?;
-    fs::write(path, &toml_str)
-        .with_context(|| format!("failed to write default config to {}", path.display()))?;
-    tracing::info!(path = %path.display(), "created default compositor config");
-    Ok(config)
+    let toml = toml::to_string_pretty(config).context("failed to serialize compositor config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write config to {}", path.display()))
 }
 
 #[cfg(test)]
@@ -205,26 +300,62 @@ mod tests {
     }
 
     #[test]
-    fn write_default_creates_the_parent_dir_and_writes_compiled_in_defaults() {
-        let dir = scratch_dir("write-default");
-        let user_path = dir.join("nested").join("compositor.toml");
+    fn layers_merge_in_documented_precedence_order() {
+        let root = scratch_dir("layered-load");
+        let paths = ConfigPaths {
+            system_dir: root.join("etc").join("blair"),
+            user_dir: root.join("user").join("blair"),
+        };
+        fs::create_dir_all(paths.system_dir.join("conf.d")).unwrap();
+        fs::create_dir_all(paths.user_dir.join("conf.d")).unwrap();
 
-        let config = write_default(&user_path).unwrap();
-        assert_eq!(config.general.primary_client, "coconut");
-        assert!(user_path.exists());
+        fs::write(
+            paths.system_dir.join(CONFIG_FILE_NAME),
+            "[general]\nbackend = \"winit\"\n[window]\ndefault_width = 1000\n",
+        )
+        .unwrap();
+        fs::write(
+            paths.system_dir.join("conf.d").join("20-window.toml"),
+            "[window]\ndefault_width = 1100\ndefault_height = 700\n",
+        )
+        .unwrap();
+        fs::write(
+            paths.system_dir.join("conf.d").join("10-window.toml"),
+            "[window]\ndefault_width = 1050\n",
+        )
+        .unwrap();
+        fs::write(
+            paths.user_dir.join(CONFIG_FILE_NAME),
+            "[general]\nbackend = \"drm\"\n[window]\ndefault_height = 800\n",
+        )
+        .unwrap();
+        fs::write(
+            paths.user_dir.join("conf.d").join("30-window.toml"),
+            "[window]\ndefault_width = 1200\n",
+        )
+        .unwrap();
 
-        fs::remove_dir_all(&dir).ok();
+        let config = load_from_paths(&paths).unwrap();
+        assert_eq!(config.general.backend, "drm");
+        assert_eq!(config.window.default_width, 1200);
+        assert_eq!(config.window.default_height, 800);
+        assert_eq!(config.window.work_area_padding, 16);
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn read_config_returns_the_file_contents_verbatim() {
-        let dir = scratch_dir("existing-user-config");
-        let user_path = dir.join("compositor.toml");
-        fs::write(&user_path, "[general]\nprimary_client = \"already-mine\"\n").unwrap();
+    fn missing_layers_use_built_in_defaults_without_writing_files() {
+        let root = scratch_dir("missing-layers");
+        let paths = ConfigPaths {
+            system_dir: root.join("etc").join("blair"),
+            user_dir: root.join("user").join("blair"),
+        };
 
-        let config = read_config(&user_path).unwrap();
-        assert_eq!(config.general.primary_client, "already-mine");
+        let config = load_from_paths(&paths).unwrap();
+        assert_eq!(config.general.primary_client, "coconut");
+        assert!(!paths.user_config_path().exists());
 
-        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&root).ok();
     }
 }

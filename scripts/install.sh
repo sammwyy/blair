@@ -114,7 +114,7 @@ main() {
   info "  $BIN_DIR/blair-session"
   info "  $WAYLAND_SESSIONS_DIR/blair.desktop"
   info ""
-  info "Blair writes its own config to ~/.config/blair/compositor.toml on first run."
+  info "Blair reads user configuration from ~/.config/blair/config.toml."
   info "Detected session manager(s): ${SESSION_MANAGERS[*]}"
   info "Restart your session manager and choose 'Blair' from the session picker."
   info "Or run 'blair-session' directly from a TTY."

@@ -9,5 +9,5 @@
 - Shortcuts bound via `BindShortcut` have no owner tracking: if the D-Bus
   peer that registered one disappears without calling `UnbindShortcut`, the
   binding stays active until the compositor restarts.
-- `compositor.toml` is read once at startup; there is no config reload.
+- Configuration is read once at startup; there is no config reload.
 - No damage tracking — every frame redraws the full output.

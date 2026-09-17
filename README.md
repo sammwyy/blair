@@ -102,7 +102,7 @@ to use a different shell. `scripts/dev.sh` runs the freshly built binary.
 
 ## Shell selection
 
-Use `--primary-client` to override `compositor.toml` for one session. The
+Use `--primary-client` to override `config.toml` for one session. The
 override always starts the supplied command.
 
 ```bash
@@ -127,16 +127,24 @@ Builds `blair`, installs the binary and `blair-session` wrapper into
 
 ## Config
 
+Configuration is TOML and is assembled in this order; later layers override
+earlier ones:
+
 ```
-~/.config/blair/compositor.toml     (created with defaults on first run)
-packaging/config/compositor.toml    (reference)
+built-in defaults
+/etc/blair/config.toml
+/etc/blair/conf.d/*.toml
+~/.config/blair/config.toml
+~/.config/blair/conf.d/*.toml
 ```
 
-Each user gets their own config, created the first time `blair` runs for
-them. There is no system-wide config file — Blair never reads `/etc`.
+Fragment files are read in lexicographic order, so numeric prefixes such as
+`10-input.toml` and `20-outputs.toml` give stable local precedence. Every
+file uses the same schema, and a user may simply keep all settings in
+`~/.config/blair/config.toml`; `conf.d` is optional.
 
-See `packaging/config/compositor.toml` for backend selection, the primary
-client command, window sizing, and server-side decoration settings. Set
+See `packaging/config/config.toml` for backend selection, the primary client
+command, window sizing, and server-side decoration settings. Set
 `decoration.corner_radius` to control rounded server-side window frames.
 
 ## Session files
