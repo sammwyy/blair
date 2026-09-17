@@ -20,13 +20,13 @@ use wayland_server::ListeningSocket;
 
 use crate::{
     config::{CompositorConfig, ConfigPaths, ConfigWatcher},
-    dbus,
     decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
         upper_layer_surface_under, window_surface_under, window_under_including_decoration,
         WindowDrag,
     },
+    integrations,
     render::{
         bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
         send_frame_callbacks, top_layer_elements, window_content_elements, BACKGROUND_COLOR,
@@ -46,9 +46,14 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     let loop_signal = temp_loop.get_signal();
     drop(temp_loop);
 
-    let (dbus_service, events_tx) = dbus::start();
+    let mut integrations = integrations::Integrations::start(config.integrations.dbus);
     let mut config_watcher = start_config_watcher(&config);
-    let mut state = BlairState::new(dh.clone(), loop_signal, config, events_tx);
+    let mut state = BlairState::new(
+        dh.clone(),
+        loop_signal,
+        config,
+        integrations.event_channel(),
+    );
 
     let (mut backend, mut winit) = winit::init::<GlesRenderer>()
         .map_err(|err| anyhow::anyhow!("failed to init winit backend: {err:?}"))?;
@@ -211,7 +216,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             }
         }
 
-        dbus_service.drain(&mut state);
+        integrations.drain(&mut state);
         if state.exit_requested {
             running = false;
         }

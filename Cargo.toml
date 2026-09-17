@@ -2,7 +2,8 @@
 members = [
   "apps/compositor",
   "crates/protocol",
-  "crates/dbus",
+  "crates/integration",
+  "integrations/blair-integration-dbus",
   "crates/client",
 ]
 resolver = "2"
@@ -46,5 +47,6 @@ smithay = { version = "0.7.0", features = [
 wayland-server = "0.31"
 
 blair-protocol = { version = "0.1.0", path = "crates/protocol" }
-blair-dbus = { version = "0.1.0", path = "crates/dbus" }
+blair-integration = { version = "0.1.0", path = "crates/integration" }
+blair-integration-dbus = { version = "0.1.0", path = "integrations/blair-integration-dbus" }
 blair-client = { version = "0.1.0", path = "crates/client" }

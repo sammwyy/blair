@@ -1,10 +1,11 @@
 # Blair
 
 Blair is a small Wayland compositor built with Smithay. It manages windows,
-input, outputs, and exposes desktop integration over D-Bus. It has no bundled
+input, outputs, and exposes desktop integration through optional transports.
+It has no bundled
 bar, launcher, or shell.
 
-Any desktop shell can use the D-Bus interface for window lists, focus,
+Any desktop shell can use the built-in D-Bus transport for window lists, focus,
 work-area reservations, and global shortcuts. [Coconut](https://github.com/sammwyy/coconut)
 is a recommended shell for Blair, but it is a separate project.
 
@@ -12,13 +13,15 @@ is a recommended shell for Blair, but it is a separate project.
 
 | Path | Package | Role |
 |---|---|---|
-| `apps/compositor/` | `blair` | The compositor binary: Smithay backends (winit, DRM/KMS), window/seat/output state, server-side decoration fallback, D-Bus service glue |
+| `apps/compositor/` | `blair` | The compositor binary: Smithay backends (winit, DRM/KMS), window/seat/output state, and integration composition |
 | `crates/protocol/` | `blair-protocol` | Wire-independent domain types: `WindowId`, `Rect`, `WindowInfo`, `CompositorEvent` |
-| `crates/dbus/` | `blair-dbus` | The `org.blair.Compositor1` D-Bus interface: server-side (`CompositorInterface`) and the generated client proxy (`CompositorProxy`) |
-| `crates/client/` | `blair-client` | Ergonomic async client (`BlairClient`) wrapping `blair-dbus` for shell processes to depend on directly |
+| `crates/integration/` | `blair-integration` | Transport-neutral `CompositorApi`, `Transport`, and `EventChannel` contracts |
+| `integrations/blair-integration-dbus/` | `blair-integration-dbus` | The optional `org.blair.Compositor1` D-Bus transport and generated proxy |
+| `crates/client/` | `blair-client` | Ergonomic async client (`BlairClient`) wrapping the D-Bus integration |
 
-`apps/compositor` depends on `blair-protocol` and `blair-dbus`; desktop shells
-can use `blair-client` without depending on the compositor crate.
+`apps/compositor` depends only on the transport-neutral contracts plus its enabled
+integrations. Desktop shells can use `blair-client` without depending on the
+compositor crate.
 
 ## Protocols
 
@@ -148,6 +151,11 @@ Set `general.hot_reload = false` and restart to disable it. Reloads parse and
 validate every layer before applying the configuration; an invalid edit is
 logged and the last valid configuration remains active. Backend changes still
 require a compositor restart.
+
+The built-in D-Bus transport is enabled by default with
+`integrations.dbus = true`. Set it to `false` and restart to run with no request
+transport; additional transports can implement the transport-neutral
+`blair-integration` contracts.
 
 ## Workspaces
 

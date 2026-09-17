@@ -1,48 +1,58 @@
-use std::sync::mpsc::Receiver;
+use std::{
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc,
+    },
+    thread::JoinHandle,
+};
 
-use blair_protocol::{Rect, WindowId, WindowInfo};
+use blair_integration::{CompositorApi, EventChannel, Transport};
+use blair_protocol::{Rect, WindowId};
 
 use crate::{
     command::Command,
     wire::{DbusWindow, DbusWorkspace},
 };
 
-pub trait CompositorBackend {
-    fn list_windows(&self) -> Vec<WindowInfo>;
-    fn list_workspaces(&self) -> Vec<blair_protocol::WorkspaceInfo>;
-    fn create_workspace(&mut self, name: String) -> u64;
-    fn switch_workspace(&mut self, id: u64) -> bool;
-    fn move_window_to_workspace(&mut self, window: WindowId, workspace_id: u64) -> bool;
-    fn focus_window(&mut self, id: WindowId) -> bool;
-    fn close_window(&mut self, id: WindowId) -> bool;
-    fn minimize_window(&mut self, id: WindowId) -> bool;
-    fn toggle_maximize_window(&mut self, id: WindowId) -> bool;
-    fn move_resize_window(&mut self, id: WindowId, geometry: Rect) -> bool;
-    fn work_area(&self, output: &str) -> Rect;
-    fn outputs(&self) -> Vec<String>;
-    fn window_settings(&self) -> (i32, i32, i32, bool);
-    fn layout_settings(&self) -> (String, i32, i32);
-    fn set_layout_settings(
-        &mut self,
-        layout: &str,
-        work_area_padding: i32,
-        corner_radius: i32,
-    ) -> bool;
-    fn set_window_settings(
-        &mut self,
-        titlebar_height: i32,
-        border_width: i32,
-        corner_radius: i32,
-        server_side_decorations: bool,
-    ) -> bool;
-    fn bind_shortcut(&mut self, client: &str, id: &str, accelerator: &str) -> bool;
-    fn unbind_shortcut(&mut self, client: &str, id: &str);
-    fn unregister_client(&mut self, owner: &str);
-    fn quit(&mut self);
+pub struct DbusIntegration {
+    commands: Receiver<Command>,
+    events: Arc<DbusEventChannel>,
+    _thread: JoinHandle<()>,
+}
+
+struct DbusEventChannel(Sender<blair_protocol::CompositorEvent>);
+
+impl EventChannel for DbusEventChannel {
+    fn publish(&self, event: blair_protocol::CompositorEvent) {
+        let _ = self.0.send(event);
+    }
+}
+
+impl DbusIntegration {
+    pub fn start() -> Self {
+        let (commands_tx, commands) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let thread = crate::server::serve(commands_tx, events_rx);
+        Self {
+            commands,
+            events: Arc::new(DbusEventChannel(events_tx)),
+            _thread: thread,
+        }
+    }
+
+    pub fn event_channel(&self) -> Arc<dyn EventChannel> {
+        self.events.clone()
+    }
+}
+
+impl Transport for DbusIntegration {
+    fn drain(&mut self, compositor: &mut dyn CompositorApi) {
+        drain(&self.commands, compositor);
+    }
 }
 
 /// Drains pending D-Bus method calls.
-pub fn drain(commands: &Receiver<Command>, backend: &mut impl CompositorBackend) {
+fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
     while let Ok(command) = commands.try_recv() {
         match command {
             Command::ListWindows(reply) => {

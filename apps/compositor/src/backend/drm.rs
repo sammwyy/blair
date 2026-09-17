@@ -50,13 +50,13 @@ use wayland_server::ListeningSocket;
 
 use crate::{
     config::{CompositorConfig, ConfigPaths, ConfigWatcher},
-    dbus,
     decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
         upper_layer_surface_under, window_surface_under, window_under_including_decoration,
         WindowDrag,
     },
+    integrations,
     render::{
         bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
         top_layer_elements, window_content_elements, BACKGROUND_COLOR,
@@ -178,9 +178,14 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     let handle = event_loop.handle();
     let loop_signal = event_loop.get_signal();
 
-    let (dbus_service, events_tx) = dbus::start();
+    let mut integrations = integrations::Integrations::start(config.integrations.dbus);
     let mut config_watcher = start_config_watcher(&config);
-    let state = BlairState::new(dh.clone(), loop_signal, config, events_tx);
+    let state = BlairState::new(
+        dh.clone(),
+        loop_signal,
+        config,
+        integrations.event_channel(),
+    );
 
     let frame_counter = Arc::new(AtomicU64::new(0));
     let input_events_seen = Arc::new(AtomicU64::new(0));
@@ -479,7 +484,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             .ok();
         loop_data.display.flush_clients().ok();
         drain_pending_move_request(&mut loop_data);
-        dbus_service.drain(&mut loop_data.state);
+        integrations.drain(&mut loop_data.state);
         if loop_data.state.take_redraw_request() {
             loop_data.need_frame = true;
         }

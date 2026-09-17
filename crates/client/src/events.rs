@@ -12,8 +12,8 @@ impl Events {
     pub(crate) async fn subscribe(connection: &Connection) -> zbus::Result<Self> {
         let rule = MatchRule::builder()
             .msg_type(MessageType::Signal)
-            .interface(blair_dbus::INTERFACE_NAME)?
-            .path(blair_dbus::OBJECT_PATH)?
+            .interface(blair_integration_dbus::INTERFACE_NAME)?
+            .path(blair_integration_dbus::OBJECT_PATH)?
             .build();
         let mut stream = MessageStream::for_match_rule(rule, connection, None).await?;
 

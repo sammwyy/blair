@@ -160,7 +160,8 @@ name = "blair"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blair-dbus",
+ "blair-integration",
+ "blair-integration-dbus",
  "blair-protocol",
  "dirs",
  "notify",
@@ -177,7 +178,7 @@ dependencies = [
 name = "blair-client"
 version = "0.1.0"
 dependencies = [
- "blair-dbus",
+ "blair-integration-dbus",
  "blair-protocol",
  "futures-util",
  "tokio",
@@ -186,9 +187,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "blair-dbus"
+name = "blair-integration"
 version = "0.1.0"
 dependencies = [
+ "blair-protocol",
+]
+
+[[package]]
+name = "blair-integration-dbus"
+version = "0.1.0"
+dependencies = [
+ "blair-integration",
  "blair-protocol",
  "futures-util",
  "serde",

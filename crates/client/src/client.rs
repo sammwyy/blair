@@ -1,4 +1,4 @@
-use blair_dbus::CompositorProxy;
+use blair_integration_dbus::CompositorProxy;
 use blair_protocol::{Rect, WindowId, WindowInfo};
 use zbus::Connection;
 

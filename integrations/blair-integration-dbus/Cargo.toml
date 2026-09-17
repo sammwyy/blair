@@ -1,5 +1,5 @@
 [package]
-name = "blair-dbus"
+name = "blair-integration-dbus"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 blair-protocol.workspace = true
+blair-integration.workspace = true
 zbus.workspace = true
 tokio.workspace = true
 tracing.workspace = true

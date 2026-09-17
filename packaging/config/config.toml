@@ -5,6 +5,10 @@ backend = "auto"
 # Watches existing configuration files and directories after startup.
 hot_reload = true
 
+[integrations]
+# Enables the built-in D-Bus transport integration.
+dbus = true
+
 [window]
 default_width = 900
 default_height = 600

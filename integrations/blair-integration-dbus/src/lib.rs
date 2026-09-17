@@ -4,8 +4,7 @@ mod interface;
 mod server;
 mod wire;
 
-pub use backend::{drain, CompositorBackend};
-pub use command::Command;
+pub use backend::DbusIntegration;
 pub use interface::{CompositorInterface, CompositorProxy};
 pub use server::serve;
 pub use wire::{DbusWindow, DbusWorkspace};

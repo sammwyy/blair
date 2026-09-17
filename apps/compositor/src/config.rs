@@ -16,6 +16,7 @@ use crate::decorations::DecorationTheme;
 #[serde(default, deny_unknown_fields)]
 pub struct CompositorConfig {
     pub general: GeneralConfig,
+    pub integrations: IntegrationsConfig,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
 }
@@ -28,6 +29,12 @@ pub struct GeneralConfig {
     pub spawn_primary_client: bool,
     pub backend: String,
     pub hot_reload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntegrationsConfig {
+    pub dbus: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +78,12 @@ impl Default for GeneralConfig {
             backend: "auto".to_string(),
             hot_reload: true,
         }
+    }
+}
+
+impl Default for IntegrationsConfig {
+    fn default() -> Self {
+        Self { dbus: true }
     }
 }
 
@@ -355,6 +368,7 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).expect("serialize");
         let restored: CompositorConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.window.default_width, config.window.default_width);
+        assert!(restored.integrations.dbus);
     }
 
     #[test]

@@ -1,5 +1,6 @@
-use std::{cell::RefCell, os::unix::io::OwnedFd, process::Command, sync::mpsc::Sender};
+use std::{cell::RefCell, os::unix::io::OwnedFd, process::Command, sync::Arc};
 
+use blair_integration::EventChannel;
 use blair_protocol::{CompositorEvent, Rect, WindowId, WindowInfo, WorkspaceInfo};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
@@ -89,7 +90,7 @@ pub struct BlairState {
     pub exit_requested: bool,
     pub redraw_requested: bool,
 
-    pub events: Sender<CompositorEvent>,
+    pub events: Arc<dyn EventChannel>,
 
     pub window_counter: u64,
     pub pending_move_request: Option<Window>,
@@ -120,7 +121,7 @@ impl BlairState {
         display_handle: DisplayHandle,
         loop_signal: LoopSignal,
         config: CompositorConfig,
-        events: Sender<CompositorEvent>,
+        events: Arc<dyn EventChannel>,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
@@ -171,7 +172,7 @@ impl BlairState {
     }
 
     pub fn emit(&self, event: CompositorEvent) {
-        let _ = self.events.send(event);
+        self.events.publish(event);
     }
 
     pub fn request_exit(&mut self) {
@@ -198,6 +199,14 @@ impl BlairState {
                 "backend changes require a compositor restart"
             );
             next.general.backend = self.config.general.backend.clone();
+        }
+        if self.config.integrations.dbus != next.integrations.dbus {
+            tracing::warn!(
+                old = self.config.integrations.dbus,
+                new = next.integrations.dbus,
+                "integration transport changes require a compositor restart"
+            );
+            next.integrations.dbus = self.config.integrations.dbus;
         }
 
         if self.config.general.primary_client != next.general.primary_client

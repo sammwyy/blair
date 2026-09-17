@@ -16,7 +16,7 @@ use crate::{
 /// Starts the D-Bus service thread.
 pub fn serve(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> JoinHandle<()> {
     std::thread::Builder::new()
-        .name("blair-dbus".into())
+        .name("blair-integration-dbus".into())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -32,7 +32,7 @@ pub fn serve(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> Jo
                 tracing::error!(%err, "D-Bus service exited");
             }
         })
-        .expect("failed to spawn blair-dbus thread")
+        .expect("failed to spawn D-Bus integration thread")
 }
 
 async fn run(commands: Sender<Command>, events: Receiver<CompositorEvent>) -> zbus::Result<()> {

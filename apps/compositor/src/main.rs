@@ -1,8 +1,8 @@
 mod backend;
 mod config;
-mod dbus;
 mod decorations;
 mod input;
+mod integrations;
 mod logging;
 mod render;
 mod shortcuts;

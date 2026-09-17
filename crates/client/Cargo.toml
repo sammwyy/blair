@@ -10,7 +10,7 @@ repository.workspace = true
 
 [dependencies]
 blair-protocol.workspace = true
-blair-dbus.workspace = true
+blair-integration-dbus.workspace = true
 zbus.workspace = true
 tokio.workspace = true
 tracing.workspace = true

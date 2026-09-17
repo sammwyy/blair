@@ -1,0 +1,12 @@
+[package]
+name = "blair-integration"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Transport-neutral integration contracts for Blair"
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+blair-protocol.workspace = true
