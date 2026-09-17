@@ -1,9 +1,18 @@
 [general]
-primary_client = "coconut"
-spawn_primary_client = true
 backend = "auto"
 # Watches existing configuration files and directories after startup.
 hot_reload = true
+
+[[autostart]]
+command = "waybar"
+restart = true
+
+[[autostart]]
+command = "swaybg -i ~/wallpaper.png"
+
+[[autostart]]
+command = "mako"
+restart = true
 
 [integrations]
 # Enables the built-in D-Bus transport integration.

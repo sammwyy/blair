@@ -19,6 +19,7 @@ pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
+    pub autostart: Vec<AutostartConfig>,
     pub rules: Vec<WindowRuleConfig>,
     pub input: InputConfig,
     pub workspaces: WorkspacesConfig,
@@ -31,11 +32,25 @@ pub struct CompositorConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralConfig {
-    /// Command started after the Wayland socket is ready.
-    pub primary_client: String,
-    pub spawn_primary_client: bool,
     pub backend: String,
     pub hot_reload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutostartConfig {
+    pub command: String,
+    #[serde(default)]
+    pub restart: bool,
+}
+
+impl AutostartConfig {
+    fn validate(&self, index: usize) -> Result<()> {
+        if self.command.trim().is_empty() {
+            anyhow::bail!("autostart #{index} command cannot be empty");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,8 +523,6 @@ impl Default for DecorationButtonsConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            primary_client: "coconut".to_string(),
-            spawn_primary_client: true,
             backend: "auto".to_string(),
             hot_reload: true,
         }
@@ -670,6 +683,9 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     }
     for (index, rule) in config.rules.iter().enumerate() {
         rule.validate(index + 1)?;
+    }
+    for (index, autostart) in config.autostart.iter().enumerate() {
+        autostart.validate(index + 1)?;
     }
     for (name, output) in &config.outputs {
         output.validate(name)?;
@@ -920,7 +936,7 @@ mod tests {
         };
 
         let config = load_from_paths(&paths).unwrap();
-        assert_eq!(config.general.primary_client, "coconut");
+        assert!(config.autostart.is_empty());
         assert!(!paths.user_config_path().exists());
 
         fs::remove_dir_all(&root).ok();
@@ -1042,5 +1058,17 @@ mod tests {
 
         let legacy: CompositorConfig = toml::from_str("[decoration]\ncorner_radius = 4\n").unwrap();
         assert_eq!(legacy.decorations.corner_radius, 4);
+    }
+
+    #[test]
+    fn parses_autostart_with_optional_restart() {
+        let config: CompositorConfig = toml::from_str(
+            "[[autostart]]\ncommand = \"waybar\"\nrestart = true\n\n[[autostart]]\ncommand = \"mako\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.autostart.len(), 2);
+        assert!(config.autostart[0].restart);
+        assert!(!config.autostart[1].restart);
+        assert!(config.autostart[0].validate(1).is_ok());
     }
 }

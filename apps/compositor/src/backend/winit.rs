@@ -138,7 +138,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         "winit output created"
     );
 
-    state.spawn_primary_client();
+    state.spawn_autostarts();
 
     let start_time = std::time::Instant::now();
     let mut running = true;
@@ -182,6 +182,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         if let Some(watcher) = config_watcher.as_mut() {
             watcher.reload_if_due(&mut state);
         }
+        state.supervise_autostarts();
 
         if let Ok(Some(stream)) = listener.accept() {
             match display

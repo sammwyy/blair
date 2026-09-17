@@ -11,7 +11,7 @@ mod state;
 use anyhow::{bail, Context, Result};
 
 fn main() -> Result<()> {
-    let primary_client = parse_primary_client(std::env::args().skip(1))?;
+    let startup = parse_startup_options(std::env::args().skip(1))?;
     let log_path = logging::setup();
     logging::install_panic_hook();
     logging::install_signal_handlers();
@@ -23,37 +23,34 @@ fn main() -> Result<()> {
     );
 
     let mut config = config::load_or_default().context("failed to load compositor config")?;
-    if let Some(primary_client) = primary_client {
-        config.general.primary_client = primary_client;
-        config.general.spawn_primary_client = true;
-    }
+    config.autostart.extend(startup.run);
     tracing::info!(
         backend = %config.general.backend,
-        primary_client = %config.general.primary_client,
+        autostart_count = config.autostart.len(),
         "config loaded"
     );
 
     backend::run(config)
 }
 
-fn parse_primary_client(args: impl IntoIterator<Item = String>) -> Result<Option<String>> {
+struct StartupOptions {
+    run: Vec<config::AutostartConfig>,
+}
+
+fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<StartupOptions> {
     let mut args = args.into_iter();
-    let mut primary_client = None;
+    let mut run = Vec::new();
 
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
-            "--primary-client" => args
-                .next()
-                .context("missing command after --primary-client")?,
+            "--run" => args.next().context("missing command after --run")?,
             "--help" | "-h" => {
-                println!("Usage: blair [--primary-client <command>]");
-                println!(
-                    "\n  --primary-client  Start this command instead of the configured client."
-                );
+                println!("Usage: blair [--run <command>]...");
+                println!("\n  --run  Add a command to this session's autostart list.");
                 std::process::exit(0);
             }
             _ => {
-                if let Some(value) = arg.strip_prefix("--primary-client=") {
+                if let Some(value) = arg.strip_prefix("--run=") {
                     value.to_owned()
                 } else {
                     bail!("unknown argument: {arg}");
@@ -62,42 +59,42 @@ fn parse_primary_client(args: impl IntoIterator<Item = String>) -> Result<Option
         };
 
         if value.trim().is_empty() {
-            bail!("primary client command cannot be empty");
+            bail!("--run command cannot be empty");
         }
-        if primary_client.replace(value).is_some() {
-            bail!("primary client command specified more than once");
-        }
+        run.push(config::AutostartConfig {
+            command: value,
+            restart: false,
+        });
     }
 
-    Ok(primary_client)
+    Ok(StartupOptions { run })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_primary_client;
+    use super::parse_startup_options;
 
     #[test]
-    fn parses_primary_client_override() {
-        let command =
-            parse_primary_client(["--primary-client".into(), "shell --debug".into()]).unwrap();
-        assert_eq!(command.as_deref(), Some("shell --debug"));
+    fn parses_multiple_run_commands() {
+        let options = parse_startup_options([
+            "--run".into(),
+            "waybar".into(),
+            "--run=swaybg -i wallpaper.png".into(),
+        ])
+        .unwrap();
+        assert_eq!(options.run.len(), 2);
+        assert_eq!(options.run[1].command, "swaybg -i wallpaper.png");
     }
 
     #[test]
     fn accepts_equals_syntax() {
-        let command = parse_primary_client(["--primary-client=another-shell".into()]).unwrap();
-        assert_eq!(command.as_deref(), Some("another-shell"));
+        let options = parse_startup_options(["--run=another-shell".into()]).unwrap();
+        assert_eq!(options.run[0].command, "another-shell");
     }
 
     #[test]
     fn rejects_unknown_or_duplicate_arguments() {
-        assert!(parse_primary_client(["--unknown".into()]).is_err());
-        assert!(parse_primary_client([
-            "--primary-client".into(),
-            "one".into(),
-            "--primary-client".into(),
-            "two".into(),
-        ])
-        .is_err());
+        assert!(parse_startup_options(["--unknown".into()]).is_err());
+        assert!(parse_startup_options(["--run".into(), " ".into()]).is_err());
     }
 }

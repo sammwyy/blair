@@ -1,5 +1,10 @@
 use std::{
-    cell::RefCell, collections::HashMap, os::unix::io::OwnedFd, process::Command, sync::Arc,
+    cell::RefCell,
+    collections::HashMap,
+    os::unix::io::OwnedFd,
+    process::{Child, Command},
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use blair_integration::EventChannel;
@@ -100,7 +105,7 @@ pub struct BlairState {
     pub seat: Seat<Self>,
     pub focused_window: Option<WindowId>,
 
-    pub primary_client: Option<std::process::Child>,
+    autostart_processes: Vec<AutostartProcess>,
     pub exit_requested: bool,
     pub redraw_requested: bool,
 
@@ -143,6 +148,13 @@ struct AppliedWindowRule {
     opacity: Option<f32>,
     always_on_top: Option<bool>,
     decoration: Option<bool>,
+}
+
+struct AutostartProcess {
+    command: String,
+    restart: bool,
+    child: Child,
+    next_restart: Instant,
 }
 
 impl AppliedWindowRule {
@@ -247,7 +259,7 @@ impl BlairState {
             physical_mods: PhysicalMods::default(),
             seat,
             focused_window: None,
-            primary_client: None,
+            autostart_processes: Vec::new(),
             exit_requested: false,
             redraw_requested: false,
             events,
@@ -374,10 +386,8 @@ impl BlairState {
             next.workspaces = self.config.workspaces.clone();
         }
 
-        if self.config.general.primary_client != next.general.primary_client
-            || self.config.general.spawn_primary_client != next.general.spawn_primary_client
-        {
-            tracing::info!("primary client settings will be used on the next compositor start");
+        if self.config.autostart != next.autostart {
+            tracing::info!("autostart changes will be used on the next compositor start");
         }
 
         let window_changed = self.config.window != next.window;
@@ -397,16 +407,56 @@ impl BlairState {
         }
     }
 
-    pub fn spawn_primary_client(&mut self) {
-        if !self.config.general.spawn_primary_client {
-            return;
+    pub fn spawn_autostarts(&mut self) {
+        for entry in &self.config.autostart {
+            let command = entry.command.clone();
+            tracing::info!(
+                command,
+                restart = entry.restart,
+                "starting autostart command"
+            );
+            match spawn_autostart_command(&command) {
+                Ok(child) => self.autostart_processes.push(AutostartProcess {
+                    command,
+                    restart: entry.restart,
+                    child,
+                    next_restart: Instant::now(),
+                }),
+                Err(err) => tracing::warn!(%err, command, "failed to start autostart command"),
+            }
         }
-        let command = &self.config.general.primary_client;
-        tracing::info!(command = %command, "spawning primary client");
-        match primary_client_command(command).spawn() {
-            Ok(child) => self.primary_client = Some(child),
-            Err(err) => tracing::warn!(%err, command = %command, "failed to spawn primary client"),
-        }
+    }
+
+    /// Reaps exited autostarts and restarts opted-in commands after a short
+    /// delay, avoiding a tight respawn loop for a broken command.
+    pub fn supervise_autostarts(&mut self) {
+        let now = Instant::now();
+        self.autostart_processes.retain_mut(|process| match process.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) if !process.restart => {
+                tracing::info!(command = %process.command, %status, "autostart command exited");
+                false
+            }
+            Ok(Some(_status)) if now < process.next_restart => true,
+            Ok(Some(status)) => {
+                tracing::warn!(command = %process.command, %status, "restarting autostart command");
+                process.next_restart = now + Duration::from_secs(1);
+                match spawn_autostart_command(&process.command) {
+                    Ok(child) => {
+                        process.child = child;
+                        true
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, command = %process.command, "autostart restart failed");
+                        false
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, command = %process.command, "could not inspect autostart command");
+                false
+            }
+        });
     }
 
     pub fn add_output(&mut self, output: &Output, location: Point<i32, Logical>) {
@@ -1179,6 +1229,10 @@ fn window_meta(window: &Window) -> (String, Option<String>) {
     .unwrap_or_default()
 }
 
+fn spawn_autostart_command(command: &str) -> std::io::Result<Child> {
+    Command::new("sh").arg("-c").arg(command).spawn()
+}
+
 fn rule_matches(rule: &WindowRuleConfig, title: &str, app_id: Option<&str>) -> bool {
     if rule
         .app_id
@@ -1202,15 +1256,6 @@ fn rule_matches(rule: &WindowRuleConfig, title: &str, app_id: Option<&str>) -> b
             .map(|regex| regex.is_match(title) || app_id.is_some_and(|id| regex.is_match(id)))
             .unwrap_or(false)
     })
-}
-
-fn primary_client_command(command: &str) -> Command {
-    let mut parts = command.split_whitespace();
-    let program = parts.next().unwrap_or(command);
-    let args: Vec<&str> = parts.collect();
-    let mut process = Command::new(program);
-    process.args(&args);
-    process
 }
 
 impl BufferHandler for BlairState {

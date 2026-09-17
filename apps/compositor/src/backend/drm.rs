@@ -424,7 +424,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     loop_data.surface = Some(surface);
     loop_data.output = Some(output);
 
-    loop_data.state.spawn_primary_client();
+    loop_data.state.spawn_autostarts();
 
     handle
         .insert_source(drm_notifier, |event, _, data: &mut LoopData| match event {
@@ -488,6 +488,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         if let Some(watcher) = config_watcher.as_mut() {
             watcher.reload_if_due(&mut loop_data.state);
         }
+        loop_data.state.supervise_autostarts();
 
         if let Ok(Some(stream)) = listener.accept() {
             match loop_data

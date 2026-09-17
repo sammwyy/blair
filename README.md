@@ -99,24 +99,33 @@ From an existing Wayland or X11 session:
 RUST_LOG=debug cargo run -p blair
 ```
 
-Blair opens a nested window. Its default configuration starts `coconut` as the
-primary client; set `spawn_primary_client = false` or choose another command
-to use a different shell. `scripts/dev.sh` runs the freshly built binary.
+Blair opens a nested window and does not require a shell or main client.
+`scripts/dev.sh` runs the freshly built binary.
 
-## Shell selection
+## Startup and autostart
 
-Use `--primary-client` to override `config.toml` for one session. The
-override always starts the supplied command.
+Start desktop components declaratively:
 
-```bash
-blair --primary-client coconut
-blair-session --primary-client "another-shell --config ~/.config/another-shell.toml"
+```toml
+[[autostart]]
+command = "waybar"
+restart = true
+
+[[autostart]]
+command = "swaybg -i ~/wallpaper.png"
+
+[[autostart]]
+command = "mako"
+restart = true
 ```
 
-This makes separate display-manager entries possible, for example:
+`restart` defaults to `false`. When enabled, Blair restarts the process after
+it exits, with a one-second retry delay. Autostart changes take effect on the
+next compositor start. Add an extra one-off command without changing files:
 
-```ini
-Exec=blair-session --primary-client coconut
+```bash
+blair --run foot
+blair --run "waybar -c ~/.config/waybar/dev.json" --run mako
 ```
 
 ## Install
