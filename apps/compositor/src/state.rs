@@ -1,4 +1,6 @@
-use std::{cell::RefCell, os::unix::io::OwnedFd, process::Command, sync::Arc};
+use std::{
+    cell::RefCell, collections::HashMap, os::unix::io::OwnedFd, process::Command, sync::Arc,
+};
 
 use blair_integration::EventChannel;
 use blair_protocol::{CompositorEvent, Rect, WindowId, WindowInfo, WorkspaceInfo};
@@ -50,8 +52,8 @@ use smithay::{
     },
 };
 
-use crate::config::{CompositorConfig, WindowLayout};
-use crate::shortcuts::{PhysicalMods, ShortcutRegistry};
+use crate::config::{BindingConfig, CompositorConfig, WindowLayout};
+use crate::shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry};
 
 #[derive(Default)]
 pub struct ClientState {
@@ -81,6 +83,7 @@ pub struct BlairState {
     active_workspace_id: u64,
     next_workspace_id: u64,
     pub shortcuts: ShortcutRegistry,
+    static_bindings: HashMap<String, StaticBindingAction>,
     pub physical_mods: PhysicalMods,
 
     pub seat: Seat<Self>,
@@ -116,6 +119,16 @@ struct Workspace {
     focused_window: Option<WindowId>,
 }
 
+const CONFIG_BINDING_OWNER: &str = "blair-config";
+
+#[derive(Clone)]
+enum StaticBindingAction {
+    Close,
+    Exec(String),
+    Workspace(u64),
+    MoveToWorkspace(u64),
+}
+
 impl BlairState {
     pub fn new(
         display_handle: DisplayHandle,
@@ -137,7 +150,7 @@ impl BlairState {
             .expect("failed to init keyboard");
         seat.add_pointer();
 
-        Self {
+        let mut state = Self {
             loop_signal,
             config,
             compositor_state,
@@ -159,6 +172,7 @@ impl BlairState {
             active_workspace_id: 1,
             next_workspace_id: 2,
             shortcuts: ShortcutRegistry::default(),
+            static_bindings: HashMap::new(),
             physical_mods: PhysicalMods::default(),
             seat,
             focused_window: None,
@@ -168,11 +182,79 @@ impl BlairState {
             events,
             window_counter: 0,
             pending_move_request: None,
-        }
+        };
+        state.replace_static_bindings(&state.config.bindings.clone());
+        state
     }
 
     pub fn emit(&self, event: CompositorEvent) {
         self.events.publish(event);
+    }
+
+    fn replace_static_bindings(&mut self, bindings: &[BindingConfig]) {
+        self.shortcuts.unregister_client(CONFIG_BINDING_OWNER);
+        self.static_bindings.clear();
+        for (index, binding) in bindings.iter().enumerate() {
+            let id = index.to_string();
+            let action = match (&binding.action, &binding.exec, binding.value) {
+                (Some(action), None, None) if action == "close" => StaticBindingAction::Close,
+                (Some(action), None, Some(value)) if action == "workspace" => {
+                    StaticBindingAction::Workspace(value)
+                }
+                (Some(action), None, Some(value)) if action == "move-to-workspace" => {
+                    StaticBindingAction::MoveToWorkspace(value)
+                }
+                (None, Some(command), None) => StaticBindingAction::Exec(command.clone()),
+                _ => continue,
+            };
+            if self
+                .shortcuts
+                .bind(CONFIG_BINDING_OWNER, &id, &binding.accelerator())
+            {
+                self.static_bindings.insert(id, action);
+            }
+        }
+    }
+
+    pub fn activate_shortcuts(&mut self, shortcuts: Vec<ActivatedShortcut>) -> bool {
+        if shortcuts.is_empty() {
+            return false;
+        }
+        for shortcut in shortcuts {
+            if shortcut.client == CONFIG_BINDING_OWNER {
+                let Some(action) = self.static_bindings.get(&shortcut.id).cloned() else {
+                    continue;
+                };
+                match action {
+                    StaticBindingAction::Close => {
+                        if let Some(id) = self.focused_window {
+                            self.close_window_by_id(id);
+                        }
+                    }
+                    StaticBindingAction::Exec(command) => {
+                        if let Err(error) = Command::new("sh").arg("-c").arg(&command).spawn() {
+                            tracing::warn!(%error, command, "failed to execute configured binding");
+                        }
+                    }
+                    StaticBindingAction::Workspace(id) => {
+                        self.ensure_workspace(id);
+                        self.switch_workspace(id);
+                    }
+                    StaticBindingAction::MoveToWorkspace(id) => {
+                        if let Some(window) = self.focused_window {
+                            self.ensure_workspace(id);
+                            self.move_window_to_workspace(window, id);
+                        }
+                    }
+                }
+            } else {
+                self.emit(CompositorEvent::ShortcutActivated {
+                    client: shortcut.client,
+                    id: shortcut.id,
+                });
+            }
+        }
+        true
     }
 
     pub fn request_exit(&mut self) {
@@ -217,8 +299,12 @@ impl BlairState {
 
         let window_changed = self.config.window != next.window;
         let decoration_changed = self.config.decoration != next.decoration;
+        let bindings_changed = self.config.bindings != next.bindings;
         let layout_changed = self.config.window.layout != next.window.layout;
         self.config = next;
+        if bindings_changed {
+            self.replace_static_bindings(&self.config.bindings.clone());
+        }
 
         if layout_changed && self.config.window.layout == WindowLayout::Tiling {
             self.tile_focused_window();
@@ -343,6 +429,12 @@ impl BlairState {
             focused_window: None,
         });
         id
+    }
+
+    fn ensure_workspace(&mut self, id: u64) {
+        while self.next_workspace_id <= id {
+            self.create_workspace(self.next_workspace_id.to_string());
+        }
     }
 
     pub fn list_workspaces(&self) -> Vec<WorkspaceInfo> {

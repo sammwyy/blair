@@ -275,13 +275,7 @@ fn handle_input(
                         state.shortcuts.update_key(keycode, pressed);
                         let activated =
                             state.shortcuts.maybe_activate_physical(state.physical_mods);
-                        if pressed && !activated.is_empty() {
-                            for shortcut in activated {
-                                state.emit(blair_protocol::CompositorEvent::ShortcutActivated {
-                                    client: shortcut.client,
-                                    id: shortcut.id,
-                                });
-                            }
+                        if pressed && state.activate_shortcuts(activated) {
                             return FilterResult::Intercept(());
                         }
                         FilterResult::Forward

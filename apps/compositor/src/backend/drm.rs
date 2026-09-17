@@ -779,17 +779,7 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
             let activated = state.shortcuts.maybe_activate_physical(*physical_mods);
             if pressed && !activated.is_empty() {
                 debug_overlay.last_shortcut = activated[0].id.clone();
-                for shortcut in activated {
-                    tracing::debug!(
-                        keycode = keycode_u32,
-                        id = shortcut.id,
-                        "physical shortcut consumed"
-                    );
-                    state.emit(blair_protocol::CompositorEvent::ShortcutActivated {
-                        client: shortcut.client,
-                        id: shortcut.id,
-                    });
-                }
+                state.activate_shortcuts(activated);
                 return;
             }
 

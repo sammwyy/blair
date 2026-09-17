@@ -152,6 +152,36 @@ validate every layer before applying the configuration; an invalid edit is
 logged and the last valid configuration remains active. Backend changes still
 require a compositor restart.
 
+## Key bindings
+
+Permanent bindings live in configuration and share the physical shortcut
+registry with temporary, process-owned bindings. They are reapplied on a
+successful config reload:
+
+```toml
+[[bindings]]
+keys = ["SUPER", "Q"]
+action = "close"
+
+[[bindings]]
+keys = ["SUPER", "RETURN"]
+exec = "foot"
+
+[[bindings]]
+keys = ["SUPER", "1"]
+action = "workspace"
+value = 1
+
+[[bindings]]
+keys = ["SUPER", "SHIFT", "1"]
+action = "move-to-workspace"
+value = 1
+```
+
+Supported actions are `close`, `workspace`, and `move-to-workspace`.
+The latter two require a positive integer `value`; missing numbered
+workspaces are created on first use. `exec` runs its command via `sh -c`.
+
 The built-in D-Bus transport is enabled by default with
 `integrations.dbus = true`. Set it to `false` and restart to run with no request
 transport; additional transports can implement the transport-neutral

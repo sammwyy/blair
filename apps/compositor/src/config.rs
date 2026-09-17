@@ -17,6 +17,7 @@ use crate::decorations::DecorationTheme;
 pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
+    pub bindings: Vec<BindingConfig>,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
 }
@@ -35,6 +36,44 @@ pub struct GeneralConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct IntegrationsConfig {
     pub dbus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingConfig {
+    pub keys: Vec<String>,
+    pub action: Option<String>,
+    pub exec: Option<String>,
+    pub value: Option<u64>,
+}
+
+impl BindingConfig {
+    pub fn accelerator(&self) -> String {
+        self.keys.join("+")
+    }
+
+    fn validate(&self, index: usize) -> Result<()> {
+        if self.keys.is_empty() || self.keys.iter().any(|key| key.trim().is_empty()) {
+            anyhow::bail!("binding #{index} must contain at least one non-empty key");
+        }
+        crate::shortcuts::validate_accelerator(&self.accelerator())
+            .map_err(|error| anyhow::anyhow!("binding #{index}: {error}"))?;
+        match (&self.action, &self.exec, self.value) {
+            (Some(_), Some(_), _) => anyhow::bail!("binding #{index} cannot specify both action and exec"),
+            (None, None, _) => anyhow::bail!("binding #{index} requires action or exec"),
+            (None, Some(command), None) if !command.trim().is_empty() => Ok(()),
+            (None, Some(_), _) => anyhow::bail!("binding #{index} has an invalid exec command"),
+            (Some(action), None, None) if action == "close" => Ok(()),
+            (Some(action), None, Some(value))
+                if matches!(action.as_str(), "workspace" | "move-to-workspace") && value > 0 =>
+            {
+                Ok(())
+            }
+            (Some(action), _, _) => anyhow::bail!(
+                "binding #{index} has invalid action '{action}' or value; supported actions are close, workspace, and move-to-workspace"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,9 +243,13 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
         }
     }
 
-    merged
+    let config: CompositorConfig = merged
         .try_into()
-        .context("merged compositor configuration does not match the schema")
+        .context("merged compositor configuration does not match the schema")?;
+    for (index, binding) in config.bindings.iter().enumerate() {
+        binding.validate(index + 1)?;
+    }
+    Ok(config)
 }
 
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -466,6 +509,25 @@ mod tests {
         fs::write(
             paths.user_config_path(),
             "[window]\ndefault_width = \"hello\"\n",
+        )
+        .unwrap();
+
+        assert!(load_from_paths(&paths).is_err());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn invalid_static_binding_is_rejected() {
+        let root = scratch_dir("invalid-binding");
+        let paths = ConfigPaths {
+            system_dir: root.join("etc").join("blair"),
+            user_dir: root.join("user").join("blair"),
+        };
+        fs::create_dir_all(&paths.user_dir).unwrap();
+        fs::write(
+            paths.user_config_path(),
+            "[[bindings]]\nkeys = [\"SUPER\", \"Q\"]\naction = \"unknown\"\n",
         )
         .unwrap();
 

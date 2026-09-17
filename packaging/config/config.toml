@@ -9,6 +9,24 @@ hot_reload = true
 # Enables the built-in D-Bus transport integration.
 dbus = true
 
+[[bindings]]
+keys = ["SUPER", "Q"]
+action = "close"
+
+[[bindings]]
+keys = ["SUPER", "RETURN"]
+exec = "foot"
+
+[[bindings]]
+keys = ["SUPER", "1"]
+action = "workspace"
+value = 1
+
+[[bindings]]
+keys = ["SUPER", "SHIFT", "1"]
+action = "move-to-workspace"
+value = 1
+
 [window]
 default_width = 900
 default_height = 600

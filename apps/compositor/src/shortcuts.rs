@@ -107,6 +107,10 @@ impl ShortcutRegistry {
     }
 }
 
+pub fn validate_accelerator(accelerator: &str) -> Result<(), String> {
+    parse_binding("validation", "validation", accelerator).map(|_| ())
+}
+
 impl ShortcutBinding {
     fn matches_physical(&self, mods: PhysicalMods, pressed_keys: &HashSet<u32>) -> bool {
         self.mods == mods
@@ -270,6 +274,16 @@ fn physical_f_keycode(n: u8) -> Option<u32> {
 
 fn physical_letter_keycode(ch: char) -> Option<u32> {
     let evdev = match ch.to_ascii_lowercase() {
+        '1' => 2,
+        '2' => 3,
+        '3' => 4,
+        '4' => 5,
+        '5' => 6,
+        '6' => 7,
+        '7' => 8,
+        '8' => 9,
+        '9' => 10,
+        '0' => 11,
         'q' => 16,
         'w' => 17,
         'e' => 18,
@@ -362,6 +376,23 @@ mod tests {
                 })
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn supports_number_row_keys() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind("config", "workspace-1", "Super+1"));
+        registry.update_key(evdev_to_smithay(2), true);
+        assert_eq!(
+            registry.maybe_activate_physical(PhysicalMods {
+                logo: true,
+                ..Default::default()
+            }),
+            vec![ActivatedShortcut {
+                client: "config".to_string(),
+                id: "workspace-1".to_string(),
+            }]
         );
     }
 }

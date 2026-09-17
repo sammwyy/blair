@@ -173,14 +173,23 @@ impl CompositorApi for BlairState {
     }
 
     fn bind_shortcut(&mut self, client: &str, id: &str, accelerator: &str) -> bool {
+        if client == "blair-config" {
+            return false;
+        }
         self.shortcuts.bind(client, id, accelerator)
     }
 
     fn unbind_shortcut(&mut self, client: &str, id: &str) {
+        if client == "blair-config" {
+            return;
+        }
         self.shortcuts.unbind(client, id)
     }
 
     fn unregister_client(&mut self, client: &str) {
+        if client == "blair-config" {
+            return;
+        }
         self.shortcuts.unregister_client(client)
     }
 
