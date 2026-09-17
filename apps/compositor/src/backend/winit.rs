@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use smithay::reexports::winit::platform::pump_events::PumpStatus;
+use smithay::reexports::winit::{platform::pump_events::PumpStatus, window::Window as HostWindow};
 use smithay::{
     backend::{
         input::{
@@ -11,7 +11,7 @@ use smithay::{
         renderer::{gles::GlesRenderer, utils::draw_render_elements, Frame, Renderer},
         winit::{self, WinitEvent, WinitInput},
     },
-    input::keyboard::FilterResult,
+    input::{keyboard::FilterResult, pointer::CursorImageStatus},
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::wayland_server::Display,
     utils::{Rectangle, Transform, SERIAL_COUNTER},
@@ -22,15 +22,15 @@ use crate::{
     config::{CompositorConfig, ConfigPaths, ConfigWatcher, OutputTransform},
     decorations::RoundedCornerShaders,
     input::{
-        begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
-        upper_layer_surface_under, window_surface_under, window_under_including_decoration,
-        WindowDrag,
+        begin_window_drag, handle_decoration_press, handle_pointer_axis,
+        lower_layer_surface_under, move_dragged_window, upper_layer_surface_under,
+        window_surface_under, window_under_including_decoration, WindowDrag,
     },
     integrations,
     render::{
-        bottom_layer_elements, dnd_icon_elements, draw_window, ensure_rounded_corner_shader,
-        popup_elements, send_frame_callbacks, top_layer_elements, window_content_elements,
-        BACKGROUND_COLOR,
+        bottom_layer_elements, cursor_surface_elements, dnd_icon_elements, draw_window,
+        ensure_rounded_corner_shader, popup_elements, send_frame_callbacks, top_layer_elements,
+        window_content_elements, BACKGROUND_COLOR,
     },
     state::{BlairState, ClientState},
 };
@@ -144,6 +144,8 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     let start_time = std::time::Instant::now();
     let mut running = true;
     let mut drag: Option<WindowDrag> = None;
+    // Forces a render on the first iteration and after each resize.
+    let mut force_redraw = true;
 
     tracing::info!("entering main loop");
 
@@ -156,6 +158,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                 };
                 output.change_current_state(Some(mode), None, None, None);
                 state.output_resized(&output);
+                force_redraw = true;
                 tracing::debug!(w = size.w, h = size.h, "output resized");
             }
             WinitEvent::Input(input_event) => {
@@ -198,54 +201,66 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             }
         }
 
-        let size = backend.window_size();
-        let damage = Rectangle::from_size(size);
+        sync_host_cursor(&state, backend.window());
 
-        {
-            let (renderer, mut framebuffer) = match backend.bind() {
-                Ok(bound) => bound,
-                Err(err) => {
-                    tracing::warn!(%err, "failed to bind renderer");
-                    continue;
-                }
-            };
+        // Skip rendering entirely unless something actually changed.
+        let redraw_requested = state.take_redraw_request();
+        let should_render = force_redraw || redraw_requested || state.animations_active();
+        force_redraw = false;
 
-            let bottom_elements = bottom_layer_elements(renderer, &output);
-            let window_content = window_content_elements(renderer, &state, &output);
-            let top_elements = top_layer_elements(renderer, &output);
-            let popups = popup_elements(renderer, &state, &output);
-            let dnd_icon = dnd_icon_elements(renderer, &state);
-            let corner_shader = ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
+        if should_render {
+            let size = backend.window_size();
+            let damage = Rectangle::from_size(size);
 
-            // Winit's framebuffer has an inverted Y axis.
-            match renderer.render(&mut framebuffer, size, Transform::Flipped180) {
-                Ok(mut frame) => {
-                    let _ = frame.clear(BACKGROUND_COLOR, &[damage]);
-                    let _ = draw_render_elements(&mut frame, 1.0, &bottom_elements, &[damage]);
-                    for (window, content) in &window_content {
-                        if let Err(err) = draw_window(
-                            &mut frame,
-                            &state,
-                            window,
-                            content,
-                            &[damage],
-                            corner_shader.as_ref(),
-                        ) {
-                            tracing::warn!(%err, "failed to draw window");
-                        }
+            {
+                let (renderer, mut framebuffer) = match backend.bind() {
+                    Ok(bound) => bound,
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to bind renderer");
+                        continue;
                     }
-                    let _ = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]);
-                    let _ = draw_render_elements(&mut frame, 1.0, &popups, &[damage]);
-                    let _ = draw_render_elements(&mut frame, 1.0, &dnd_icon, &[damage]);
-                    let _ = frame.finish();
+                };
+
+                let bottom_elements = bottom_layer_elements(renderer, &output);
+                let window_content = window_content_elements(renderer, &state, &output);
+                let top_elements = top_layer_elements(renderer, &output);
+                let popups = popup_elements(renderer, &state, &output);
+                let dnd_icon = dnd_icon_elements(renderer, &state);
+                let cursor = cursor_surface_elements(renderer, &state);
+                let corner_shader =
+                    ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
+
+                // Winit's framebuffer has an inverted Y axis.
+                match renderer.render(&mut framebuffer, size, Transform::Flipped180) {
+                    Ok(mut frame) => {
+                        let _ = frame.clear(BACKGROUND_COLOR, &[damage]);
+                        let _ = draw_render_elements(&mut frame, 1.0, &bottom_elements, &[damage]);
+                        for (window, content) in &window_content {
+                            if let Err(err) = draw_window(
+                                &mut frame,
+                                &state,
+                                window,
+                                content,
+                                &[damage],
+                                corner_shader.as_ref(),
+                            ) {
+                                tracing::warn!(%err, "failed to draw window");
+                            }
+                        }
+                        let _ = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]);
+                        let _ = draw_render_elements(&mut frame, 1.0, &popups, &[damage]);
+                        let _ = draw_render_elements(&mut frame, 1.0, &dnd_icon, &[damage]);
+                        let _ = draw_render_elements(&mut frame, 1.0, &cursor, &[damage]);
+                        let _ = frame.finish();
+                    }
+                    Err(err) => tracing::warn!(%err, "render error"),
                 }
-                Err(err) => tracing::warn!(%err, "render error"),
+
+                send_frame_callbacks(&state, start_time.elapsed().as_millis() as u32);
             }
 
-            send_frame_callbacks(&state, start_time.elapsed().as_millis() as u32);
+            backend.submit(Some(&[damage])).ok();
         }
-
-        backend.submit(Some(&[damage])).ok();
 
         display
             .dispatch_clients(&mut state)
@@ -283,6 +298,20 @@ fn start_config_watcher(config: &CompositorConfig) -> Option<ConfigWatcher> {
             tracing::error!(%error, "failed to start config watcher; continuing without hot reload");
             None
         }
+    }
+}
+
+/// Reflects the pointer-cursor request onto the host window. `Surface`
+/// cursors are drawn ourselves (see [`cursor_surface_elements`]), so the
+/// host cursor stays hidden then.
+fn sync_host_cursor(state: &BlairState, window: &HostWindow) {
+    match &state.pointer_cursor {
+        CursorImageStatus::Hidden => window.set_cursor_visible(false),
+        CursorImageStatus::Named(icon) => {
+            window.set_cursor_visible(true);
+            window.set_cursor(*icon);
+        }
+        CursorImageStatus::Surface(_) => window.set_cursor_visible(false),
     }
 }
 
@@ -455,6 +484,9 @@ fn handle_input(
                 );
                 pointer.frame(state);
             }
+        }
+        InputEvent::PointerAxis { event } => {
+            handle_pointer_axis::<WinitInput, _>(state, &event);
         }
         _ => {}
     }

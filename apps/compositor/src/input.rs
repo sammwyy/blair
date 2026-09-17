@@ -1,6 +1,8 @@
 use blair_protocol::{Point as CorePoint, Rect as CoreRect};
 use smithay::{
+    backend::input::{Axis, Event, InputBackend, PointerAxisEvent},
     desktop::{layer_map_for_output, Window, WindowSurfaceType},
+    input::pointer::AxisFrame,
     utils::{Logical, Point},
     wayland::{
         compositor::with_states,
@@ -8,6 +10,54 @@ use smithay::{
     },
 };
 use wayland_server::protocol::wl_surface::WlSurface;
+
+/// Pixel-equivalent of one wheel click (120 v120 units), for backends that
+/// only report discrete steps. Matches the GTK/wlroots convention.
+const PIXELS_PER_WHEEL_CLICK: f64 = 15.0;
+
+/// Forwards a backend scroll event to the pointer as a wl_pointer axis frame.
+pub fn handle_pointer_axis<B, E>(state: &mut BlairState, event: &E)
+where
+    B: InputBackend,
+    E: PointerAxisEvent<B> + Event<B>,
+{
+    let Some(pointer) = state.seat.get_pointer() else {
+        return;
+    };
+    let source = event.source();
+    let mut frame = AxisFrame::new(event.time_msec()).source(source);
+    let mut has_value = false;
+
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let discrete = event.amount_v120(axis);
+        if let Some(v120) = discrete {
+            frame = frame.v120(axis, v120.round() as i32);
+        }
+        let amount = event
+            .amount(axis)
+            .or_else(|| discrete.map(|v120| v120 / 120.0 * PIXELS_PER_WHEEL_CLICK));
+        match amount {
+            Some(amount) if amount != 0.0 => {
+                frame = frame
+                    .relative_direction(axis, event.relative_direction(axis))
+                    .value(axis, amount);
+                has_value = true;
+            }
+            Some(_) => {
+                // Zero amount signals scroll stop (needed for kinetic scrolling).
+                frame = frame.stop(axis);
+            }
+            None => {}
+        }
+    }
+
+    if !has_value {
+        return;
+    }
+
+    pointer.axis(state, frame);
+    pointer.frame(state);
+}
 
 use crate::{
     decorations::{hit_test_frame, DecorationFrame, DecorationPart},

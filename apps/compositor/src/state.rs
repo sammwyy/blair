@@ -121,6 +121,10 @@ pub struct BlairState {
     /// is active. Set in [`ClientDndGrabHandler::started`], cleared in
     /// [`ClientDndGrabHandler::dropped`].
     pub dnd_icon: Option<WlSurface>,
+
+    /// Cursor image last requested via [`SeatHandler::cursor_image`]; backends
+    /// read this to update the platform cursor or drawn cursor surface.
+    pub pointer_cursor: CursorImageStatus,
 }
 
 pub struct MinimizedWindow {
@@ -278,6 +282,7 @@ impl BlairState {
             window_counter: 0,
             pending_move_request: None,
             dnd_icon: None,
+            pointer_cursor: CursorImageStatus::default_named(),
         };
         state.replace_static_bindings(&state.config.bindings.clone());
         state
@@ -1350,6 +1355,10 @@ impl CompositorHandler for BlairState {
         ensure_initial_configure(surface, &self.space, &mut self.popup_manager);
         self.focus_interactive_layer_surface(surface);
         self.reflow_layer_surface(surface);
+
+        // Backends only repaint on request; without this a committed buffer
+        // would never actually get scheduled for display.
+        self.request_redraw();
     }
 }
 
@@ -1837,7 +1846,10 @@ impl SeatHandler for BlairState {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.pointer_cursor = image;
+        self.request_redraw();
+    }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let id = focused.and_then(|surface| {

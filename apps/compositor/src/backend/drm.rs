@@ -30,7 +30,7 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::UdevBackend,
     },
-    input::keyboard::FilterResult,
+    input::{keyboard::FilterResult, pointer::CursorImageStatus},
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
@@ -54,14 +54,15 @@ use crate::{
     },
     decorations::RoundedCornerShaders,
     input::{
-        begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
-        upper_layer_surface_under, window_surface_under, window_under_including_decoration,
-        WindowDrag,
+        begin_window_drag, handle_decoration_press, handle_pointer_axis,
+        lower_layer_surface_under, move_dragged_window, upper_layer_surface_under,
+        window_surface_under, window_under_including_decoration, WindowDrag,
     },
     integrations,
     render::{
-        bottom_layer_elements, dnd_icon_elements, draw_window, ensure_rounded_corner_shader,
-        popup_elements, top_layer_elements, window_content_elements, BACKGROUND_COLOR,
+        bottom_layer_elements, cursor_surface_elements, dnd_icon_elements, draw_window,
+        ensure_rounded_corner_shader, popup_elements, top_layer_elements,
+        window_content_elements, BACKGROUND_COLOR,
     },
     shortcuts::{physical_vt_from_keycode, update_physical_mods, vt_from_keysym, PhysicalMods},
     state::{BlairState, ClientState},
@@ -75,6 +76,10 @@ struct LoopData {
     session: LibSeatSession,
     start_time: std::time::Instant,
     need_frame: bool,
+    /// True while a queued buffer awaits its `DrmEvent::VBlank` flip
+    /// confirmation, to avoid rendering before the GBM surface has a buffer
+    /// free again.
+    frame_pending: bool,
     session_active: bool,
     running: bool,
     frame_counter: Arc<AtomicU64>,
@@ -199,6 +204,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         session,
         start_time: std::time::Instant::now(),
         need_frame: false,
+        frame_pending: false,
         session_active: initial_active,
         running: true,
         frame_counter: Arc::clone(&frame_counter),
@@ -223,6 +229,8 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                     tracing::info!("session paused (VT switch out)");
                     data.session_active = false;
                     data.need_frame = false;
+                    // No VBlank will arrive for the in-flight buffer once paused.
+                    data.frame_pending = false;
                     if let Some(libinput) = data.libinput.as_mut() {
                         libinput.suspend();
                         tracing::debug!("libinput suspended");
@@ -434,9 +442,10 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                         tracing::warn!("frame_submitted error: {err}");
                     }
                 }
-                if data.session_active {
-                    data.need_frame = true;
-                }
+                // No forced `need_frame = true` here: that used to render
+                // every vblank forever, even idle. Redraws are now requested
+                // on demand via `BlairState::request_redraw`.
+                data.frame_pending = false;
             }
             DrmEvent::Error(err) => tracing::warn!("DRM error: {err}"),
         })
@@ -523,7 +532,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             loop_data.need_frame = true;
         }
 
-        if loop_data.need_frame && loop_data.session_active {
+        if loop_data.need_frame && loop_data.session_active && !loop_data.frame_pending {
             loop_data.need_frame = false;
             let debug_overlay = loop_data.debug_overlay.snapshot(
                 loop_data.session_active,
@@ -538,6 +547,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                 output: Some(output),
                 start_time,
                 frame_counter,
+                frame_pending,
                 ..
             } = &mut loop_data
             else {
@@ -554,6 +564,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                 &debug_overlay,
             ) {
                 frame_counter.fetch_add(1, Ordering::Relaxed);
+                *frame_pending = true;
             }
         }
     }
@@ -676,6 +687,7 @@ fn render_frame(
     let top_elements = top_layer_elements(renderer, output);
     let popups = popup_elements(renderer, state, output);
     let dnd_icon = dnd_icon_elements(renderer, state);
+    let cursor_surface = cursor_surface_elements(renderer, state);
     let corner_shader = ensure_rounded_corner_shader(renderer, rounded_corner_shader);
 
     let mut framebuffer = match renderer.bind(&mut dmabuf) {
@@ -733,8 +745,20 @@ fn render_frame(
             if let Err(err) = draw_debug_overlay(&mut frame, &[damage], debug_overlay) {
                 tracing::warn!("debug overlay: {err}");
             }
-            if let Err(err) = draw_software_cursor(&mut frame, &[damage], state) {
-                tracing::warn!("software cursor: {err}");
+            match &state.pointer_cursor {
+                CursorImageStatus::Hidden => {}
+                CursorImageStatus::Surface(_) => {
+                    if let Err(err) =
+                        draw_render_elements(&mut frame, 1.0, &cursor_surface, &[damage])
+                    {
+                        tracing::warn!("draw_render_elements: {err}");
+                    }
+                }
+                CursorImageStatus::Named(_) => {
+                    if let Err(err) = draw_software_cursor(&mut frame, &[damage], state) {
+                        tracing::warn!("software cursor: {err}");
+                    }
+                }
             }
             if let Err(err) = frame.finish() {
                 tracing::warn!("frame.finish: {err}");
@@ -1005,6 +1029,10 @@ fn handle_input(event: InputEvent<LibinputInputBackend>, data: &mut LoopData) {
                 );
                 pointer.frame(state);
             }
+        }
+        InputEvent::PointerAxis { event } => {
+            debug_overlay.pointer_events += 1;
+            handle_pointer_axis::<LibinputInputBackend, _>(state, &event);
         }
         _ => {}
     }

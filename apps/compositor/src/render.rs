@@ -10,10 +10,11 @@ use smithay::{
         Color32F, Frame,
     },
     desktop::{layer_map_for_output, PopupManager, Window},
+    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
     utils::{Buffer, Physical, Rectangle, Size},
     wayland::{
-        compositor::{with_surface_tree_downward, SurfaceAttributes, TraversalAction},
+        compositor::{with_states, with_surface_tree_downward, SurfaceAttributes, TraversalAction},
         seat::WaylandFocus,
         shell::wlr_layer::Layer,
     },
@@ -188,6 +189,36 @@ pub fn dnd_icon_elements(
         1.0,
         1.0,
         Kind::Unspecified,
+    )
+}
+
+/// The client-supplied cursor surface, if the pointer's current cursor is a
+/// custom bitmap rather than a `Named` or `Hidden` status.
+pub fn cursor_surface_elements(
+    renderer: &mut GlesRenderer,
+    state: &BlairState,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let CursorImageStatus::Surface(surface) = &state.pointer_cursor else {
+        return Vec::new();
+    };
+    let Some(pointer) = state.seat.get_pointer() else {
+        return Vec::new();
+    };
+    let hotspot = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<CursorImageSurfaceData>()
+            .map(|data| data.lock().unwrap().hotspot)
+            .unwrap_or_default()
+    });
+    let loc = pointer.current_location().to_i32_round() - hotspot;
+    render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+        renderer,
+        surface,
+        (loc.x, loc.y),
+        1.0,
+        1.0,
+        Kind::Cursor,
     )
 }
 
