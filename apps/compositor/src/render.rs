@@ -168,6 +168,29 @@ pub fn popup_elements(
     elements
 }
 
+/// The client-supplied drag icon for an active drag-and-drop grab (see
+/// [`crate::state::BlairState::dnd_icon`]), positioned at the pointer.
+/// Drawn last so it stays above every window and popup, like a cursor.
+pub fn dnd_icon_elements(
+    renderer: &mut GlesRenderer,
+    state: &BlairState,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let Some(icon) = state.dnd_icon.as_ref() else {
+        return Vec::new();
+    };
+    let location = state.seat.get_pointer().map_or((0, 0).into(), |pointer| {
+        pointer.current_location().to_i32_round()
+    });
+    render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+        renderer,
+        icon,
+        (location.x, location.y),
+        1.0,
+        1.0,
+        Kind::Unspecified,
+    )
+}
+
 struct WindowFrame {
     client_rect: Rect,
     frame_rect: Rect,

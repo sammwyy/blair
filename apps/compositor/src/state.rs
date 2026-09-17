@@ -115,6 +115,12 @@ pub struct BlairState {
 
     pub window_counter: u64,
     pub pending_move_request: Option<Window>,
+
+    /// The icon surface a client handed us via `start_drag`, if any,
+    /// rendered at the pointer's current location for as long as the drag
+    /// is active. Set in [`ClientDndGrabHandler::started`], cleared in
+    /// [`ClientDndGrabHandler::dropped`].
+    pub dnd_icon: Option<WlSurface>,
 }
 
 pub struct MinimizedWindow {
@@ -271,6 +277,7 @@ impl BlairState {
             events,
             window_counter: 0,
             pending_move_request: None,
+            dnd_icon: None,
         };
         state.replace_static_bindings(&state.config.bindings.clone());
         state
@@ -1869,7 +1876,22 @@ impl DataDeviceHandler for BlairState {
     }
 }
 
-impl ClientDndGrabHandler for BlairState {}
+impl ClientDndGrabHandler for BlairState {
+    fn started(
+        &mut self,
+        _source: Option<wayland_server::protocol::wl_data_source::WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.dnd_icon = icon;
+        self.redraw_requested = true;
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.dnd_icon = None;
+        self.redraw_requested = true;
+    }
+}
 impl ServerDndGrabHandler for BlairState {
     fn send(&mut self, _mime_type: String, _fd: OwnedFd, _seat: Seat<Self>) {}
 }

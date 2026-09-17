@@ -28,8 +28,9 @@ use crate::{
     },
     integrations,
     render::{
-        bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
-        send_frame_callbacks, top_layer_elements, window_content_elements, BACKGROUND_COLOR,
+        bottom_layer_elements, dnd_icon_elements, draw_window, ensure_rounded_corner_shader,
+        popup_elements, send_frame_callbacks, top_layer_elements, window_content_elements,
+        BACKGROUND_COLOR,
     },
     state::{BlairState, ClientState},
 };
@@ -213,6 +214,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             let window_content = window_content_elements(renderer, &state, &output);
             let top_elements = top_layer_elements(renderer, &output);
             let popups = popup_elements(renderer, &state, &output);
+            let dnd_icon = dnd_icon_elements(renderer, &state);
             let corner_shader = ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
 
             // Winit's framebuffer has an inverted Y axis.
@@ -234,6 +236,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                     }
                     let _ = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]);
                     let _ = draw_render_elements(&mut frame, 1.0, &popups, &[damage]);
+                    let _ = draw_render_elements(&mut frame, 1.0, &dnd_icon, &[damage]);
                     let _ = frame.finish();
                 }
                 Err(err) => tracing::warn!(%err, "render error"),

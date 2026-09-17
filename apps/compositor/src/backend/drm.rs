@@ -60,8 +60,8 @@ use crate::{
     },
     integrations,
     render::{
-        bottom_layer_elements, draw_window, ensure_rounded_corner_shader, popup_elements,
-        top_layer_elements, window_content_elements, BACKGROUND_COLOR,
+        bottom_layer_elements, dnd_icon_elements, draw_window, ensure_rounded_corner_shader,
+        popup_elements, top_layer_elements, window_content_elements, BACKGROUND_COLOR,
     },
     shortcuts::{physical_vt_from_keycode, update_physical_mods, vt_from_keysym, PhysicalMods},
     state::{BlairState, ClientState},
@@ -675,6 +675,7 @@ fn render_frame(
     let window_content = window_content_elements(renderer, state, output);
     let top_elements = top_layer_elements(renderer, output);
     let popups = popup_elements(renderer, state, output);
+    let dnd_icon = dnd_icon_elements(renderer, state);
     let corner_shader = ensure_rounded_corner_shader(renderer, rounded_corner_shader);
 
     let mut framebuffer = match renderer.bind(&mut dmabuf) {
@@ -723,6 +724,9 @@ fn render_frame(
                 tracing::warn!("draw_render_elements: {err}");
             }
             if let Err(err) = draw_render_elements(&mut frame, 1.0, &popups, &[damage]) {
+                tracing::warn!("draw_render_elements: {err}");
+            }
+            if let Err(err) = draw_render_elements(&mut frame, 1.0, &dnd_icon, &[damage]) {
                 tracing::warn!("draw_render_elements: {err}");
             }
             #[cfg(debug_assertions)]
