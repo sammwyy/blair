@@ -52,7 +52,7 @@ use smithay::{
     },
 };
 
-use crate::config::{BindingConfig, CompositorConfig, WindowLayout};
+use crate::config::{BindingConfig, CompositorConfig, WindowLayout, WorkspacesConfig};
 use crate::shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry};
 
 #[derive(Default)]
@@ -112,6 +112,7 @@ struct WorkspaceWindow {
 struct Workspace {
     id: u64,
     name: String,
+    output: Option<String>,
     /// Inactive workspaces keep their windows here; the active one is in
     /// `BlairState::space`.
     windows: Vec<WorkspaceWindow>,
@@ -127,6 +128,24 @@ enum StaticBindingAction {
     Exec(String),
     Workspace(u64),
     MoveToWorkspace(u64),
+}
+
+fn configured_workspaces(config: &WorkspacesConfig) -> Vec<Workspace> {
+    (1..=config.count)
+        .map(|id| {
+            let definition = config.definitions.get(&id.to_string());
+            Workspace {
+                id,
+                name: definition
+                    .and_then(|definition| definition.name.clone())
+                    .unwrap_or_else(|| id.to_string()),
+                output: definition.and_then(|definition| definition.output.clone()),
+                windows: Vec::new(),
+                minimized_windows: Vec::new(),
+                focused_window: None,
+            }
+        })
+        .collect()
 }
 
 impl BlairState {
@@ -159,6 +178,8 @@ impl BlairState {
         .expect("failed to init keyboard");
         seat.add_pointer();
 
+        let workspaces = configured_workspaces(&config.workspaces);
+        let next_workspace_id = config.workspaces.count + 1;
         let mut state = Self {
             loop_signal,
             config,
@@ -171,15 +192,9 @@ impl BlairState {
             space: Space::default(),
             popup_manager: PopupManager::default(),
             layer_surfaces: Vec::new(),
-            workspaces: vec![Workspace {
-                id: 1,
-                name: "1".to_string(),
-                windows: Vec::new(),
-                minimized_windows: Vec::new(),
-                focused_window: None,
-            }],
+            workspaces,
             active_workspace_id: 1,
-            next_workspace_id: 2,
+            next_workspace_id,
             shortcuts: ShortcutRegistry::default(),
             static_bindings: HashMap::new(),
             physical_mods: PhysicalMods::default(),
@@ -307,6 +322,10 @@ impl BlairState {
             tracing::warn!("input changes require a compositor restart");
             next.input = self.config.input.clone();
         }
+        if self.config.workspaces != next.workspaces {
+            tracing::warn!("workspace topology changes require a compositor restart");
+            next.workspaces = self.config.workspaces.clone();
+        }
 
         if self.config.general.primary_client != next.general.primary_client
             || self.config.general.spawn_primary_client != next.general.spawn_primary_client
@@ -432,6 +451,14 @@ impl BlairState {
     }
 
     pub fn create_workspace(&mut self, name: String) -> u64 {
+        if !self.config.workspaces.dynamic {
+            tracing::warn!("refusing API workspace creation while dynamic workspaces are disabled");
+            return 0;
+        }
+        self.create_workspace_unchecked(name)
+    }
+
+    fn create_workspace_unchecked(&mut self, name: String) -> u64 {
         let id = self.next_workspace_id;
         self.next_workspace_id += 1;
         self.workspaces.push(Workspace {
@@ -441,6 +468,7 @@ impl BlairState {
             } else {
                 name
             },
+            output: None,
             windows: Vec::new(),
             minimized_windows: Vec::new(),
             focused_window: None,
@@ -449,8 +477,15 @@ impl BlairState {
     }
 
     fn ensure_workspace(&mut self, id: u64) {
+        if id > self.config.workspaces.count && !self.config.workspaces.dynamic {
+            tracing::warn!(
+                workspace = id,
+                "workspace is outside the static workspace set"
+            );
+            return;
+        }
         while self.next_workspace_id <= id {
-            self.create_workspace(self.next_workspace_id.to_string());
+            self.create_workspace_unchecked(self.next_workspace_id.to_string());
         }
     }
 
@@ -471,6 +506,18 @@ impl BlairState {
     }
 
     pub fn switch_workspace(&mut self, id: u64) -> bool {
+        let id = if self.workspaces.iter().any(|workspace| workspace.id == id) {
+            id
+        } else if self.config.workspaces.wrap && !self.config.workspaces.dynamic {
+            let count = self.config.workspaces.count;
+            if id == 0 {
+                count
+            } else {
+                ((id - 1) % count) + 1
+            }
+        } else {
+            id
+        };
         if id == self.active_workspace_id {
             return true;
         }
@@ -1075,10 +1122,12 @@ impl XdgShellHandler for BlairState {
 
         let window = Window::new_wayland_window(surface);
 
+        let workspace_output = self.active_workspace().output.as_deref();
         let pos: Point<i32, Logical> = self
             .space
             .outputs()
-            .next()
+            .find(|output| workspace_output.is_some_and(|name| output.name() == name))
+            .or_else(|| self.space.outputs().next())
             .and_then(|output| self.space.output_geometry(output))
             .map(|geometry| {
                 let width = self.config.window.default_width;

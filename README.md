@@ -241,6 +241,27 @@ are applied through libinput when each device appears; unsupported options are
 ignored per-device. The nested backend receives its pointer configuration from
 its host compositor. Input configuration changes require a restart.
 
+## Persistent workspaces
+
+    [workspaces]
+    count = 10
+    dynamic = false
+    wrap = true
+
+    [workspaces."1"]
+    name = "dev"
+    output = "DP-1"
+
+    [workspaces."2"]
+    name = "web"
+
+Workspaces 1 through count are created at startup and remain available for the
+whole session. With dynamic disabled, CreateWorkspace through an integration
+returns 0 and does not alter the declared topology. An output assignment is a
+preferred target for new windows in that workspace, with a safe fallback if
+the named connector is unavailable. Workspace topology changes require a
+restart.
+
 ## Workspaces
 
 Blair starts with workspace `1`. The D-Bus interface

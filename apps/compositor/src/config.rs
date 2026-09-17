@@ -20,6 +20,7 @@ pub struct CompositorConfig {
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
     pub input: InputConfig,
+    pub workspaces: WorkspacesConfig,
     pub outputs: BTreeMap<String, OutputConfig>,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
@@ -47,6 +48,65 @@ pub struct InputConfig {
     pub keyboard: KeyboardConfig,
     pub mouse: MouseConfig,
     pub touchpad: TouchpadConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspacesConfig {
+    pub count: u64,
+    pub dynamic: bool,
+    pub wrap: bool,
+    #[serde(flatten)]
+    pub definitions: BTreeMap<String, WorkspaceDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkspaceDefinition {
+    pub name: Option<String>,
+    pub output: Option<String>,
+}
+
+impl Default for WorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            count: 10,
+            dynamic: false,
+            wrap: true,
+            definitions: BTreeMap::new(),
+        }
+    }
+}
+
+impl WorkspacesConfig {
+    fn validate(&self) -> Result<()> {
+        if !(1..=100).contains(&self.count) {
+            anyhow::bail!("workspaces count must be between 1 and 100");
+        }
+        for (id, definition) in &self.definitions {
+            let id = id
+                .parse::<u64>()
+                .with_context(|| format!("workspace key '{id}' must be a positive integer"))?;
+            if id == 0 || id > self.count {
+                anyhow::bail!("workspace {id} is outside the configured count");
+            }
+            if definition
+                .name
+                .as_deref()
+                .is_some_and(|name| name.trim().is_empty())
+            {
+                anyhow::bail!("workspace {id} has an empty name");
+            }
+            if definition
+                .output
+                .as_deref()
+                .is_some_and(|output| output.trim().is_empty())
+            {
+                anyhow::bail!("workspace {id} has an empty output");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,6 +507,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
         output.validate(name)?;
     }
     config.input.validate()?;
+    config.workspaces.validate()?;
     Ok(config)
 }
 
@@ -762,5 +823,22 @@ mod tests {
         input.mouse.sensitivity = 0.0;
         input.mouse.acceleration = "invalid".to_string();
         assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn parses_declarative_workspaces() {
+        let config: CompositorConfig = toml::from_str(
+            "[workspaces]\ncount = 2\ndynamic = false\nwrap = true\n\n[workspaces.\"1\"]\nname = \"dev\"\noutput = \"DP-1\"\n",
+        )
+        .unwrap();
+        config.workspaces.validate().unwrap();
+        assert_eq!(
+            config.workspaces.definitions["1"].name.as_deref(),
+            Some("dev")
+        );
+        assert_eq!(
+            config.workspaces.definitions["1"].output.as_deref(),
+            Some("DP-1")
+        );
     }
 }

@@ -24,6 +24,18 @@ tap = true
 natural_scroll = true
 disable_while_typing = true
 
+[workspaces]
+count = 10
+dynamic = false
+wrap = true
+
+[workspaces."1"]
+name = "dev"
+output = "DP-1"
+
+[workspaces."2"]
+name = "web"
+
 [[bindings]]
 keys = ["SUPER", "Q"]
 action = "close"
