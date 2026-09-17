@@ -1,6 +1,6 @@
 use std::{cell::RefCell, os::unix::io::OwnedFd, process::Command, sync::mpsc::Sender};
 
-use blair_protocol::{CompositorEvent, Rect, WindowId, WindowInfo};
+use blair_protocol::{CompositorEvent, Rect, WindowId, WindowInfo, WorkspaceInfo};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
@@ -76,7 +76,9 @@ pub struct BlairState {
     pub space: Space<Window>,
     pub popup_manager: PopupManager,
     pub layer_surfaces: Vec<DesktopLayerSurface>,
-    pub minimized_windows: Vec<MinimizedWindow>,
+    workspaces: Vec<Workspace>,
+    active_workspace_id: u64,
+    next_workspace_id: u64,
     pub shortcuts: ShortcutRegistry,
     pub physical_mods: PhysicalMods,
 
@@ -96,6 +98,21 @@ pub struct BlairState {
 pub struct MinimizedWindow {
     pub window: Window,
     pub location: Point<i32, Logical>,
+}
+
+struct WorkspaceWindow {
+    window: Window,
+    location: Point<i32, Logical>,
+}
+
+struct Workspace {
+    id: u64,
+    name: String,
+    /// Inactive workspaces keep their windows here; the active one is in
+    /// `BlairState::space`.
+    windows: Vec<WorkspaceWindow>,
+    minimized_windows: Vec<MinimizedWindow>,
+    focused_window: Option<WindowId>,
 }
 
 impl BlairState {
@@ -131,7 +148,15 @@ impl BlairState {
             space: Space::default(),
             popup_manager: PopupManager::default(),
             layer_surfaces: Vec::new(),
-            minimized_windows: Vec::new(),
+            workspaces: vec![Workspace {
+                id: 1,
+                name: "1".to_string(),
+                windows: Vec::new(),
+                minimized_windows: Vec::new(),
+                focused_window: None,
+            }],
+            active_workspace_id: 1,
+            next_workspace_id: 2,
             shortcuts: ShortcutRegistry::default(),
             physical_mods: PhysicalMods::default(),
             seat,
@@ -280,7 +305,177 @@ impl BlairState {
         self.space.outputs().map(Output::name).collect()
     }
 
+    fn active_workspace(&self) -> &Workspace {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.id == self.active_workspace_id)
+            .expect("active workspace must exist")
+    }
+
+    fn active_workspace_mut(&mut self) -> &mut Workspace {
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == self.active_workspace_id)
+            .expect("active workspace must exist")
+    }
+
+    pub fn create_workspace(&mut self, name: String) -> u64 {
+        let id = self.next_workspace_id;
+        self.next_workspace_id += 1;
+        self.workspaces.push(Workspace {
+            id,
+            name: if name.trim().is_empty() {
+                id.to_string()
+            } else {
+                name
+            },
+            windows: Vec::new(),
+            minimized_windows: Vec::new(),
+            focused_window: None,
+        });
+        id
+    }
+
+    pub fn list_workspaces(&self) -> Vec<WorkspaceInfo> {
+        self.workspaces
+            .iter()
+            .map(|workspace| WorkspaceInfo {
+                id: workspace.id,
+                name: workspace.name.clone(),
+                active: workspace.id == self.active_workspace_id,
+                window_count: if workspace.id == self.active_workspace_id {
+                    self.space.elements().count() + workspace.minimized_windows.len()
+                } else {
+                    workspace.windows.len() + workspace.minimized_windows.len()
+                },
+            })
+            .collect()
+    }
+
+    pub fn switch_workspace(&mut self, id: u64) -> bool {
+        if id == self.active_workspace_id {
+            return true;
+        }
+        let Some(target_index) = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)
+        else {
+            return false;
+        };
+
+        let mapped: Vec<WorkspaceWindow> = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                self.space
+                    .element_location(window)
+                    .map(|location| WorkspaceWindow {
+                        window: window.clone(),
+                        location,
+                    })
+            })
+            .collect();
+        for entry in &mapped {
+            self.space.unmap_elem(&entry.window);
+        }
+        let current_minimized = std::mem::take(&mut self.active_workspace_mut().minimized_windows);
+        let current_focus = self.focused_window;
+        {
+            let current = self.active_workspace_mut();
+            current.windows = mapped;
+            current.minimized_windows = current_minimized;
+            current.focused_window = current_focus;
+        }
+
+        let (next_windows, next_minimized, next_focus) = {
+            let target = &mut self.workspaces[target_index];
+            (
+                std::mem::take(&mut target.windows),
+                std::mem::take(&mut target.minimized_windows),
+                target.focused_window,
+            )
+        };
+        self.active_workspace_id = id;
+        self.active_workspace_mut().minimized_windows = next_minimized;
+        self.focused_window = None;
+        for entry in next_windows {
+            self.space
+                .map_element(entry.window.clone(), entry.location, true);
+        }
+
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        }
+        if let Some(id) = next_focus {
+            let _ = self.focus_window_by_id(id);
+        }
+        self.request_redraw();
+        true
+    }
+
+    pub fn move_window_to_workspace(&mut self, id: WindowId, workspace_id: u64) -> bool {
+        if !self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == workspace_id)
+        {
+            return false;
+        }
+        if workspace_id == self.active_workspace_id {
+            return self.window_by_id(id).is_some();
+        }
+
+        let mapped = self
+            .space
+            .elements()
+            .find(|window| self.window_id(window) == Some(id))
+            .cloned();
+        if let Some(window) = mapped {
+            let Some(location) = self.space.element_location(&window) else {
+                return false;
+            };
+            self.space.unmap_elem(&window);
+            let target = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .expect("workspace existence checked");
+            target.windows.push(WorkspaceWindow { window, location });
+            if self.focused_window == Some(id) {
+                self.focused_window = None;
+                self.active_workspace_mut().focused_window = None;
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+                }
+            }
+            self.request_redraw();
+            return true;
+        }
+
+        let Some(index) = self
+            .active_workspace()
+            .minimized_windows
+            .iter()
+            .position(|entry| self.window_id(&entry.window) == Some(id))
+        else {
+            return false;
+        };
+        let entry = self.active_workspace_mut().minimized_windows.remove(index);
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .expect("workspace existence checked")
+            .minimized_windows
+            .push(entry);
+        true
+    }
+
     pub fn window_id(&self, window: &Window) -> Option<WindowId> {
+        Self::window_id_of(window)
+    }
+
+    fn window_id_of(window: &Window) -> Option<WindowId> {
         let surface = window.wl_surface()?;
         with_states(&surface, |states| {
             states
@@ -296,7 +491,8 @@ impl BlairState {
             .find(|window| self.window_id(window) == Some(id))
             .cloned()
             .or_else(|| {
-                self.minimized_windows
+                self.active_workspace()
+                    .minimized_windows
                     .iter()
                     .find(|entry| self.window_id(&entry.window) == Some(id))
                     .map(|entry| entry.window.clone())
@@ -307,11 +503,13 @@ impl BlairState {
         let id = self.window_id(window)?;
         let (title, app_id) = window_meta(window);
         let minimized = self
+            .active_workspace()
             .minimized_windows
             .iter()
             .any(|entry| self.window_id(&entry.window) == Some(id));
         let geometry = if minimized {
-            self.minimized_windows
+            self.active_workspace()
+                .minimized_windows
                 .iter()
                 .find(|entry| self.window_id(&entry.window) == Some(id))
                 .map(|entry| {
@@ -365,6 +563,7 @@ impl BlairState {
             .elements()
             .filter_map(|window| self.window_info(window));
         let minimized = self
+            .active_workspace()
             .minimized_windows
             .iter()
             .filter_map(|entry| self.window_info(&entry.window));
@@ -426,13 +625,14 @@ impl BlairState {
         }
 
         let Some(index) = self
+            .active_workspace()
             .minimized_windows
             .iter()
             .position(|entry| self.window_id(&entry.window) == Some(id))
         else {
             return false;
         };
-        let entry = self.minimized_windows.remove(index);
+        let entry = self.active_workspace_mut().minimized_windows.remove(index);
         let window = entry.window;
         self.space.map_element(window.clone(), entry.location, true);
         self.emit(CompositorEvent::WindowRestored { id });
@@ -458,6 +658,7 @@ impl BlairState {
             return false;
         };
         if self
+            .active_workspace()
             .minimized_windows
             .iter()
             .any(|entry| self.window_id(&entry.window) == Some(id))
@@ -468,10 +669,12 @@ impl BlairState {
             return false;
         };
         self.space.unmap_elem(window);
-        self.minimized_windows.push(MinimizedWindow {
-            window: window.clone(),
-            location,
-        });
+        self.active_workspace_mut()
+            .minimized_windows
+            .push(MinimizedWindow {
+                window: window.clone(),
+                location,
+            });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
@@ -795,6 +998,17 @@ impl XdgShellHandler for BlairState {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Self::toplevel_window_id(&surface) {
+            for workspace in &mut self.workspaces {
+                workspace
+                    .windows
+                    .retain(|entry| Self::window_id_of(&entry.window) != Some(id));
+                workspace
+                    .minimized_windows
+                    .retain(|entry| Self::window_id_of(&entry.window) != Some(id));
+                if workspace.focused_window == Some(id) {
+                    workspace.focused_window = None;
+                }
+            }
             self.emit(CompositorEvent::WindowClosed { id });
         }
     }
@@ -1057,6 +1271,7 @@ impl SeatHandler for BlairState {
             })
         });
         self.focused_window = id;
+        self.active_workspace_mut().focused_window = id;
         match id {
             Some(id) => self.emit(CompositorEvent::WindowFocused { id }),
             None => self.emit(CompositorEvent::FocusCleared),

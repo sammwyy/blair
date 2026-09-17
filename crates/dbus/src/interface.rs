@@ -3,7 +3,10 @@ use std::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use zbus::{interface, message::Header, object_server::SignalEmitter};
 
-use crate::{command::Command, wire::DbusWindow};
+use crate::{
+    command::Command,
+    wire::{DbusWindow, DbusWorkspace},
+};
 
 pub struct CompositorInterface {
     commands: Sender<Command>,
@@ -35,6 +38,28 @@ impl CompositorInterface {
 impl CompositorInterface {
     async fn list_windows(&self) -> Vec<DbusWindow> {
         self.call(Command::ListWindows).await.unwrap_or_default()
+    }
+
+    async fn list_workspaces(&self) -> Vec<DbusWorkspace> {
+        self.call(Command::ListWorkspaces).await.unwrap_or_default()
+    }
+
+    async fn create_workspace(&self, name: &str) -> u64 {
+        self.call(|reply| Command::CreateWorkspace(name.to_owned(), reply))
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn switch_workspace(&self, id: u64) -> bool {
+        self.call(|reply| Command::SwitchWorkspace(id, reply))
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn move_window_to_workspace(&self, window_id: u64, workspace_id: u64) -> bool {
+        self.call(|reply| Command::MoveWindowToWorkspace(window_id, workspace_id, reply))
+            .await
+            .unwrap_or(false)
     }
 
     async fn focus_window(&self, id: u64) -> bool {

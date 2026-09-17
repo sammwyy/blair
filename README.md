@@ -149,6 +149,14 @@ validate every layer before applying the configuration; an invalid edit is
 logged and the last valid configuration remains active. Backend changes still
 require a compositor restart.
 
+## Workspaces
+
+Blair starts with workspace `1`. The D-Bus interface
+`org.blair.Compositor1` provides `CreateWorkspace(name)`,
+`ListWorkspaces()`, `SwitchWorkspace(id)`, and
+`MoveWindowToWorkspace(window_id, workspace_id)`. `ListWindows()` and all
+window/focus operations are scoped to the active workspace.
+
 See `packaging/config/config.toml` for backend selection, the primary client
 command, window sizing, and server-side decoration settings. Set
 `decoration.corner_radius` to control rounded server-side window frames.

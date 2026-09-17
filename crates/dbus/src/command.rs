@@ -1,9 +1,13 @@
 use tokio::sync::oneshot;
 
-use crate::wire::DbusWindow;
+use crate::wire::{DbusWindow, DbusWorkspace};
 
 pub enum Command {
     ListWindows(oneshot::Sender<Vec<DbusWindow>>),
+    ListWorkspaces(oneshot::Sender<Vec<DbusWorkspace>>),
+    CreateWorkspace(String, oneshot::Sender<u64>),
+    SwitchWorkspace(u64, oneshot::Sender<bool>),
+    MoveWindowToWorkspace(u64, u64, oneshot::Sender<bool>),
     FocusWindow(u64, oneshot::Sender<bool>),
     CloseWindow(u64, oneshot::Sender<bool>),
     MinimizeWindow(u64, oneshot::Sender<bool>),

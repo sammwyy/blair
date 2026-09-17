@@ -36,6 +36,22 @@ impl CompositorBackend for BlairState {
         BlairState::list_windows(self)
     }
 
+    fn list_workspaces(&self) -> Vec<blair_protocol::WorkspaceInfo> {
+        BlairState::list_workspaces(self)
+    }
+
+    fn create_workspace(&mut self, name: String) -> u64 {
+        BlairState::create_workspace(self, name)
+    }
+
+    fn switch_workspace(&mut self, id: u64) -> bool {
+        BlairState::switch_workspace(self, id)
+    }
+
+    fn move_window_to_workspace(&mut self, window: WindowId, workspace_id: u64) -> bool {
+        BlairState::move_window_to_workspace(self, window, workspace_id)
+    }
+
     fn focus_window(&mut self, id: WindowId) -> bool {
         self.focus_window_by_id(id)
     }

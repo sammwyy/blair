@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::Type;
 
-use blair_protocol::{Rect, WindowId, WindowInfo};
+use blair_protocol::{Rect, WindowId, WindowInfo, WorkspaceInfo};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct DbusWindow {
@@ -15,6 +15,25 @@ pub struct DbusWindow {
     pub focused: bool,
     pub minimized: bool,
     pub maximized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct DbusWorkspace {
+    pub id: u64,
+    pub name: String,
+    pub active: bool,
+    pub window_count: u32,
+}
+
+impl From<&WorkspaceInfo> for DbusWorkspace {
+    fn from(info: &WorkspaceInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name.clone(),
+            active: info.active,
+            window_count: info.window_count.try_into().unwrap_or(u32::MAX),
+        }
+    }
 }
 
 impl From<DbusWindow> for WindowInfo {
@@ -60,6 +79,11 @@ mod tests {
     #[test]
     fn signature_is_a_flat_ten_field_struct() {
         assert_eq!(<DbusWindow as Type>::SIGNATURE.to_string(), "(tssiiiibbb)");
+    }
+
+    #[test]
+    fn workspace_signature_contains_identity_and_state() {
+        assert_eq!(<DbusWorkspace as Type>::SIGNATURE.to_string(), "(tsbu)");
     }
 
     #[test]

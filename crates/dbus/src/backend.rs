@@ -2,10 +2,17 @@ use std::sync::mpsc::Receiver;
 
 use blair_protocol::{Rect, WindowId, WindowInfo};
 
-use crate::{command::Command, wire::DbusWindow};
+use crate::{
+    command::Command,
+    wire::{DbusWindow, DbusWorkspace},
+};
 
 pub trait CompositorBackend {
     fn list_windows(&self) -> Vec<WindowInfo>;
+    fn list_workspaces(&self) -> Vec<blair_protocol::WorkspaceInfo>;
+    fn create_workspace(&mut self, name: String) -> u64;
+    fn switch_workspace(&mut self, id: u64) -> bool;
+    fn move_window_to_workspace(&mut self, window: WindowId, workspace_id: u64) -> bool;
     fn focus_window(&mut self, id: WindowId) -> bool;
     fn close_window(&mut self, id: WindowId) -> bool;
     fn minimize_window(&mut self, id: WindowId) -> bool;
@@ -45,6 +52,23 @@ pub fn drain(commands: &Receiver<Command>, backend: &mut impl CompositorBackend)
                     .map(DbusWindow::from)
                     .collect();
                 let _ = reply.send(windows);
+            }
+            Command::ListWorkspaces(reply) => {
+                let workspaces = backend
+                    .list_workspaces()
+                    .iter()
+                    .map(DbusWorkspace::from)
+                    .collect();
+                let _ = reply.send(workspaces);
+            }
+            Command::CreateWorkspace(name, reply) => {
+                let _ = reply.send(backend.create_workspace(name));
+            }
+            Command::SwitchWorkspace(id, reply) => {
+                let _ = reply.send(backend.switch_workspace(id));
+            }
+            Command::MoveWindowToWorkspace(window, workspace, reply) => {
+                let _ = reply.send(backend.move_window_to_workspace(WindowId(window), workspace));
             }
             Command::FocusWindow(id, reply) => {
                 let _ = reply.send(backend.focus_window(WindowId(id)));
