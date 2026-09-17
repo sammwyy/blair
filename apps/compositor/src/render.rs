@@ -25,13 +25,13 @@ use crate::{
     decorations::{
         compile_rounded_corner_shader, DecorationFrame, DecorationTheme, RoundedCornerShaders,
     },
-    state::{window_wants_server_decoration, BlairState},
+    state::BlairState,
 };
 
 pub const BACKGROUND_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
 
 pub fn decoration_theme(state: &BlairState) -> DecorationTheme {
-    state.config.decoration.to_theme()
+    state.config.decorations.to_theme()
 }
 
 pub fn ensure_rounded_corner_shader(
@@ -184,8 +184,7 @@ fn window_frame(state: &BlairState, window: &Window) -> Option<WindowFrame> {
         width: client.size.w,
         height: client.size.h,
     };
-    let has_border =
-        state.config.window.server_side_decorations && window_wants_server_decoration(window);
+    let has_border = state.window_has_server_decoration(window);
     let has_titlebar = has_border && !matches!(state.config.window.layout, WindowLayout::Tiling);
     let frame_rect = if has_border {
         DecorationFrame::compute(client_rect, &decoration_theme(state), has_titlebar).frame
@@ -226,7 +225,7 @@ pub fn draw_window(
 
     let radius = state
         .config
-        .decoration
+        .decorations
         .corner_radius
         .min(frame_rect.width / 2)
         .min(frame_rect.height / 2);
@@ -259,7 +258,9 @@ pub fn draw_window(
             (geom.maximize_btn, rgba(theme.maximize_button)),
             (geom.minimize_btn, rgba(theme.minimize_button)),
         ] {
-            draw_decoration_rect(frame, damage, rect, color)?;
+            if rect.width > 0 && rect.height > 0 {
+                draw_decoration_rect(frame, damage, rect, color)?;
+            }
         }
     }
 

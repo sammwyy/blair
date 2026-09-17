@@ -53,7 +53,8 @@ use smithay::{
 };
 
 use crate::config::{
-    BindingConfig, CompositorConfig, WindowLayout, WindowRuleConfig, WorkspacesConfig,
+    BindingConfig, CompositorConfig, DecorationModeConfig, WindowLayout, WindowRuleConfig,
+    WorkspacesConfig,
 };
 use crate::shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry};
 
@@ -380,7 +381,7 @@ impl BlairState {
         }
 
         let window_changed = self.config.window != next.window;
-        let decoration_changed = self.config.decoration != next.decoration;
+        let decoration_changed = self.config.decorations != next.decorations;
         let bindings_changed = self.config.bindings != next.bindings;
         let layout_changed = self.config.window.layout != next.window.layout;
         self.config = next;
@@ -1515,6 +1516,10 @@ impl XdgDecorationHandler for BlairState {
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        let mode = match self.config.decorations.mode {
+            DecorationModeConfig::Auto => mode,
+            _ => self.preferred_decoration_mode(),
+        };
         tracing::debug!(app_id = ?toplevel_app_id(&toplevel), ?mode, "xdg-decoration: request_mode");
         set_surface_decoration_mode(toplevel.wl_surface(), mode);
         toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
@@ -1542,10 +1547,26 @@ fn toplevel_app_id(toplevel: &ToplevelSurface) -> Option<String> {
 
 impl BlairState {
     fn preferred_decoration_mode(&self) -> DecorationMode {
-        if self.config.window.server_side_decorations {
-            DecorationMode::ServerSide
-        } else {
-            DecorationMode::ClientSide
+        match self.config.decorations.mode {
+            DecorationModeConfig::Server => DecorationMode::ServerSide,
+            DecorationModeConfig::Client | DecorationModeConfig::None => DecorationMode::ClientSide,
+            DecorationModeConfig::Auto => {
+                if self.config.window.server_side_decorations {
+                    DecorationMode::ServerSide
+                } else {
+                    DecorationMode::ClientSide
+                }
+            }
+        }
+    }
+
+    pub fn window_has_server_decoration(&self, window: &Window) -> bool {
+        match self.config.decorations.mode {
+            DecorationModeConfig::Server => true,
+            DecorationModeConfig::Client | DecorationModeConfig::None => false,
+            DecorationModeConfig::Auto => {
+                self.config.window.server_side_decorations && window_wants_server_decoration(window)
+            }
         }
     }
 }

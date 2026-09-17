@@ -216,6 +216,25 @@ one rule table without `[[rules]]`. Temporary rules are owned by the calling
 bus client, are applied after persistent rules, and are removed automatically
 when that client disconnects. Rules affect subsequently created windows.
 
+## Decorations
+
+```toml
+[decorations]
+mode = "auto" # server | client | auto | none
+border_width = 2
+corner_radius = 8
+titlebar_height = 28
+
+[decorations.buttons]
+layout = ["minimize", "maximize", "close"]
+side = "right" # left | right
+```
+
+`server` forces Blair's frame, `client` requests client-side decoration,
+`auto` honors the XDG-decoration negotiation, and `none` never draws a Blair
+frame. Button layout controls both drawing and hit-testing. The former singular
+`[decoration]` table remains accepted as a compatibility alias.
+
 ## Outputs
 
 With no `[outputs."NAME"]` entries, Blair uses the safe automatic profile:

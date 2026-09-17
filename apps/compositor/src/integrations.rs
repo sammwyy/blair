@@ -4,7 +4,7 @@ use blair_integration::{CompositorApi, EventChannel, EventFanout, Transport};
 use blair_integration_dbus::DbusIntegration;
 use blair_protocol::{Rect, WindowId, WindowInfo};
 
-use crate::config::WindowLayout;
+use crate::config::{DecorationModeConfig, WindowLayout};
 use crate::state::BlairState;
 
 pub struct Integrations {
@@ -88,7 +88,7 @@ impl CompositorApi for BlairState {
     }
 
     fn window_settings(&self) -> (i32, i32, i32, bool) {
-        let decoration = &self.config.decoration;
+        let decoration = &self.config.decorations;
         (
             decoration.titlebar_height,
             decoration.border_width,
@@ -105,7 +105,7 @@ impl CompositorApi for BlairState {
         (
             layout.to_string(),
             self.config.window.work_area_padding,
-            self.config.decoration.corner_radius,
+            self.config.decorations.corner_radius,
         )
     }
 
@@ -125,7 +125,7 @@ impl CompositorApi for BlairState {
         }
         self.config.window.layout = layout;
         self.config.window.work_area_padding = work_area_padding;
-        self.config.decoration.corner_radius = corner_radius;
+        self.config.decorations.corner_radius = corner_radius;
         if crate::config::save(&self.config).is_err() {
             return false;
         }
@@ -153,10 +153,15 @@ impl CompositorApi for BlairState {
             );
             return false;
         }
-        self.config.decoration.titlebar_height = titlebar_height;
-        self.config.decoration.border_width = border_width;
-        self.config.decoration.corner_radius = corner_radius;
+        self.config.decorations.titlebar_height = titlebar_height;
+        self.config.decorations.border_width = border_width;
+        self.config.decorations.corner_radius = corner_radius;
         self.config.window.server_side_decorations = server_side_decorations;
+        self.config.decorations.mode = if server_side_decorations {
+            DecorationModeConfig::Server
+        } else {
+            DecorationModeConfig::Client
+        };
         if let Err(error) = crate::config::save(&self.config) {
             tracing::warn!(%error, "failed to persist window settings");
             return false;

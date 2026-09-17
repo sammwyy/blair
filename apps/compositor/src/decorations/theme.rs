@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DecorationTheme {
     pub titlebar_height: i32,
     pub border_width: i32,
@@ -9,4 +9,7 @@ pub struct DecorationTheme {
     pub close_button: [u8; 4],
     pub maximize_button: [u8; 4],
     pub minimize_button: [u8; 4],
+    pub button_layout: Vec<DecorationButton>,
+    pub button_side: DecorationButtonSide,
 }
+use crate::config::{DecorationButton, DecorationButtonSide};

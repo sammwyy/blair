@@ -1,6 +1,7 @@
 use blair_protocol::Rect;
 
 use super::theme::DecorationTheme;
+use crate::config::{DecorationButton, DecorationButtonSide};
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameGeometry {
@@ -48,28 +49,42 @@ impl DecorationFrame {
             height: th,
         };
 
+        let mut close_btn = Rect::default();
+        let mut maximize_btn = Rect::default();
+        let mut minimize_btn = Rect::default();
+        let gap = 4;
+        let count = theme.button_layout.len() as i32;
+        for (index, button) in theme.button_layout.iter().enumerate() {
+            let index = index as i32;
+            let x = match theme.button_side {
+                DecorationButtonSide::Left => titlebar.x + 8 + index * (btn_size + gap),
+                DecorationButtonSide::Right => {
+                    titlebar.x + titlebar.width
+                        - 8
+                        - (count - index) * btn_size
+                        - (count - index - 1) * gap
+                }
+            };
+            let rect = Rect {
+                x,
+                y: btn_top,
+                width: btn_size,
+                height: btn_size,
+            };
+            match button {
+                DecorationButton::Close => close_btn = rect,
+                DecorationButton::Maximize => maximize_btn = rect,
+                DecorationButton::Minimize => minimize_btn = rect,
+            }
+        }
+
         FrameGeometry {
             frame,
             titlebar,
             client,
-            close_btn: Rect {
-                x: titlebar.x + titlebar.width - btn_size - 8,
-                y: btn_top,
-                width: btn_size,
-                height: btn_size,
-            },
-            maximize_btn: Rect {
-                x: titlebar.x + titlebar.width - btn_size * 2 - 12,
-                y: btn_top,
-                width: btn_size,
-                height: btn_size,
-            },
-            minimize_btn: Rect {
-                x: titlebar.x + titlebar.width - btn_size * 3 - 16,
-                y: btn_top,
-                width: btn_size,
-                height: btn_size,
-            },
+            close_btn,
+            maximize_btn,
+            minimize_btn,
             border_top: Rect {
                 x: frame.x,
                 y: frame.y,
@@ -120,6 +135,12 @@ mod tests {
             close_button: [0; 4],
             maximize_button: [0; 4],
             minimize_button: [0; 4],
+            button_layout: vec![
+                DecorationButton::Minimize,
+                DecorationButton::Maximize,
+                DecorationButton::Close,
+            ],
+            button_side: DecorationButtonSide::Right,
         }
     }
 

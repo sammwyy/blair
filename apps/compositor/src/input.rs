@@ -12,7 +12,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 use crate::{
     decorations::{hit_test_frame, DecorationFrame, DecorationPart},
     render::decoration_theme,
-    state::{window_wants_server_decoration, BlairState},
+    state::BlairState,
 };
 
 #[derive(Debug, Clone)]
@@ -227,12 +227,10 @@ pub fn window_under_including_decoration(
     {
         return Some(window);
     }
-    if !state.config.window.server_side_decorations
-        || matches!(
-            state.config.window.layout,
-            crate::config::WindowLayout::Tiling
-        )
-    {
+    if matches!(
+        state.config.window.layout,
+        crate::config::WindowLayout::Tiling
+    ) {
         return None;
     }
     let theme = decoration_theme(state);
@@ -241,7 +239,7 @@ pub fn window_under_including_decoration(
         .into_iter()
         .rev()
         .find(|window| {
-            if !window_wants_server_decoration(window) {
+            if !state.window_has_server_decoration(window) {
                 return false;
             }
             let Some(loc) = state.space.element_location(window) else {
@@ -268,12 +266,11 @@ pub fn handle_decoration_press(
     window: Window,
     pointer_pos: Point<f64, Logical>,
 ) -> bool {
-    if !state.config.window.server_side_decorations
+    if !state.window_has_server_decoration(&window)
         || matches!(
             state.config.window.layout,
             crate::config::WindowLayout::Tiling
         )
-        || !window_wants_server_decoration(&window)
     {
         return false;
     }

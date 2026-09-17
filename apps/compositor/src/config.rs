@@ -24,7 +24,8 @@ pub struct CompositorConfig {
     pub workspaces: WorkspacesConfig,
     pub outputs: BTreeMap<String, OutputConfig>,
     pub window: WindowConfig,
-    pub decoration: DecorationConfig,
+    #[serde(alias = "decoration")]
+    pub decorations: DecorationConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +445,7 @@ pub enum WindowLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DecorationConfig {
+    pub mode: DecorationModeConfig,
     pub titlebar_height: i32,
     pub border_width: i32,
     pub corner_radius: i32,
@@ -454,6 +456,53 @@ pub struct DecorationConfig {
     pub close_button: String,
     pub maximize_button: String,
     pub minimize_button: String,
+    pub buttons: DecorationButtonsConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecorationModeConfig {
+    Server,
+    Client,
+    #[default]
+    Auto,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DecorationButtonsConfig {
+    pub layout: Vec<DecorationButton>,
+    pub side: DecorationButtonSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecorationButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecorationButtonSide {
+    Left,
+    #[default]
+    Right,
+}
+
+impl Default for DecorationButtonsConfig {
+    fn default() -> Self {
+        Self {
+            layout: vec![
+                DecorationButton::Minimize,
+                DecorationButton::Maximize,
+                DecorationButton::Close,
+            ],
+            side: DecorationButtonSide::Right,
+        }
+    }
 }
 
 impl Default for GeneralConfig {
@@ -488,6 +537,7 @@ impl Default for WindowConfig {
 impl Default for DecorationConfig {
     fn default() -> Self {
         Self {
+            mode: DecorationModeConfig::Auto,
             titlebar_height: 32,
             border_width: 4,
             corner_radius: 12,
@@ -498,11 +548,31 @@ impl Default for DecorationConfig {
             close_button: "#f38ba8".to_string(),
             maximize_button: "#a6e3a1".to_string(),
             minimize_button: "#f9e2af".to_string(),
+            buttons: DecorationButtonsConfig::default(),
         }
     }
 }
 
 impl DecorationConfig {
+    fn validate(&self) -> Result<()> {
+        if !(0..=16).contains(&self.border_width)
+            || !(0..=64).contains(&self.corner_radius)
+            || !(0..=96).contains(&self.titlebar_height)
+        {
+            anyhow::bail!("invalid decoration dimensions");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if self
+            .buttons
+            .layout
+            .iter()
+            .any(|button| !seen.insert(*button as u8))
+        {
+            anyhow::bail!("decoration button layout contains duplicates");
+        }
+        Ok(())
+    }
+
     pub fn to_theme(&self) -> DecorationTheme {
         DecorationTheme {
             titlebar_height: self.titlebar_height,
@@ -514,6 +584,8 @@ impl DecorationConfig {
             close_button: parse_color(&self.close_button),
             maximize_button: parse_color(&self.maximize_button),
             minimize_button: parse_color(&self.minimize_button),
+            button_layout: self.buttons.layout.clone(),
+            button_side: self.buttons.side,
         }
     }
 }
@@ -604,6 +676,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
     }
     config.input.validate()?;
     config.workspaces.validate()?;
+    config.decorations.validate()?;
     Ok(config)
 }
 
@@ -956,5 +1029,18 @@ mod tests {
         let config: CompositorConfig =
             toml::from_str("[[rules]]\napp_id = \"x\"\nfloating = true\ntiled = true\n").unwrap();
         assert!(config.rules[0].validate(1).is_err());
+    }
+
+    #[test]
+    fn parses_plural_decorations_and_legacy_alias() {
+        let config: CompositorConfig = toml::from_str(
+            "[decorations]\nmode = \"server\"\nborder_width = 2\ncorner_radius = 8\ntitlebar_height = 28\n\n[decorations.buttons]\nlayout = [\"close\", \"minimize\"]\nside = \"left\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.decorations.mode, DecorationModeConfig::Server);
+        assert_eq!(config.decorations.buttons.side, DecorationButtonSide::Left);
+
+        let legacy: CompositorConfig = toml::from_str("[decoration]\ncorner_radius = 4\n").unwrap();
+        assert_eq!(legacy.decorations.corner_radius, 4);
     }
 }

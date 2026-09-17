@@ -86,14 +86,15 @@ scale = 1.0
 [window]
 default_width = 900
 default_height = 600
-server_side_decorations = true
 layout = "floating"
 work_area_padding = 16
 
-[decoration]
-titlebar_height = 32
-border_width = 4
-corner_radius = 12
+[decorations]
+# server | client | auto | none
+mode = "auto"
+titlebar_height = 28
+border_width = 2
+corner_radius = 8
 active_titlebar = "#1e1e2e"
 inactive_titlebar = "#11111b"
 active_border = "#89b4fa"
@@ -101,3 +102,7 @@ inactive_border = "#313244"
 close_button = "#f38ba8"
 maximize_button = "#a6e3a1"
 minimize_button = "#f9e2af"
+
+[decorations.buttons]
+layout = ["minimize", "maximize", "close"]
+side = "right"
