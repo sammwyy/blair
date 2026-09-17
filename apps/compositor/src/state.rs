@@ -126,6 +126,7 @@ struct Workspace {
     output: Option<String>,
     minimized_windows: Vec<MinimizedWindow>,
     focused_window: Option<WindowId>,
+    focus_history: Vec<WindowId>,
 }
 
 const CONFIG_BINDING_OWNER: &str = "blair-config";
@@ -198,6 +199,7 @@ fn configured_workspaces(config: &WorkspacesConfig) -> Vec<Workspace> {
                 output: definition.and_then(|definition| definition.output.clone()),
                 minimized_windows: Vec::new(),
                 focused_window: None,
+                focus_history: Vec::new(),
             }
         })
         .collect()
@@ -711,6 +713,7 @@ impl BlairState {
             output: None,
             minimized_windows: Vec::new(),
             focused_window: None,
+            focus_history: Vec::new(),
         });
         id
     }
@@ -959,7 +962,9 @@ impl BlairState {
         let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
             return false;
         };
-        self.space.raise_element(window, true);
+        if self.config.focus.raise_on_focus {
+            self.space.raise_element(window, true);
+        }
         self.tile_window(window);
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
@@ -1461,12 +1466,14 @@ impl XdgShellHandler for BlairState {
 
         self.emit(CompositorEvent::WindowOpened { id, title, app_id });
 
-        self.focus_window(&window);
+        if self.config.focus.focus_new_windows {
+            self.focus_window(&window);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Self::toplevel_window_id(&surface) {
-            self.window_workspaces.remove(&id);
+            let workspace_id = self.window_workspaces.remove(&id);
             self.window_rule_state.remove(&id);
             for workspace in &mut self.workspaces {
                 workspace
@@ -1474,6 +1481,29 @@ impl XdgShellHandler for BlairState {
                     .retain(|entry| Self::window_id_of(&entry.window) != Some(id));
                 if workspace.focused_window == Some(id) {
                     workspace.focused_window = None;
+                }
+                workspace.focus_history.retain(|entry| *entry != id);
+            }
+            if self.focused_window == Some(id) {
+                self.focused_window = None;
+                if self.config.focus.focus_previous_on_close
+                    && workspace_id == Some(self.focused_workspace_id())
+                {
+                    if let Some(previous) = self
+                        .workspace(workspace_id.expect("checked above"))
+                        .focus_history
+                        .last()
+                        .copied()
+                    {
+                        let window = self
+                            .space
+                            .elements()
+                            .find(|window| self.window_id(window) == Some(previous))
+                            .cloned();
+                        if let Some(window) = window {
+                            self.focus_window(&window);
+                        }
+                    }
                 }
             }
             self.emit(CompositorEvent::WindowClosed { id });
@@ -1760,7 +1790,10 @@ impl SeatHandler for BlairState {
         self.focused_window = id;
         if let Some(id) = id {
             if let Some(workspace_id) = self.window_workspaces.get(&id).copied() {
-                self.workspace_mut(workspace_id).focused_window = Some(id);
+                let workspace = self.workspace_mut(workspace_id);
+                workspace.focused_window = Some(id);
+                workspace.focus_history.retain(|entry| *entry != id);
+                workspace.focus_history.push(id);
             }
         }
         match id {

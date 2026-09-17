@@ -14,6 +14,13 @@ command = "swaybg -i ~/wallpaper.png"
 command = "mako"
 restart = true
 
+[focus]
+policy = "click"
+raise_on_focus = true
+focus_new_windows = true
+focus_previous_on_close = true
+warp_cursor = false
+
 [integrations]
 # Enables the built-in D-Bus transport integration.
 dbus = true

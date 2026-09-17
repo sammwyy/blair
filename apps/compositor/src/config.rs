@@ -19,6 +19,7 @@ pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
+    pub focus: FocusConfig,
     pub autostart: Vec<AutostartConfig>,
     pub rules: Vec<WindowRuleConfig>,
     pub input: InputConfig,
@@ -42,6 +43,35 @@ pub struct AutostartConfig {
     pub command: String,
     #[serde(default)]
     pub restart: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FocusConfig {
+    pub policy: FocusPolicy,
+    pub raise_on_focus: bool,
+    pub focus_new_windows: bool,
+    pub focus_previous_on_close: bool,
+    pub warp_cursor: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusPolicy {
+    #[default]
+    Click,
+}
+
+impl Default for FocusConfig {
+    fn default() -> Self {
+        Self {
+            policy: FocusPolicy::Click,
+            raise_on_focus: true,
+            focus_new_windows: true,
+            focus_previous_on_close: true,
+            warp_cursor: false,
+        }
+    }
 }
 
 impl AutostartConfig {
@@ -1070,5 +1100,15 @@ mod tests {
         assert!(config.autostart[0].restart);
         assert!(!config.autostart[1].restart);
         assert!(config.autostart[0].validate(1).is_ok());
+    }
+
+    #[test]
+    fn focus_defaults_are_click_to_focus() {
+        let config = CompositorConfig::default();
+        assert_eq!(config.focus.policy, FocusPolicy::Click);
+        assert!(config.focus.raise_on_focus);
+        assert!(config.focus.focus_new_windows);
+        assert!(config.focus.focus_previous_on_close);
+        assert!(!config.focus.warp_cursor);
     }
 }

@@ -128,6 +128,22 @@ blair --run foot
 blair --run "waybar -c ~/.config/waybar/dev.json" --run mako
 ```
 
+## Focus
+
+```toml
+[focus]
+policy = "click"
+raise_on_focus = true
+focus_new_windows = true
+focus_previous_on_close = true
+warp_cursor = false
+```
+
+The default is click-to-focus. Blair can raise a window as it receives focus,
+focus new windows, and restore the most recently focused surviving window when
+the focused one closes. Cursor warping remains disabled by default and is not
+performed implicitly.
+
 ## Install
 
 ```bash
