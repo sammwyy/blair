@@ -290,6 +290,10 @@ impl BlairState {
             );
             next.integrations.dbus = self.config.integrations.dbus;
         }
+        if self.config.outputs != next.outputs {
+            tracing::warn!("output changes require a compositor restart");
+            next.outputs = self.config.outputs.clone();
+        }
 
         if self.config.general.primary_client != next.general.primary_client
             || self.config.general.spawn_primary_client != next.general.spawn_primary_client

@@ -31,7 +31,7 @@ use smithay::{
         udev::UdevBackend,
     },
     input::keyboard::FilterResult,
-    output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+    output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
@@ -49,7 +49,7 @@ use smithay::{
 use wayland_server::ListeningSocket;
 
 use crate::{
-    config::{CompositorConfig, ConfigPaths, ConfigWatcher},
+    config::{CompositorConfig, ConfigPaths, ConfigWatcher, OutputConfig, OutputTransform},
     decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
@@ -321,8 +321,13 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     let resources = device_fd
         .resource_handles()
         .context("failed to get DRM resource handles")?;
-    let (conn_handle, drm_mode, crtc_handle) =
-        find_output(&device_fd, &resources, drm.crtcs()).context("no connected display found")?;
+    let (conn_handle, drm_mode, crtc_handle, output_name) = find_output(
+        &device_fd,
+        &resources,
+        drm.crtcs(),
+        &loop_data.state.config.outputs,
+    )
+    .context("no connected display found")?;
     let conn_info = device_fd
         .get_connector(conn_handle, false)
         .context("failed to read connector info")?;
@@ -358,6 +363,12 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         renderer_formats,
     )
     .context("failed to create GBM buffered surface")?;
+    let output_config = loop_data.state.config.outputs.get(&output_name);
+    if let Some(vrr) = output_config.and_then(|config| config.vrr) {
+        if let Err(error) = surface.use_vrr(vrr) {
+            tracing::warn!(%error, output = %output_name, vrr, "failed to configure VRR");
+        }
+    }
 
     let listener =
         ListeningSocket::bind_auto("wayland", 1..33).context("failed to bind Wayland socket")?;
@@ -371,7 +382,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     let mut clients: Vec<wayland_server::Client> = Vec::new();
 
     let output = Output::new(
-        "drm-0".to_string(),
+        output_name.clone(),
         PhysicalProperties {
             size: (phys_mm.0 as i32, phys_mm.1 as i32).into(),
             subpixel: Subpixel::Unknown,
@@ -384,15 +395,27 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         size: (w, h).into(),
         refresh,
     };
+    let location = output_config
+        .and_then(|config| config.position)
+        .unwrap_or([0, 0]);
+    let transform = output_config
+        .and_then(|config| config.parsed_transform().ok().flatten())
+        .map(to_smithay_transform)
+        .unwrap_or(Transform::Normal);
+    let scale = output_config
+        .and_then(|config| config.scale)
+        .map(Scale::Fractional);
     output.change_current_state(
         Some(out_mode),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
+        Some(transform),
+        scale,
+        Some((location[0], location[1]).into()),
     );
     output.set_preferred(out_mode);
     output.create_global::<BlairState>(&dh);
-    loop_data.state.add_output(&output, (0, 0).into());
+    loop_data
+        .state
+        .add_output(&output, (location[0], location[1]).into());
 
     loop_data.drm = Some(drm);
     loop_data.renderer = Some(renderer);
@@ -670,7 +693,7 @@ fn render_frame(
     let phys: smithay::utils::Size<i32, Physical> = (size.w, size.h).into();
     let damage = Rectangle::from_size(phys);
 
-    match renderer.render(&mut framebuffer, phys, Transform::Normal) {
+    match renderer.render(&mut framebuffer, phys, output.current_transform()) {
         Ok(mut frame) => {
             if let Err(err) = frame.clear(BACKGROUND_COLOR, &[damage]) {
                 tracing::warn!("frame.clear: {err}");
@@ -1692,36 +1715,86 @@ fn current_master_diagnostic(card: &std::path::Path, holders: &[(u32, String)]) 
     )
 }
 
+fn to_smithay_transform(transform: OutputTransform) -> Transform {
+    match transform {
+        OutputTransform::Normal => Transform::Normal,
+        OutputTransform::Rotate90 => Transform::_90,
+        OutputTransform::Rotate180 => Transform::_180,
+        OutputTransform::Rotate270 => Transform::_270,
+        OutputTransform::Flipped => Transform::Flipped,
+        OutputTransform::Flipped90 => Transform::Flipped90,
+        OutputTransform::Flipped180 => Transform::Flipped180,
+        OutputTransform::Flipped270 => Transform::Flipped270,
+    }
+}
+
 fn find_output(
     fd: &DrmDeviceFd,
     resources: &smithay::reexports::drm::control::ResourceHandles,
     crtcs: &[crtc::Handle],
+    outputs: &std::collections::BTreeMap<String, OutputConfig>,
 ) -> Option<(
     connector::Handle,
     smithay::reexports::drm::control::Mode,
     crtc::Handle,
+    String,
 )> {
-    for &conn_handle in resources.connectors() {
-        let conn = fd.get_connector(conn_handle, false).ok()?;
-        if conn.state() != connector::State::Connected {
-            continue;
-        }
-        let mode = conn
-            .modes()
-            .iter()
-            .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or_else(|| conn.modes().first())
-            .copied()?;
-
-        for &enc_handle in conn.encoders() {
-            let Ok(enc) = fd.get_encoder(enc_handle) else {
+    // Prefer an enabled configured connector. If every connected output is
+    // disabled, retry with one anyway so a bad profile never leaves Blair
+    // without a visible output.
+    for allow_disabled in [false, true] {
+        for &conn_handle in resources.connectors() {
+            let conn = fd.get_connector(conn_handle, false).ok()?;
+            if conn.state() != connector::State::Connected {
                 continue;
-            };
-            let filter = enc.possible_crtcs();
-            let compatible = resources.filter_crtcs(filter);
-            for &crtc_handle in crtcs {
-                if compatible.contains(&crtc_handle) {
-                    return Some((conn_handle, mode, crtc_handle));
+            }
+            let name = conn.to_string();
+            let config = outputs.get(&name);
+            if config.and_then(|config| config.enabled) == Some(false) && !allow_disabled {
+                continue;
+            }
+            let configured_mode = config.and_then(|config| config.parsed_mode().ok().flatten());
+            let mode = configured_mode
+                .and_then(|requested| {
+                    conn.modes().iter().find(|mode| {
+                        let size = mode.size();
+                        size.0 as i32 == requested.width
+                            && size.1 as i32 == requested.height
+                            && ((mode.vrefresh() * 1000) as i32 - requested.refresh_millihz).abs()
+                                <= 1
+                    })
+                })
+                .or_else(|| {
+                    conn.modes()
+                        .iter()
+                        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+                })
+                .or_else(|| conn.modes().first())
+                .copied()?;
+            if configured_mode.is_some()
+                && configured_mode.is_some_and(|requested| {
+                    let size = mode.size();
+                    size.0 as i32 != requested.width
+                        || size.1 as i32 != requested.height
+                        || ((mode.vrefresh() * 1000) as i32 - requested.refresh_millihz).abs() > 1
+                })
+            {
+                tracing::warn!(output = %name, requested = ?configured_mode, "requested mode is unavailable; using preferred mode");
+            }
+
+            for &enc_handle in conn.encoders() {
+                let Ok(enc) = fd.get_encoder(enc_handle) else {
+                    continue;
+                };
+                let filter = enc.possible_crtcs();
+                let compatible = resources.filter_crtcs(filter);
+                for &crtc_handle in crtcs {
+                    if compatible.contains(&crtc_handle) {
+                        if allow_disabled {
+                            tracing::warn!(output = %name, "all configured outputs were disabled; keeping this output enabled");
+                        }
+                        return Some((conn_handle, mode, crtc_handle, name));
+                    }
                 }
             }
         }

@@ -12,14 +12,14 @@ use smithay::{
         winit::{self, WinitEvent, WinitInput},
     },
     input::keyboard::FilterResult,
-    output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+    output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::wayland_server::Display,
     utils::{Rectangle, Transform, SERIAL_COUNTER},
 };
 use wayland_server::ListeningSocket;
 
 use crate::{
-    config::{CompositorConfig, ConfigPaths, ConfigWatcher},
+    config::{CompositorConfig, ConfigPaths, ConfigWatcher, OutputTransform},
     decorations::RoundedCornerShaders,
     input::{
         begin_window_drag, handle_decoration_press, lower_layer_surface_under, move_dragged_window,
@@ -84,15 +84,53 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         size: win_size,
         refresh: 60_000,
     };
+    let output_config = state.config.outputs.get("winit-0");
+    let location = output_config
+        .and_then(|config| config.position)
+        .unwrap_or([0, 0]);
+    let transform = output_config
+        .and_then(|config| config.parsed_transform().ok().flatten())
+        .map(to_smithay_transform)
+        .unwrap_or(Transform::Normal);
+    let scale = output_config
+        .and_then(|config| config.scale)
+        .map(Scale::Fractional);
+    if let Some(configured_mode) =
+        output_config.and_then(|config| config.parsed_mode().ok().flatten())
+    {
+        if configured_mode.width != win_size.w
+            || configured_mode.height != win_size.h
+            || configured_mode.refresh_millihz != output_mode.refresh
+        {
+            tracing::warn!(
+                output = "winit-0",
+                requested = ?configured_mode,
+                actual = ?output_mode,
+                "nested backend cannot change its host window mode; using host mode"
+            );
+        }
+    }
+    if output_config.and_then(|config| config.enabled) == Some(false) {
+        tracing::warn!(
+            output = "winit-0",
+            "refusing to disable the only active output"
+        );
+    }
+    if output_config.and_then(|config| config.vrr).is_some() {
+        tracing::warn!(
+            output = "winit-0",
+            "VRR is unavailable in the nested backend"
+        );
+    }
     output.change_current_state(
         Some(output_mode),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
+        Some(transform),
+        scale,
+        Some((location[0], location[1]).into()),
     );
     output.set_preferred(output_mode);
     output.create_global::<BlairState>(&dh);
-    state.add_output(&output, (0, 0).into());
+    state.add_output(&output, (location[0], location[1]).into());
 
     tracing::info!(
         width = win_size.w,
@@ -241,6 +279,19 @@ fn start_config_watcher(config: &CompositorConfig) -> Option<ConfigWatcher> {
             tracing::error!(%error, "failed to start config watcher; continuing without hot reload");
             None
         }
+    }
+}
+
+fn to_smithay_transform(transform: OutputTransform) -> Transform {
+    match transform {
+        OutputTransform::Normal => Transform::Normal,
+        OutputTransform::Rotate90 => Transform::_90,
+        OutputTransform::Rotate180 => Transform::_180,
+        OutputTransform::Rotate270 => Transform::_270,
+        OutputTransform::Flipped => Transform::Flipped,
+        OutputTransform::Flipped90 => Transform::Flipped90,
+        OutputTransform::Flipped180 => Transform::Flipped180,
+        OutputTransform::Flipped270 => Transform::Flipped270,
     }
 }
 

@@ -182,6 +182,37 @@ Supported actions are `close`, `workspace`, and `move-to-workspace`.
 The latter two require a positive integer `value`; missing numbered
 workspaces are created on first use. `exec` runs its command via `sh -c`.
 
+## Outputs
+
+With no `[outputs."NAME"]` entries, Blair uses the safe automatic profile:
+every detected output stays enabled with its preferred mode. Output names are
+DRM connector names such as `DP-1` and `HDMI-A-1`.
+
+```toml
+[outputs."DP-1"]
+enabled = true
+mode = "2560x1440@165"
+position = [0, 0]
+scale = 1.0
+transform = "normal"
+vrr = true
+
+[outputs."HDMI-A-1"]
+position = [2560, 0]
+scale = 1.0
+```
+
+`mode` requires `WIDTHxHEIGHT@REFRESH`; transforms are `normal`, `90`,
+`180`, `270`, and the `flipped` variants. Blair refuses to disable the
+last available output, falling back to its detected preferred mode. Output
+profiles currently apply at startup; changing them requires a restart.
+
+The current DRM backend drives one connector, so it applies the matching
+profile for its selected connector; multi-output activation is the next
+backend step. The nested Winit backend applies position and scale and
+advertises the requested transform, but cannot change the mode or VRR selected
+by its host window.
+
 The built-in D-Bus transport is enabled by default with
 `integrations.dbus = true`. Set it to `false` and restart to run with no request
 transport; additional transports can implement the transport-neutral

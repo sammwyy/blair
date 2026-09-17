@@ -27,6 +27,20 @@ keys = ["SUPER", "SHIFT", "1"]
 action = "move-to-workspace"
 value = 1
 
+# Omit this table for the safe automatic profile: detected outputs remain
+# enabled using their preferred mode. Names match DRM connector names.
+[outputs."DP-1"]
+enabled = true
+mode = "2560x1440@165"
+position = [0, 0]
+scale = 1.0
+transform = "normal"
+vrr = true
+
+[outputs."HDMI-A-1"]
+position = [2560, 0]
+scale = 1.0
+
 [window]
 default_width = 900
 default_height = 600

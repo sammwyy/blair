@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
@@ -12,12 +13,13 @@ use toml::Value;
 
 use crate::decorations::DecorationTheme;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
+    pub outputs: BTreeMap<String, OutputConfig>,
     pub window: WindowConfig,
     pub decoration: DecorationConfig,
 }
@@ -45,6 +47,105 @@ pub struct BindingConfig {
     pub action: Option<String>,
     pub exec: Option<String>,
     pub value: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutputConfig {
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,
+    pub position: Option<[i32; 2]>,
+    pub scale: Option<f64>,
+    pub transform: Option<String>,
+    pub vrr: Option<bool>,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            mode: None,
+            position: None,
+            scale: None,
+            transform: None,
+            vrr: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputMode {
+    pub width: i32,
+    pub height: i32,
+    pub refresh_millihz: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputTransform {
+    Normal,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+    Flipped,
+    Flipped90,
+    Flipped180,
+    Flipped270,
+}
+
+impl OutputConfig {
+    pub fn parsed_mode(&self) -> Result<Option<OutputMode>> {
+        self.mode.as_deref().map(parse_output_mode).transpose()
+    }
+
+    pub fn parsed_transform(&self) -> Result<Option<OutputTransform>> {
+        self.transform
+            .as_deref()
+            .map(|value| match value {
+                "normal" => Ok(OutputTransform::Normal),
+                "90" => Ok(OutputTransform::Rotate90),
+                "180" => Ok(OutputTransform::Rotate180),
+                "270" => Ok(OutputTransform::Rotate270),
+                "flipped" => Ok(OutputTransform::Flipped),
+                "flipped-90" => Ok(OutputTransform::Flipped90),
+                "flipped-180" => Ok(OutputTransform::Flipped180),
+                "flipped-270" => Ok(OutputTransform::Flipped270),
+                _ => anyhow::bail!("invalid output transform '{value}'"),
+            })
+            .transpose()
+    }
+
+    fn validate(&self, name: &str) -> Result<()> {
+        self.parsed_mode()
+            .with_context(|| format!("invalid mode for output {name}"))?;
+        self.parsed_transform()
+            .with_context(|| format!("invalid transform for output {name}"))?;
+        if let Some(scale) = self.scale {
+            if !scale.is_finite() || scale <= 0.0 {
+                anyhow::bail!("output {name} has an invalid scale");
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn parse_output_mode(value: &str) -> Result<OutputMode> {
+    let (resolution, refresh) = value
+        .split_once('@')
+        .ok_or_else(|| anyhow::anyhow!("mode must use WIDTHxHEIGHT@REFRESH, got '{value}'"))?;
+    let (width, height) = resolution
+        .split_once('x')
+        .ok_or_else(|| anyhow::anyhow!("mode must use WIDTHxHEIGHT@REFRESH, got '{value}'"))?;
+    let width = width.parse::<i32>().context("invalid mode width")?;
+    let height = height.parse::<i32>().context("invalid mode height")?;
+    let refresh_hz = refresh.parse::<f64>().context("invalid refresh rate")?;
+    if width <= 0 || height <= 0 || !refresh_hz.is_finite() || refresh_hz <= 0.0 {
+        anyhow::bail!("mode dimensions and refresh rate must be positive");
+    }
+    Ok(OutputMode {
+        width,
+        height,
+        refresh_millihz: (refresh_hz * 1000.0).round() as i32,
+    })
 }
 
 impl BindingConfig {
@@ -248,6 +349,9 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
         .context("merged compositor configuration does not match the schema")?;
     for (index, binding) in config.bindings.iter().enumerate() {
         binding.validate(index + 1)?;
+    }
+    for (name, output) in &config.outputs {
+        output.validate(name)?;
     }
     Ok(config)
 }
@@ -534,5 +638,25 @@ mod tests {
         assert!(load_from_paths(&paths).is_err());
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn parses_output_mode_and_validates_output_fields() {
+        let mode = parse_output_mode("2560x1440@165").unwrap();
+        assert_eq!(
+            mode,
+            OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_millihz: 165_000,
+            }
+        );
+        assert!(parse_output_mode("2560x1440").is_err());
+        assert!(OutputConfig {
+            scale: Some(0.0),
+            ..Default::default()
+        }
+        .validate("DP-1")
+        .is_err());
     }
 }
