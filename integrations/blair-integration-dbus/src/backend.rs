@@ -140,6 +140,17 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
                 let _ = reply.send(backend.bind_shortcut(&client, &id, &accelerator));
             }
             Command::UnbindShortcut { client, id } => backend.unbind_shortcut(&client, &id),
+            Command::RegisterWindowRule {
+                client,
+                id,
+                rule_toml,
+                reply,
+            } => {
+                let _ = reply.send(backend.register_window_rule(&client, &id, &rule_toml));
+            }
+            Command::UnregisterWindowRule { client, id } => {
+                backend.unregister_window_rule(&client, &id);
+            }
             Command::ClientDisconnected(client) => backend.unregister_client(&client),
             Command::Quit => backend.quit(),
         }

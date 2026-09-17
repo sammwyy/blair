@@ -54,6 +54,21 @@ keys = ["SUPER", "SHIFT", "1"]
 action = "move-to-workspace"
 value = 1
 
+# Rules are evaluated in declaration order when a new toplevel appears.
+[[rules]]
+app_id = "pavucontrol"
+floating = true
+size = [700, 500]
+
+[[rules]]
+app_id = "firefox"
+workspace = "web"
+
+[[rules]]
+title = "Picture-in-Picture"
+floating = true
+always_on_top = true
+
 # Omit this table for the safe automatic profile: detected outputs remain
 # enabled using their preferred mode. Names match DRM connector names.
 [outputs."DP-1"]

@@ -52,7 +52,9 @@ use smithay::{
     },
 };
 
-use crate::config::{BindingConfig, CompositorConfig, WindowLayout, WorkspacesConfig};
+use crate::config::{
+    BindingConfig, CompositorConfig, WindowLayout, WindowRuleConfig, WorkspacesConfig,
+};
 use crate::shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry};
 
 #[derive(Default)]
@@ -87,6 +89,8 @@ pub struct BlairState {
     /// Workspace membership is independent from Smithay's `Space`, which
     /// keeps every non-minimized window mapped for multi-output rendering.
     window_workspaces: HashMap<WindowId, u64>,
+    window_rule_state: HashMap<WindowId, AppliedWindowRule>,
+    temporary_rules: HashMap<String, HashMap<String, WindowRuleConfig>>,
     next_workspace_id: u64,
     pub shortcuts: ShortcutRegistry,
     static_bindings: HashMap<String, StaticBindingAction>,
@@ -126,6 +130,47 @@ enum StaticBindingAction {
     Exec(String),
     Workspace(u64),
     MoveToWorkspace(u64),
+}
+
+#[derive(Clone, Default)]
+struct AppliedWindowRule {
+    floating: Option<bool>,
+    workspace: Option<String>,
+    output: Option<String>,
+    size: Option<[i32; 2]>,
+    position: Option<[i32; 2]>,
+    opacity: Option<f32>,
+    always_on_top: Option<bool>,
+    decoration: Option<bool>,
+}
+
+impl AppliedWindowRule {
+    fn apply(&mut self, rule: &WindowRuleConfig) {
+        if let Some(floating) = rule.floating.or(rule.tiled.map(|tiled| !tiled)) {
+            self.floating = Some(floating);
+        }
+        if rule.workspace.is_some() {
+            self.workspace = rule.workspace.clone();
+        }
+        if rule.output.is_some() {
+            self.output = rule.output.clone();
+        }
+        if rule.size.is_some() {
+            self.size = rule.size;
+        }
+        if rule.position.is_some() {
+            self.position = rule.position;
+        }
+        if rule.opacity.is_some() {
+            self.opacity = rule.opacity;
+        }
+        if rule.always_on_top.is_some() {
+            self.always_on_top = rule.always_on_top;
+        }
+        if rule.decoration.is_some() {
+            self.decoration = rule.decoration;
+        }
+    }
 }
 
 fn configured_workspaces(config: &WorkspacesConfig) -> Vec<Workspace> {
@@ -193,6 +238,8 @@ impl BlairState {
             output_workspaces: HashMap::new(),
             focused_output: None,
             window_workspaces: HashMap::new(),
+            window_rule_state: HashMap::new(),
+            temporary_rules: HashMap::new(),
             next_workspace_id,
             shortcuts: ShortcutRegistry::default(),
             static_bindings: HashMap::new(),
@@ -522,6 +569,76 @@ impl BlairState {
             .is_some_and(|workspace| *workspace == self.workspace_for_output(output))
     }
 
+    pub fn window_opacity(&self, window: &Window) -> f32 {
+        self.window_id(window)
+            .and_then(|id| self.window_rule_state.get(&id))
+            .and_then(|rule| rule.opacity)
+            .unwrap_or(1.0)
+    }
+
+    pub fn window_always_on_top(&self, window: &Window) -> bool {
+        self.window_id(window)
+            .and_then(|id| self.window_rule_state.get(&id))
+            .and_then(|rule| rule.always_on_top)
+            .unwrap_or(false)
+    }
+
+    /// Registers a non-persistent rule owned by an integration client.
+    pub fn register_temporary_rule(&mut self, client: &str, id: &str, rule_toml: &str) -> bool {
+        let Ok(rule) = toml::from_str::<WindowRuleConfig>(rule_toml) else {
+            tracing::warn!(client, id, "temporary window rule has invalid TOML");
+            return false;
+        };
+        if rule.validate(0).is_err() || id.trim().is_empty() {
+            return false;
+        }
+        self.temporary_rules
+            .entry(client.to_owned())
+            .or_default()
+            .insert(id.to_owned(), rule);
+        true
+    }
+
+    pub fn unregister_temporary_rule(&mut self, client: &str, id: &str) {
+        if let Some(rules) = self.temporary_rules.get_mut(client) {
+            rules.remove(id);
+            if rules.is_empty() {
+                self.temporary_rules.remove(client);
+            }
+        }
+    }
+
+    pub fn unregister_temporary_rules(&mut self, client: &str) {
+        self.temporary_rules.remove(client);
+    }
+
+    fn matching_rules(&self, title: &str, app_id: Option<&str>) -> AppliedWindowRule {
+        let mut applied = AppliedWindowRule::default();
+        for rule in self.config.rules.iter().chain(
+            self.temporary_rules
+                .values()
+                .flat_map(|rules| rules.values()),
+        ) {
+            if rule_matches(rule, title, app_id) {
+                applied.apply(rule);
+            }
+        }
+        applied
+    }
+
+    fn workspace_id_by_selector(&self, selector: &str) -> Option<u64> {
+        selector
+            .parse::<u64>()
+            .ok()
+            .filter(|id| self.workspaces.iter().any(|workspace| workspace.id == *id))
+            .or_else(|| {
+                self.workspaces
+                    .iter()
+                    .find(|workspace| workspace.name == selector)
+                    .map(|workspace| workspace.id)
+            })
+    }
+
     pub fn create_workspace(&mut self, name: String) -> u64 {
         if !self.config.workspaces.dynamic {
             tracing::warn!("refusing API workspace creation while dynamic workspaces are disabled");
@@ -800,7 +917,13 @@ impl BlairState {
     }
 
     pub fn tile_window(&mut self, window: &Window) {
-        if self.config.window.layout != WindowLayout::Tiling {
+        let rule_floating = self
+            .window_id(window)
+            .and_then(|id| self.window_rule_state.get(&id))
+            .and_then(|rule| rule.floating);
+        if rule_floating == Some(true)
+            || (self.config.window.layout != WindowLayout::Tiling && rule_floating != Some(false))
+        {
             return;
         }
         let area = self.work_area("");
@@ -1055,6 +1178,31 @@ fn window_meta(window: &Window) -> (String, Option<String>) {
     .unwrap_or_default()
 }
 
+fn rule_matches(rule: &WindowRuleConfig, title: &str, app_id: Option<&str>) -> bool {
+    if rule
+        .app_id
+        .as_deref()
+        .is_some_and(|expected| app_id != Some(expected))
+        || rule
+            .title
+            .as_deref()
+            .is_some_and(|expected| title != expected)
+    {
+        return false;
+    }
+    // XDG toplevels expose app_id and title. Xwayland class/role/type support
+    // can use the same schema once that backend is added; they cannot match a
+    // native Wayland window today.
+    if rule.class.is_some() || rule.role.is_some() || rule.window_type.is_some() {
+        return false;
+    }
+    rule.regex.as_deref().is_none_or(|pattern| {
+        regex::Regex::new(pattern)
+            .map(|regex| regex.is_match(title) || app_id.is_some_and(|id| regex.is_match(id)))
+            .unwrap_or(false)
+    })
+}
+
 fn primary_client_command(command: &str) -> Command {
     let mut parts = command.split_whitespace();
     let program = parts.next().unwrap_or(command);
@@ -1174,8 +1322,28 @@ impl XdgShellHandler for BlairState {
 
         let window = Window::new_wayland_window(surface);
 
-        let workspace_id = self.focused_workspace_id();
-        let workspace_output = self.focused_output_name();
+        let title = title.unwrap_or_default();
+        let rules = self.matching_rules(&title, app_id.as_deref());
+        let workspace_id = rules
+            .workspace
+            .as_deref()
+            .and_then(|selector| self.workspace_id_by_selector(selector))
+            .unwrap_or_else(|| self.focused_workspace_id());
+        let workspace_output = rules
+            .output
+            .clone()
+            .or_else(|| {
+                self.output_workspaces
+                    .iter()
+                    .find_map(|(output, workspace)| {
+                        (*workspace == workspace_id).then(|| output.clone())
+                    })
+            })
+            .or_else(|| self.focused_output_name());
+        let [width, height] = rules.size.unwrap_or([
+            self.config.window.default_width,
+            self.config.window.default_height,
+        ]);
         let pos: Point<i32, Logical> = self
             .space
             .outputs()
@@ -1187,15 +1355,21 @@ impl XdgShellHandler for BlairState {
             .or_else(|| self.space.outputs().next())
             .and_then(|output| self.space.output_geometry(output))
             .map(|geometry| {
-                let width = self.config.window.default_width;
-                let height = self.config.window.default_height;
-                (
-                    (geometry.size.w - width) / 2,
-                    (geometry.size.h - height) / 2,
-                )
-                    .into()
+                rules
+                    .position
+                    .map(|[x, y]| (x, y).into())
+                    .unwrap_or_else(|| {
+                        (
+                            geometry.loc.x + (geometry.size.w - width) / 2,
+                            geometry.loc.y + (geometry.size.h - height) / 2,
+                        )
+                            .into()
+                    })
             })
-            .unwrap_or_else(|| (100, 100).into());
+            .unwrap_or_else(|| {
+                let [x, y] = rules.position.unwrap_or([100, 100]);
+                (x, y).into()
+            });
 
         self.window_counter += 1;
         let id = WindowId(self.window_counter);
@@ -1211,12 +1385,35 @@ impl XdgShellHandler for BlairState {
 
         self.space.map_element(window.clone(), pos, true);
         self.window_workspaces.insert(id, workspace_id);
+        self.window_rule_state.insert(id, rules.clone());
+        if let Some(decoration) = rules.decoration {
+            let mode = if decoration {
+                DecorationMode::ServerSide
+            } else {
+                DecorationMode::ClientSide
+            };
+            if let Some(toplevel) = window.toplevel() {
+                set_surface_decoration_mode(toplevel.wl_surface(), mode);
+                toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+            }
+        }
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|state| state.size = Some((width, height).into()));
+            toplevel.send_configure();
+        }
+        if rules.floating == Some(false) {
+            let area = self.work_area(workspace_output.as_deref().unwrap_or(""));
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((area.width, area.height).into())
+                });
+                toplevel.send_configure();
+            }
+            self.space
+                .map_element(window.clone(), (area.x, area.y), true);
+        }
 
-        self.emit(CompositorEvent::WindowOpened {
-            id,
-            title: title.unwrap_or_default(),
-            app_id,
-        });
+        self.emit(CompositorEvent::WindowOpened { id, title, app_id });
 
         self.focus_window(&window);
     }
@@ -1224,6 +1421,7 @@ impl XdgShellHandler for BlairState {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Self::toplevel_window_id(&surface) {
             self.window_workspaces.remove(&id);
+            self.window_rule_state.remove(&id);
             for workspace in &mut self.workspaces {
                 workspace
                     .minimized_windows

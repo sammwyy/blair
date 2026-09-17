@@ -182,6 +182,40 @@ Supported actions are `close`, `workspace`, and `move-to-workspace`.
 The latter two require a positive integer `value`; missing numbered
 workspaces are created on first use. `exec` runs its command via `sh -c`.
 
+## Window rules
+
+Rules are persistent TOML entries, evaluated in order when a new window is
+created. Later matching rules override only the actions they specify:
+
+```toml
+[[rules]]
+app_id = "pavucontrol"
+floating = true
+size = [700, 500]
+
+[[rules]]
+app_id = "firefox"
+workspace = "web"
+
+[[rules]]
+title = "Picture-in-Picture"
+floating = true
+always_on_top = true
+```
+
+Exact match fields are `app_id`, `title`, `class`, `role`, and `type`; `regex`
+matches either title or app ID. Native Wayland XDG windows currently expose
+only app ID and title, so class/role/type are reserved for the future Xwayland
+backend. Actions are `floating`, `tiled`, `workspace`, `output`, `size`,
+`position`, `opacity`, `always_on_top`, and `decoration`. Workspace accepts an
+ID or its declared name. Opacity includes client surfaces and their popups.
+
+Integrations may register a temporary rule with the same schema. D-Bus exposes
+`RegisterWindowRule(id, rule_toml)` and `UnregisterWindowRule(id)`; the TOML is
+one rule table without `[[rules]]`. Temporary rules are owned by the calling
+bus client, are applied after persistent rules, and are removed automatically
+when that client disconnects. Rules affect subsequently created windows.
+
 ## Outputs
 
 With no `[outputs."NAME"]` entries, Blair uses the safe automatic profile:

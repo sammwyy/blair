@@ -29,6 +29,16 @@ pub enum Command {
         client: String,
         id: String,
     },
+    RegisterWindowRule {
+        client: String,
+        id: String,
+        rule_toml: String,
+        reply: oneshot::Sender<bool>,
+    },
+    UnregisterWindowRule {
+        client: String,
+        id: String,
+    },
     ClientDisconnected(String),
     Quit,
 }

@@ -58,6 +58,9 @@ pub trait CompositorApi {
     ) -> bool;
     fn bind_shortcut(&mut self, client: &str, id: &str, accelerator: &str) -> bool;
     fn unbind_shortcut(&mut self, client: &str, id: &str);
+    /// Register a temporary rule using the same TOML table schema as `[[rules]]`.
+    fn register_window_rule(&mut self, client: &str, id: &str, rule_toml: &str) -> bool;
+    fn unregister_window_rule(&mut self, client: &str, id: &str);
     fn unregister_client(&mut self, client: &str);
     fn quit(&mut self);
 }

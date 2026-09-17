@@ -186,11 +186,23 @@ impl CompositorApi for BlairState {
         self.shortcuts.unbind(client, id)
     }
 
+    fn register_window_rule(&mut self, client: &str, id: &str, rule_toml: &str) -> bool {
+        if client == "blair-config" {
+            return false;
+        }
+        self.register_temporary_rule(client, id, rule_toml)
+    }
+
+    fn unregister_window_rule(&mut self, client: &str, id: &str) {
+        self.unregister_temporary_rule(client, id);
+    }
+
     fn unregister_client(&mut self, client: &str) {
         if client == "blair-config" {
             return;
         }
-        self.shortcuts.unregister_client(client)
+        self.shortcuts.unregister_client(client);
+        self.unregister_temporary_rules(client);
     }
 
     fn quit(&mut self) {

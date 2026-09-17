@@ -48,12 +48,14 @@ pub fn ensure_rounded_corner_shader(
 }
 
 pub fn z_ordered_windows(state: &BlairState, output: &Output) -> Vec<Window> {
-    state
+    let mut windows: Vec<_> = state
         .space
         .elements_for_output(output)
         .filter(|window| state.window_visible_on_output(window, output))
         .cloned()
-        .collect()
+        .collect();
+    windows.sort_by_key(|window| state.window_always_on_top(window));
+    windows
 }
 
 fn layer_elements(
@@ -122,7 +124,7 @@ pub fn window_content_elements(
                 &wl_surface,
                 (loc.x, loc.y),
                 1.0,
-                1.0,
+                state.window_opacity(&window),
                 Kind::Unspecified,
             );
             Some((window, elements))
@@ -158,7 +160,7 @@ pub fn popup_elements(
                 popup.wl_surface(),
                 (x, y),
                 1.0,
-                1.0,
+                state.window_opacity(&window),
                 Kind::Unspecified,
             ));
         }

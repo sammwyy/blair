@@ -172,6 +172,37 @@ impl CompositorInterface {
         });
     }
 
+    /// Adds a process-owned temporary rule. `rule_toml` is one `[[rules]]`
+    /// table without its array-table header.
+    async fn register_window_rule(
+        &self,
+        id: &str,
+        rule_toml: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> bool {
+        let Some(client) = header.sender() else {
+            return false;
+        };
+        self.call(|reply| Command::RegisterWindowRule {
+            client: client.to_string(),
+            id: id.to_owned(),
+            rule_toml: rule_toml.to_owned(),
+            reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn unregister_window_rule(&self, id: &str, #[zbus(header)] header: Header<'_>) {
+        let Some(client) = header.sender() else {
+            return;
+        };
+        let _ = self.commands.send(Command::UnregisterWindowRule {
+            client: client.to_string(),
+            id: id.to_owned(),
+        });
+    }
+
     async fn quit(&self) {
         let _ = self.commands.send(Command::Quit);
     }

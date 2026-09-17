@@ -19,6 +19,7 @@ pub struct CompositorConfig {
     pub general: GeneralConfig,
     pub integrations: IntegrationsConfig,
     pub bindings: Vec<BindingConfig>,
+    pub rules: Vec<WindowRuleConfig>,
     pub input: InputConfig,
     pub workspaces: WorkspacesConfig,
     pub outputs: BTreeMap<String, OutputConfig>,
@@ -306,7 +307,7 @@ impl BindingConfig {
         self.keys.join("+")
     }
 
-    fn validate(&self, index: usize) -> Result<()> {
+    pub(crate) fn validate(&self, index: usize) -> Result<()> {
         if self.keys.is_empty() || self.keys.iter().any(|key| key.trim().is_empty()) {
             anyhow::bail!("binding #{index} must contain at least one non-empty key");
         }
@@ -327,6 +328,98 @@ impl BindingConfig {
                 "binding #{index} has invalid action '{action}' or value; supported actions are close, workspace, and move-to-workspace"
             ),
         }
+    }
+}
+
+/// A declarative rule evaluated, in order, when an XDG toplevel is created.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowRuleConfig {
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+    pub class: Option<String>,
+    pub regex: Option<String>,
+    pub role: Option<String>,
+    #[serde(rename = "type")]
+    pub window_type: Option<String>,
+    pub floating: Option<bool>,
+    pub tiled: Option<bool>,
+    pub workspace: Option<String>,
+    pub output: Option<String>,
+    pub size: Option<[i32; 2]>,
+    pub position: Option<[i32; 2]>,
+    pub opacity: Option<f32>,
+    pub always_on_top: Option<bool>,
+    pub decoration: Option<bool>,
+}
+
+impl Default for WindowRuleConfig {
+    fn default() -> Self {
+        Self {
+            app_id: None,
+            title: None,
+            class: None,
+            regex: None,
+            role: None,
+            window_type: None,
+            floating: None,
+            tiled: None,
+            workspace: None,
+            output: None,
+            size: None,
+            position: None,
+            opacity: None,
+            always_on_top: None,
+            decoration: None,
+        }
+    }
+}
+
+impl WindowRuleConfig {
+    pub(crate) fn validate(&self, index: usize) -> Result<()> {
+        if self.app_id.is_none()
+            && self.title.is_none()
+            && self.class.is_none()
+            && self.regex.is_none()
+            && self.role.is_none()
+            && self.window_type.is_none()
+        {
+            anyhow::bail!("rule #{index} requires at least one match field");
+        }
+        if let Some(pattern) = &self.regex {
+            regex::Regex::new(pattern)
+                .with_context(|| format!("rule #{index} has an invalid regex"))?;
+        }
+        if self.floating == Some(true) && self.tiled == Some(true) {
+            anyhow::bail!("rule #{index} cannot be both floating and tiled");
+        }
+        if self
+            .size
+            .is_some_and(|[width, height]| width <= 0 || height <= 0)
+        {
+            anyhow::bail!("rule #{index} size must be positive");
+        }
+        if self
+            .opacity
+            .is_some_and(|opacity| !opacity.is_finite() || !(0.0..=1.0).contains(&opacity))
+        {
+            anyhow::bail!("rule #{index} opacity must be between 0.0 and 1.0");
+        }
+        for value in [
+            &self.app_id,
+            &self.title,
+            &self.class,
+            &self.role,
+            &self.window_type,
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                anyhow::bail!("rule #{index} has an empty match value");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -502,6 +595,9 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
         .context("merged compositor configuration does not match the schema")?;
     for (index, binding) in config.bindings.iter().enumerate() {
         binding.validate(index + 1)?;
+    }
+    for (index, rule) in config.rules.iter().enumerate() {
+        rule.validate(index + 1)?;
     }
     for (name, output) in &config.outputs {
         output.validate(name)?;
@@ -840,5 +936,25 @@ mod tests {
             config.workspaces.definitions["1"].output.as_deref(),
             Some("DP-1")
         );
+    }
+
+    #[test]
+    fn parses_and_validates_window_rules() {
+        let config: CompositorConfig = toml::from_str(
+            "[[rules]]\napp_id = \"pavucontrol\"\nfloating = true\nsize = [700, 500]\n\n[[rules]]\nregex = \"Picture-in-Picture\"\nalways_on_top = true\nopacity = 0.9\n",
+        )
+        .unwrap();
+        for (index, rule) in config.rules.iter().enumerate() {
+            rule.validate(index + 1).unwrap();
+        }
+        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules[0].size, Some([700, 500]));
+    }
+
+    #[test]
+    fn rejects_invalid_window_rule() {
+        let config: CompositorConfig =
+            toml::from_str("[[rules]]\napp_id = \"x\"\nfloating = true\ntiled = true\n").unwrap();
+        assert!(config.rules[0].validate(1).is_err());
     }
 }
