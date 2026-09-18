@@ -105,8 +105,8 @@ impl CompositorApi for BlairState {
         let decoration = &self.config.decorations;
         (
             decoration.titlebar_height,
-            decoration.border_width,
-            decoration.corner_radius,
+            self.decoration_theme().border_width,
+            self.decoration_theme().corner_radius,
             self.config.window.server_side_decorations,
         )
     }
@@ -119,7 +119,7 @@ impl CompositorApi for BlairState {
         (
             layout.to_string(),
             self.config.window.work_area_padding,
-            self.config.decorations.corner_radius,
+            self.decoration_theme().corner_radius,
         )
     }
 
@@ -175,7 +175,16 @@ impl CompositorApi for BlairState {
             return false;
         }
         self.config.decorations.titlebar_height = titlebar_height;
-        self.config.decorations.border_width = border_width;
+        // Pixel widths from integrations snap to the nearest named size; 0
+        // hides the border like the settings' "None" choice.
+        if border_width == 0 {
+            self.config.decorations.border = crate::config::BorderColorMode::None;
+        } else {
+            if self.config.decorations.border == crate::config::BorderColorMode::None {
+                self.config.decorations.border = crate::config::BorderColorMode::Theme;
+            }
+            self.config.decorations.border_size = crate::config::BorderSize::nearest(border_width);
+        }
         self.config.decorations.corner_radius = corner_radius;
         self.config.window.server_side_decorations = server_side_decorations;
         self.config.decorations.mode = if server_side_decorations {

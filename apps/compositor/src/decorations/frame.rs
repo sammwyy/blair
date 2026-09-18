@@ -34,8 +34,9 @@ impl DecorationFrame {
         } else {
             0
         };
-        let btn_size = theme.titlebar_height - 8;
-        let btn_top = client.y - th + 4;
+        // Small round buttons, vertically centered: 20px on a 32px bar.
+        let btn_size = (theme.titlebar_height * 5 / 8).max(0);
+        let btn_top = client.y - th + (th - btn_size) / 2;
 
         let frame = Rect {
             x: client.x - bw,
@@ -73,7 +74,7 @@ impl DecorationFrame {
         let mut close_btn = Rect::default();
         let mut maximize_btn = Rect::default();
         let mut minimize_btn = Rect::default();
-        let gap = 4;
+        let gap = 8;
         let count = theme.button_layout.len() as i32;
         let buttons_width = if count > 0 {
             count * btn_size + (count - 1) * gap + TITLE_PADDING
@@ -115,11 +116,24 @@ impl DecorationFrame {
         } else {
             titlebar.x + titlebar.width - TITLE_PADDING
         };
-        let title = Rect {
-            x: title_left,
-            y: titlebar.y,
-            width: (title_right - title_left).max(0),
-            height: titlebar.height,
+        let title = if theme.title_centered {
+            // Shrinks symmetrically instead of drifting off the true
+            // midpoint when the icon and buttons reserve uneven space.
+            let center = titlebar.x + titlebar.width / 2;
+            let half_width = (center - title_left).min(title_right - center).max(0);
+            Rect {
+                x: center - half_width,
+                y: titlebar.y,
+                width: half_width * 2,
+                height: titlebar.height,
+            }
+        } else {
+            Rect {
+                x: title_left,
+                y: titlebar.y,
+                width: (title_right - title_left).max(0),
+                height: titlebar.height,
+            }
         };
 
         let drag_margin = theme.drag_margin.max(0);
@@ -159,6 +173,8 @@ mod tests {
         DecorationTheme {
             titlebar_height: 30,
             border_width,
+            corner_radius: 0,
+            titlebar_mode: crate::config::TitlebarColorMode::Theme,
             active_titlebar: [0; 4],
             inactive_titlebar: [0; 4],
             active_border: [0; 4],
@@ -166,8 +182,6 @@ mod tests {
             close_button: [0; 4],
             maximize_button: [0; 4],
             minimize_button: [0; 4],
-            active_title_text: [0; 4],
-            inactive_title_text: [0; 4],
             button_layout: vec![
                 DecorationButton::Minimize,
                 DecorationButton::Maximize,
@@ -217,7 +231,24 @@ mod tests {
         assert!(geom.close_btn.x + geom.close_btn.width <= titlebar_end);
         assert!(geom.minimize_btn.x < geom.maximize_btn.x);
         assert!(geom.maximize_btn.x < geom.close_btn.x);
-        assert_eq!(geom.close_btn.y, CLIENT.y - 30 + 4);
+        // 30px bar -> 18px buttons, centered with 6px above.
+        assert_eq!(geom.close_btn.y, CLIENT.y - 30 + 6);
+    }
+
+    #[test]
+    fn centered_title_stays_on_the_true_titlebar_midpoint() {
+        let mut theme = theme(4);
+        theme.title_centered = true;
+        theme.show_icon = true;
+        theme.button_side = DecorationButtonSide::Right;
+        let geom = DecorationFrame::compute(CLIENT, &theme, true);
+        let true_center = geom.titlebar.x + geom.titlebar.width / 2;
+        let title_center = geom.title.x + geom.title.width / 2;
+
+        // The icon (left) and the three buttons (right) reserve very
+        // different amounts of space, yet the title's box must still be
+        // centered on the titlebar itself.
+        assert!((title_center - true_center).abs() <= 1);
     }
 
     #[test]

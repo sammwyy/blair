@@ -129,20 +129,29 @@ master_ratio = 0.5
 # server | client | auto | none
 mode = "auto"
 titlebar_height = 28
-border_width = 2
+# Titlebar background (case-insensitive):
+#   blend - sampled from the top of each window's content (default)
+#   theme - the CreamUI system surface color
+#   color - custom_titlebar_color below
+# Title text and buttons pick a contrasting color automatically.
+titlebar_color = "blend"
+custom_titlebar_color = "#1e1e2e"
+# Border color: theme (accent when focused) | custom | none
+border = "theme"
+# thin | normal | bold
+border_size = "normal"
+# Colors for border = "custom".
+active_border = "#89b4fa"
+inactive_border = "#313244"
+# Window corners follow the CreamUI appearance's `corners` preference
+# (square | soft | round). This radius is only used without a CreamUI theme,
+# along with the fallback colors below.
 corner_radius = 8
 active_titlebar = "#1e1e2e"
 inactive_titlebar = "#11111b"
-active_border = "#89b4fa"
-inactive_border = "#313244"
 close_button = "#f38ba8"
 maximize_button = "#a6e3a1"
 minimize_button = "#f9e2af"
-active_title_text = "#cdd6f4"
-inactive_title_text = "#6c7086"
-# Track the CreamUI system theme's accent, surface, and text colors live,
-# overriding the colors above.
-follow_system_theme = true
 title_centered = false
 show_icon = true
 # Pixels excluded from window dragging at each end of the titlebar.

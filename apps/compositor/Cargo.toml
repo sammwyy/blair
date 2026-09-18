@@ -32,6 +32,7 @@ xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"
 fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 creamui-theme = { path = "../../../creamui/crates/theme" }
 creamui-theme-loader = { path = "../../../creamui/crates/theme-loader" }
 creamui-fonts = { path = "../../../creamui/crates/fonts" }

@@ -550,27 +550,139 @@ pub enum WindowLayout {
 pub struct DecorationConfig {
     pub mode: DecorationModeConfig,
     pub titlebar_height: i32,
-    pub border_width: i32,
+    /// Where the titlebar background comes from.
+    pub titlebar_color: TitlebarColorMode,
+    /// Used when `titlebar_color = "color"`.
+    pub custom_titlebar_color: String,
+    /// Where the window border color comes from; `none` hides it.
+    pub border: BorderColorMode,
+    pub border_size: BorderSize,
+    /// Fallback window corner radius, used only when no CreamUI system
+    /// appearance is available; otherwise its `corners` preference wins.
     pub corner_radius: i32,
+    /// Titlebar fill for `titlebar_color = "theme"` without a CreamUI theme.
     pub active_titlebar: String,
     pub inactive_titlebar: String,
+    /// Border colors used when `border = "custom"`.
     pub active_border: String,
     pub inactive_border: String,
+    /// Hover colors for the titlebar buttons without a CreamUI theme.
     pub close_button: String,
     pub maximize_button: String,
     pub minimize_button: String,
-    pub active_title_text: String,
-    pub inactive_title_text: String,
-    /// When enabled, the active border, titlebar, title text, and button
-    /// colors above are ignored and instead tracked live from the CreamUI
-    /// system theme (accent, surface, and text tokens).
-    pub follow_system_theme: bool,
     pub title_centered: bool,
     pub show_icon: bool,
     /// Pixels excluded from window dragging at each end of the titlebar,
     /// beyond the icon and buttons.
     pub drag_margin: i32,
     pub buttons: DecorationButtonsConfig,
+    /// Keys from older releases, still accepted so existing files keep
+    /// loading. Their behavior is now covered by the enums above (or, for
+    /// the title text colors, by automatic contrast), so they are dropped
+    /// the next time the configuration is saved.
+    #[serde(skip_serializing)]
+    pub follow_system_theme: Option<bool>,
+    #[serde(skip_serializing)]
+    pub titlebar_color_blend: Option<bool>,
+    #[serde(skip_serializing)]
+    pub border_width: Option<i32>,
+    #[serde(skip_serializing)]
+    pub active_title_text: Option<String>,
+    #[serde(skip_serializing)]
+    pub inactive_title_text: Option<String>,
+}
+
+/// Declares a unit-only enum stored as a lowercase string in TOML, parsed
+/// case-insensitively so `Blend`, `blend` and `BLEND` are all accepted.
+macro_rules! config_enum {
+    ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident => $id:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant),+
+        }
+
+        impl $name {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            pub const fn id(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $id),+
+                }
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.id())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = String::deserialize(deserializer)?;
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|variant| variant.id().eq_ignore_ascii_case(value.trim()))
+                    .ok_or_else(|| {
+                        serde::de::Error::unknown_variant(&value, &[$($id),+])
+                    })
+            }
+        }
+    };
+}
+
+config_enum!(
+    TitlebarColorMode {
+        /// Sampled from the top of the window's own content.
+        #[default]
+        Blend => "blend",
+        /// The system theme's surface color.
+        Theme => "theme",
+        /// `custom_titlebar_color`.
+        Color => "color",
+    }
+);
+
+config_enum!(
+    BorderColorMode {
+        None => "none",
+        /// Accent when focused, the theme's border token otherwise.
+        #[default]
+        Theme => "theme",
+        /// `active_border` / `inactive_border`.
+        Custom => "custom",
+    }
+);
+
+config_enum!(
+    BorderSize {
+        Thin => "thin",
+        #[default]
+        Normal => "normal",
+        Bold => "bold",
+    }
+);
+
+impl BorderSize {
+    pub const fn width(self) -> i32 {
+        match self {
+            Self::Thin => 1,
+            Self::Normal => 2,
+            Self::Bold => 4,
+        }
+    }
+
+    /// The closest size to an arbitrary pixel width, for integrations that
+    /// still speak in pixels.
+    pub fn nearest(width: i32) -> Self {
+        Self::ALL
+            .iter()
+            .copied()
+            .min_by_key(|size| (size.width() - width).abs())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,7 +780,10 @@ impl Default for DecorationConfig {
         Self {
             mode: DecorationModeConfig::Auto,
             titlebar_height: 32,
-            border_width: 4,
+            titlebar_color: TitlebarColorMode::Blend,
+            custom_titlebar_color: "#1e1e2e".to_string(),
+            border: BorderColorMode::Theme,
+            border_size: BorderSize::Normal,
             corner_radius: 12,
             active_titlebar: "#1e1e2e".to_string(),
             inactive_titlebar: "#11111b".to_string(),
@@ -677,21 +792,22 @@ impl Default for DecorationConfig {
             close_button: "#f38ba8".to_string(),
             maximize_button: "#a6e3a1".to_string(),
             minimize_button: "#f9e2af".to_string(),
-            active_title_text: "#cdd6f4".to_string(),
-            inactive_title_text: "#6c7086".to_string(),
-            follow_system_theme: true,
             title_centered: false,
             show_icon: true,
             drag_margin: 0,
             buttons: DecorationButtonsConfig::default(),
+            follow_system_theme: None,
+            titlebar_color_blend: None,
+            border_width: None,
+            active_title_text: None,
+            inactive_title_text: None,
         }
     }
 }
 
 impl DecorationConfig {
     fn validate(&self) -> Result<()> {
-        if !(0..=16).contains(&self.border_width)
-            || !(0..=64).contains(&self.corner_radius)
+        if !(0..=64).contains(&self.corner_radius)
             || !(0..=96).contains(&self.titlebar_height)
             || !(0..=256).contains(&self.drag_margin)
         {
@@ -709,41 +825,71 @@ impl DecorationConfig {
         Ok(())
     }
 
-    /// `accent` overrides the active border, and (when
-    /// [`Self::follow_system_theme`] is set) the titlebar, title text, and
-    /// button colors with live CreamUI system theme tokens.
-    pub fn to_theme(&self, accent: Option<SystemAccent>) -> DecorationTheme {
-        let mut theme = DecorationTheme {
+    /// Resolves the configured modes against the live CreamUI system theme
+    /// (`system`), falling back to the literal colors above without one.
+    pub fn to_theme(&self, system: Option<SystemAccent>) -> DecorationTheme {
+        let titlebar = match (self.titlebar_color, system) {
+            (TitlebarColorMode::Color, _) => {
+                let color = parse_color(&self.custom_titlebar_color);
+                (color, color)
+            }
+            // Both focus states share the window's own content background,
+            // so the titlebar reads as part of the same surface. Only the
+            // border communicates focus. Blend paints this under the
+            // sampled strip, so it is also its fallback.
+            (_, Some(system)) => (system.surface, system.surface),
+            (_, None) => (
+                parse_color(&self.active_titlebar),
+                parse_color(&self.inactive_titlebar),
+            ),
+        };
+        let border = match (self.border, system) {
+            (BorderColorMode::None, _) => None,
+            (BorderColorMode::Custom, _) => Some((
+                parse_color(&self.active_border),
+                parse_color(&self.inactive_border),
+            )),
+            (BorderColorMode::Theme, Some(system)) => Some((system.accent, system.border)),
+            (BorderColorMode::Theme, None) => {
+                let defaults = Self::default();
+                Some((
+                    parse_color(&defaults.active_border),
+                    parse_color(&defaults.inactive_border),
+                ))
+            }
+        };
+        let (close_button, maximize_button, minimize_button) = match system {
+            Some(system) => (system.danger, system.success, system.warning),
+            None => (
+                parse_color(&self.close_button),
+                parse_color(&self.maximize_button),
+                parse_color(&self.minimize_button),
+            ),
+        };
+        DecorationTheme {
             titlebar_height: self.titlebar_height,
-            border_width: self.border_width,
-            active_titlebar: parse_color(&self.active_titlebar),
-            inactive_titlebar: parse_color(&self.inactive_titlebar),
-            active_border: parse_color(&self.active_border),
-            inactive_border: parse_color(&self.inactive_border),
-            close_button: parse_color(&self.close_button),
-            maximize_button: parse_color(&self.maximize_button),
-            minimize_button: parse_color(&self.minimize_button),
-            active_title_text: parse_color(&self.active_title_text),
-            inactive_title_text: parse_color(&self.inactive_title_text),
+            border_width: if border.is_some() {
+                self.border_size.width()
+            } else {
+                0
+            },
+            corner_radius: system
+                .map(|system| system.corners.window_radius())
+                .unwrap_or(self.corner_radius),
+            titlebar_mode: self.titlebar_color,
+            active_titlebar: titlebar.0,
+            inactive_titlebar: titlebar.1,
+            active_border: border.map_or([0; 4], |border| border.0),
+            inactive_border: border.map_or([0; 4], |border| border.1),
+            close_button,
+            maximize_button,
+            minimize_button,
             button_layout: self.buttons.layout.clone(),
             button_side: self.buttons.side,
             title_centered: self.title_centered,
             show_icon: self.show_icon,
             drag_margin: self.drag_margin,
-        };
-        if let Some(accent) = accent {
-            theme.active_border = accent.accent;
-            if self.follow_system_theme {
-                theme.active_titlebar = accent.surface_elevated;
-                theme.inactive_titlebar = accent.surface;
-                theme.active_title_text = accent.text_primary;
-                theme.inactive_title_text = accent.text_secondary;
-                theme.close_button = accent.danger;
-                theme.maximize_button = accent.success;
-                theme.minimize_button = accent.warning;
-            }
         }
-        theme
     }
 }
 
@@ -754,11 +900,13 @@ pub struct SystemAccent {
     pub accent: [u8; 4],
     pub surface: [u8; 4],
     pub surface_elevated: [u8; 4],
+    pub border: [u8; 4],
     pub text_primary: [u8; 4],
     pub text_secondary: [u8; 4],
     pub danger: [u8; 4],
     pub success: [u8; 4],
     pub warning: [u8; 4],
+    pub corners: creamui_theme::CornerStyle,
 }
 
 impl From<creamui_theme::ResolvedAppearance> for SystemAccent {
@@ -768,11 +916,13 @@ impl From<creamui_theme::ResolvedAppearance> for SystemAccent {
             accent: to_bytes(resolved.accent),
             surface: to_bytes(resolved.theme.colors.surface),
             surface_elevated: to_bytes(resolved.theme.colors.surface_elevated),
+            border: to_bytes(resolved.theme.colors.border),
             text_primary: to_bytes(resolved.theme.colors.text_primary),
             text_secondary: to_bytes(resolved.theme.colors.text_secondary),
             danger: to_bytes(resolved.theme.colors.danger),
             success: to_bytes(resolved.theme.colors.success),
             warning: to_bytes(resolved.theme.colors.warning),
+            corners: resolved.corners,
         }
     }
 }
@@ -1068,7 +1218,7 @@ mod tests {
         .expect("read packaged sample config");
         let config: CompositorConfig = toml::from_str(&text).expect("parse packaged sample config");
         validate(&config).expect("packaged sample config should validate");
-        assert!(config.decorations.follow_system_theme);
+        assert_eq!(config.decorations.titlebar_color, TitlebarColorMode::Blend);
         assert_eq!(config.decorations.drag_margin, 0);
     }
 
@@ -1272,6 +1422,44 @@ mod tests {
 
         let legacy: CompositorConfig = toml::from_str("[decoration]\ncorner_radius = 4\n").unwrap();
         assert_eq!(legacy.decorations.corner_radius, 4);
+    }
+
+    #[test]
+    fn decoration_enums_parse_case_insensitively() {
+        let config: CompositorConfig = toml::from_str(
+            "[decorations]\ntitlebar_color = \"Color\"\nborder = \"NONE\"\nborder_size = \"bold\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.decorations.titlebar_color, TitlebarColorMode::Color);
+        assert_eq!(config.decorations.border, BorderColorMode::None);
+        assert_eq!(config.decorations.border_size, BorderSize::Bold);
+        assert!(toml::from_str::<CompositorConfig>("[decorations]\nborder = \"thick\"\n").is_err());
+    }
+
+    #[test]
+    fn legacy_decoration_keys_still_load_but_are_not_saved() {
+        let config: CompositorConfig = toml::from_str(
+            "[decorations]\nfollow_system_theme = true\ntitlebar_color_blend = false\nborder_width = 4\nactive_title_text = \"#ffffff\"\n",
+        )
+        .unwrap();
+        let saved = toml::to_string(&config).unwrap();
+        assert!(!saved.contains("follow_system_theme"));
+        assert!(!saved.contains("border_width"));
+    }
+
+    #[test]
+    fn a_hidden_border_takes_no_space() {
+        let config = DecorationConfig {
+            border: BorderColorMode::None,
+            ..Default::default()
+        };
+        assert_eq!(config.to_theme(None).border_width, 0);
+        let bold = DecorationConfig {
+            border_size: BorderSize::Bold,
+            ..Default::default()
+        };
+        assert_eq!(bold.to_theme(None).border_width, 4);
+        assert_eq!(BorderSize::nearest(3), BorderSize::Normal);
     }
 
     #[test]

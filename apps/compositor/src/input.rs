@@ -29,8 +29,8 @@ use smithay::{
 use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::{
-    config::WindowLayout,
-    decorations::{hit_test_frame, DecorationPart},
+    config::{DecorationButton, WindowLayout},
+    decorations::{hit_test_frame, DecorationPart, RESIZE_OUTSET},
     grabs::ResizeEdges,
     render::{to_rect, window_frame, z_ordered_windows},
     shortcuts::{physical_vt_from_keycode, update_physical_mods},
@@ -141,7 +141,18 @@ fn window_target(
             part: DecorationPart::Client,
         });
     }
-    if !frame.has_border || !frame.frame.to_f64().contains(pos) {
+    // Resize handles reach a little past the visible frame, so thin or
+    // hidden borders stay easy to grab.
+    let outset = f64::from(RESIZE_OUTSET);
+    let grab_area = smithay::utils::Rectangle::<f64, Logical>::new(
+        frame.frame.loc.to_f64() - Point::from((outset, outset)),
+        (
+            f64::from(frame.frame.size.w) + outset * 2.0,
+            f64::from(frame.frame.size.h) + outset * 2.0,
+        )
+            .into(),
+    );
+    if !frame.has_border || !grab_area.contains(pos) {
         return None;
     }
     let part = hit_test_frame(
@@ -602,6 +613,7 @@ fn move_pointer(
         return;
     };
     state.set_focused_output_at(location);
+    update_hovered_button(state, location);
     pointer.motion(
         state,
         under,
@@ -613,6 +625,50 @@ fn move_pointer(
     );
     pointer.frame(state);
     state.request_redraw();
+}
+
+fn update_hovered_button(state: &mut BlairState, location: Point<f64, Logical>) {
+    let target = pointer_target(state, location);
+    let hovered = match &target {
+        Some(PointerTarget::Window { window, part, .. }) => state
+            .window_id(window)
+            .and_then(|id| decoration_button(*part).map(|button| (id, button))),
+        _ => None,
+    };
+    state.hovered_button = hovered;
+
+    // Grabs own the cursor until they end.
+    if state
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| pointer.is_grabbed())
+    {
+        return;
+    }
+    state.compositor_cursor = match target {
+        Some(PointerTarget::Window {
+            surface: None,
+            part,
+            ..
+        }) => Some(
+            resize_edges(part)
+                .filter(|_| state.config.window.layout != WindowLayout::Tiling)
+                .map_or(
+                    smithay::input::pointer::CursorIcon::Default,
+                    ResizeEdges::cursor,
+                ),
+        ),
+        _ => None,
+    };
+}
+
+fn decoration_button(part: DecorationPart) -> Option<DecorationButton> {
+    match part {
+        DecorationPart::CloseButton => Some(DecorationButton::Close),
+        DecorationPart::MaximizeButton => Some(DecorationButton::Maximize),
+        DecorationPart::MinimizeButton => Some(DecorationButton::Minimize),
+        _ => None,
+    }
 }
 
 fn pointer_button(state: &mut BlairState, button: u32, button_state: ButtonState, time: u32) {
@@ -790,5 +846,23 @@ mod tests {
         assert!(edges.top && edges.right && !edges.bottom && !edges.left);
         assert!(resize_edges(DecorationPart::Titlebar).is_none());
         assert!(resize_edges(DecorationPart::Client).is_none());
+    }
+
+    #[test]
+    fn only_the_three_window_controls_map_to_a_hoverable_button() {
+        assert_eq!(
+            decoration_button(DecorationPart::CloseButton),
+            Some(DecorationButton::Close)
+        );
+        assert_eq!(
+            decoration_button(DecorationPart::MaximizeButton),
+            Some(DecorationButton::Maximize)
+        );
+        assert_eq!(
+            decoration_button(DecorationPart::MinimizeButton),
+            Some(DecorationButton::Minimize)
+        );
+        assert_eq!(decoration_button(DecorationPart::Titlebar), None);
+        assert_eq!(decoration_button(DecorationPart::Client), None);
     }
 }

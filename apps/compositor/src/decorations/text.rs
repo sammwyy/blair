@@ -48,79 +48,6 @@ pub fn rasterize_title(
     Some(paint_glyphs(font, &layout, max_width, height, color))
 }
 
-/// Renders a single-letter badge on a filled circular background, used as
-/// the titlebar icon fallback when no themed app icon is available.
-pub fn rasterize_monogram(
-    font: &Font,
-    letter: char,
-    background: [u8; 4],
-    foreground: [u8; 4],
-    size: i32,
-) -> RasterizedGlyphs {
-    let size = size.max(1);
-    let mut pixels = vec![0u8; size as usize * size as usize * 4];
-    let radius = size as f32 / 2.0;
-    let center = size as f32 / 2.0;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            if dx * dx + dy * dy > radius * radius {
-                continue;
-            }
-            let offset = (y as usize * size as usize + x as usize) * 4;
-            pixels[offset] = background[0];
-            pixels[offset + 1] = background[1];
-            pixels[offset + 2] = background[2];
-            pixels[offset + 3] = background[3];
-        }
-    }
-
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings {
-        max_width: Some(size as f32),
-        max_height: Some(size as f32),
-        horizontal_align: HorizontalAlign::Center,
-        vertical_align: VerticalAlign::Middle,
-        ..LayoutSettings::default()
-    });
-    let glyph = letter.to_uppercase().collect::<String>();
-    layout.append(&[font], &TextStyle::new(&glyph, size as f32 * 0.6, 0));
-    for g in layout.glyphs() {
-        if g.width == 0 || g.height == 0 {
-            continue;
-        }
-        let (_, coverage) = font.rasterize_config(g.key);
-        let gx = g.x.round() as i32;
-        let gy = g.y.round() as i32;
-        for row in 0..g.height {
-            for col in 0..g.width {
-                let alpha = u16::from(coverage[row * g.width + col]);
-                if alpha == 0 {
-                    continue;
-                }
-                let px = gx + col as i32;
-                let py = gy + row as i32;
-                if px < 0 || py < 0 || px >= size || py >= size {
-                    continue;
-                }
-                let offset = (py as usize * size as usize + px as usize) * 4;
-                for channel in 0..3 {
-                    let bg = u16::from(pixels[offset + channel]);
-                    let fg = u16::from(foreground[channel]);
-                    pixels[offset + channel] = ((fg * alpha + bg * (255 - alpha)) / 255) as u8;
-                }
-                pixels[offset + 3] = 255;
-            }
-        }
-    }
-    RasterizedGlyphs {
-        pixels,
-        width: size,
-        height: size,
-    }
-}
-
 fn paint_glyphs(
     font: &Font,
     layout: &Layout,
@@ -129,6 +56,14 @@ fn paint_glyphs(
     color: [u8; 4],
 ) -> RasterizedGlyphs {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    // Blending happens in sRGB, which makes light-on-dark text look heavier
+    // and dark-on-light text lighter than the font intends. Thin the
+    // former and firm up the latter so both read at their real weight.
+    let light = u32::from(color[0]) + u32::from(color[1]) + u32::from(color[2]) > 3 * 128;
+    let exponent: f32 = if light { 1.3 } else { 0.85 };
+    let weights: Vec<u16> = (0..=255u16)
+        .map(|c| ((f32::from(c) / 255.0).powf(exponent) * 255.0).round() as u16)
+        .collect();
     for g in layout.glyphs() {
         if g.width == 0 || g.height == 0 {
             continue;
@@ -138,7 +73,7 @@ fn paint_glyphs(
         let gy = g.y.round() as i32;
         for row in 0..g.height {
             for col in 0..g.width {
-                let coverage = u16::from(coverage[row * g.width + col]);
+                let coverage = weights[usize::from(coverage[row * g.width + col])];
                 if coverage == 0 {
                     continue;
                 }
@@ -238,17 +173,5 @@ mod tests {
         let fitted = fit_within(&font, &long, 14.0, 80.0);
         assert!(fitted.ends_with(ELLIPSIS));
         assert!(fitted.len() < long.len());
-    }
-
-    #[test]
-    fn monogram_paints_a_circular_badge() {
-        let font = font();
-        let glyphs = rasterize_monogram(&font, 'f', [10, 10, 10, 255], [255, 255, 255, 255], 24);
-        assert_eq!(glyphs.width, 24);
-        assert_eq!(glyphs.height, 24);
-        let center = (12 * 24 + 12) * 4;
-        assert_eq!(glyphs.pixels[center + 3], 255);
-        let corner = 0;
-        assert_eq!(glyphs.pixels[corner + 3], 0);
     }
 }

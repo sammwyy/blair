@@ -122,6 +122,21 @@ impl RoundedClip {
     }
 }
 
+pub(crate) fn local_from_ndc(rect: Rectangle<i32, Physical>, projection: &[f32; 9]) -> [f32; 9] {
+    let local_from_output = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        -rect.loc.x as f32,
+        -rect.loc.y as f32,
+        1.0,
+    ];
+    mat3_mul(&local_from_output, &mat3_inverse(projection))
+}
+
 pub struct ClippedSurfaceElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     program: GlesTexProgram,
@@ -142,18 +157,7 @@ impl ClippedSurfaceElement {
     }
 
     fn uniforms(&self, projection: &[f32; 9]) -> Vec<Uniform<'static>> {
-        let clip_from_output = [
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            -self.clip.rect.loc.x as f32,
-            -self.clip.rect.loc.y as f32,
-            1.0,
-        ];
-        let clip_from_ndc = mat3_mul(&clip_from_output, &mat3_inverse(projection));
+        let clip_from_ndc = local_from_ndc(self.clip.rect, projection);
         let [tl, tr, br, bl] = self.clip.radii;
         vec![
             Uniform::new(

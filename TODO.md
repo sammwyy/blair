@@ -24,11 +24,10 @@
 - Direct scanout of client buffers is not enabled per surface: the DRM
   backend advertises a single global dmabuf feedback tranche and never sends
   per-surface scanout feedback for fullscreen clients.
-- The titlebar icon is always a generated single-letter monogram badge.
-  Loading a client's real icon (via its `app_id`, a desktop file, and the
-  freedesktop icon theme spec, as `coconut`'s taskbar already does) is not
-  implemented.
-- Title and icon glyphs are rasterized at a 1:1 pixel scale rather than the
+- The titlebar icon only resolves PNG/JPEG icon files; SVG-only icon themes
+  (common for scalable hicolor entries) are not rasterized, so those windows
+  render with no icon even though one is installed.
+- Title and icon pixels are rasterized at a 1:1 pixel scale rather than the
   output's scale factor, so they read slightly soft on fractional/HiDPI
   outputs.
 - The reordering of decoration buttons (`decorations.buttons.layout`) has no

@@ -23,6 +23,21 @@ pub struct ResizeEdges {
 }
 
 impl ResizeEdges {
+    /// The themed cursor that points along these edges.
+    pub fn cursor(self) -> smithay::input::pointer::CursorIcon {
+        use smithay::input::pointer::CursorIcon;
+        match (self.top, self.bottom, self.left, self.right) {
+            (true, _, true, _) => CursorIcon::NwResize,
+            (true, _, _, true) => CursorIcon::NeResize,
+            (_, true, true, _) => CursorIcon::SwResize,
+            (_, true, _, true) => CursorIcon::SeResize,
+            (true, ..) => CursorIcon::NResize,
+            (_, true, ..) => CursorIcon::SResize,
+            (_, _, true, _) => CursorIcon::WResize,
+            _ => CursorIcon::EResize,
+        }
+    }
+
     pub fn from_xdg(edge: xdg_toplevel::ResizeEdge) -> Self {
         use xdg_toplevel::ResizeEdge as E;
         Self {
@@ -205,6 +220,7 @@ impl PointerGrab<BlairState> for MoveGrab {
     forward_gestures!();
 
     fn unset(&mut self, data: &mut BlairState) {
+        data.compositor_cursor = None;
         tracing::debug!("interactive move finished");
         data.request_redraw();
     }
@@ -290,6 +306,7 @@ impl PointerGrab<BlairState> for ResizeGrab {
             toplevel.send_pending_configure();
         }
         data.finish_resize(&self.window);
+        data.compositor_cursor = None;
         tracing::debug!(size = ?self.last_size, "interactive resize finished");
     }
 }

@@ -81,8 +81,8 @@ use smithay::{
 use crate::{
     grabs::ResizeEdges,
     state::{
-        send_scale_to_surface, set_surface_decoration_mode, surface_window_id, BlairState,
-        ClientState,
+        send_scale_to_surface, set_client_decoration_request, set_surface_decoration_mode,
+        surface_window_id, BlairState, ClientState,
     },
 };
 
@@ -292,37 +292,23 @@ delegate_xdg_shell!(BlairState);
 
 impl XdgDecorationHandler for BlairState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.preferred_decoration_mode();
-        self.set_decoration_mode(&toplevel, mode);
+        self.set_decoration_mode(&toplevel);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        let mode = match self.config.decorations.mode {
-            crate::config::DecorationModeConfig::Auto => mode,
-            _ => self.preferred_decoration_mode(),
-        };
-        self.set_decoration_mode(&toplevel, mode);
+        set_client_decoration_request(toplevel.wl_surface(), Some(mode));
+        self.set_decoration_mode(&toplevel);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.preferred_decoration_mode();
-        self.set_decoration_mode(&toplevel, mode);
+        set_client_decoration_request(toplevel.wl_surface(), None);
+        self.set_decoration_mode(&toplevel);
     }
 }
 
 impl BlairState {
-    fn set_decoration_mode(&mut self, toplevel: &ToplevelSurface, mode: DecorationMode) {
-        let mode = surface_window_id(toplevel.wl_surface())
-            .and_then(|id| self.windows.get(&id))
-            .and_then(|managed| managed.rules.decoration)
-            .map(|server| {
-                if server {
-                    DecorationMode::ServerSide
-                } else {
-                    DecorationMode::ClientSide
-                }
-            })
-            .unwrap_or(mode);
+    fn set_decoration_mode(&mut self, toplevel: &ToplevelSurface) {
+        let mode = self.resolve_decoration_mode(toplevel.wl_surface());
         tracing::debug!(?mode, "xdg-decoration mode selected");
         set_surface_decoration_mode(toplevel.wl_surface(), mode);
         toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
@@ -416,7 +402,7 @@ impl SeatHandler for BlairState {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
-        self.pointer_cursor = image;
+        self.client_cursor = image;
         self.request_redraw();
     }
 
@@ -667,8 +653,20 @@ impl KdeDecorationHandler for BlairState {
         &mut self,
         surface: &WlSurface,
         decoration: &OrgKdeKwinServerDecoration,
-        _mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
+        mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
     ) {
+        let requested = match mode {
+            smithay::reexports::wayland_server::WEnum::Value(KdeDecorationMode::Server) => {
+                Some(DecorationMode::ServerSide)
+            }
+            // `None` asks for no decorations at all, which the server side
+            // honors the same way as client-side: by not drawing a frame.
+            smithay::reexports::wayland_server::WEnum::Value(
+                KdeDecorationMode::Client | KdeDecorationMode::None,
+            ) => Some(DecorationMode::ClientSide),
+            _ => None,
+        };
+        set_client_decoration_request(surface, requested);
         self.announce_kde_decoration(surface, decoration);
     }
 }
@@ -681,7 +679,7 @@ impl BlairState {
         surface: &WlSurface,
         decoration: &OrgKdeKwinServerDecoration,
     ) {
-        let mode = self.preferred_decoration_mode();
+        let mode = self.resolve_decoration_mode(surface);
         set_surface_decoration_mode(surface, mode);
         decoration.mode(match mode {
             DecorationMode::ServerSide => KdeDecorationMode::Server,

@@ -173,6 +173,7 @@ pub struct BlairState {
     pub config: CompositorConfig,
     decoration_theme: DecorationTheme,
     system_accent: Option<SystemAccent>,
+    pub icon_cache: crate::decorations::IconCache,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -209,7 +210,12 @@ pub struct BlairState {
 
     pub seat: Seat<Self>,
     pub focused_window: Option<WindowId>,
-    pub pointer_cursor: CursorImageStatus,
+    pub hovered_button: Option<(WindowId, crate::config::DecorationButton)>,
+    /// The cursor last requested by the focused client.
+    pub client_cursor: CursorImageStatus,
+    /// A cursor the compositor shows instead of the client's, over its own
+    /// decorations and during interactive moves and resizes.
+    pub compositor_cursor: Option<smithay::input::pointer::CursorIcon>,
     pub cursor: CursorManager,
     pub dnd_icon: Option<WlSurface>,
     pub decorations: HashMap<WindowId, WindowDecoration>,
@@ -232,7 +238,12 @@ pub struct BlairState {
 
 fn load_system_accent() -> Option<SystemAccent> {
     match creamui_theme_loader::SystemThemeLoader::new().load() {
-        Ok(resolved) => Some(resolved.into()),
+        Ok(resolved) => {
+            if let Some(font_family) = &resolved.font_family {
+                creamui_fonts::use_system_font(font_family);
+            }
+            Some(resolved.into())
+        }
         Err(error) => {
             tracing::debug!(%error, "no CreamUI system theme found, using configured colors");
             None
@@ -331,6 +342,7 @@ impl BlairState {
             clock: Clock::new(),
             decoration_theme,
             system_accent,
+            icon_cache: crate::decorations::IconCache::default(),
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -364,7 +376,9 @@ impl BlairState {
             suppressed_keys: HashSet::new(),
             seat,
             focused_window: None,
-            pointer_cursor: CursorImageStatus::default_named(),
+            hovered_button: None,
+            client_cursor: CursorImageStatus::default_named(),
+            compositor_cursor: None,
             cursor,
             dnd_icon: None,
             decorations: HashMap::new(),
@@ -417,9 +431,17 @@ impl BlairState {
         self.request_redraw();
     }
 
+    /// The cursor to draw: the compositor's own while it owns the pointer,
+    /// the client's otherwise.
+    pub fn pointer_cursor(&self) -> CursorImageStatus {
+        match self.compositor_cursor {
+            Some(icon) => CursorImageStatus::Named(icon),
+            None => self.client_cursor.clone(),
+        }
+    }
+
     pub fn corner_radius(&self, frame: Rectangle<i32, Logical>) -> i32 {
-        self.config
-            .decorations
+        self.decoration_theme
             .corner_radius
             .min(frame.size.w / 2)
             .min(frame.size.h / 2)
@@ -1670,6 +1692,7 @@ impl BlairState {
             button,
             location,
         };
+        self.compositor_cursor = Some(smithay::input::pointer::CursorIcon::Grabbing);
         tracing::debug!("interactive move started");
         pointer.set_grab(
             self,
@@ -1714,6 +1737,7 @@ impl BlairState {
             button,
             location: pointer.current_location(),
         };
+        self.compositor_cursor = Some(edges.cursor());
         tracing::debug!(?edges, "interactive resize started");
         pointer.set_grab(
             self,
@@ -2236,33 +2260,48 @@ impl BlairState {
         }
     }
 
+    /// The decoration mode a surface should use: window rules win, then (in
+    /// auto mode) whatever the client asked for, then the configured default.
+    pub fn resolve_decoration_mode(&self, surface: &WlSurface) -> DecorationMode {
+        let rule = surface_window_id(surface)
+            .and_then(|id| self.windows.get(&id))
+            .and_then(|managed| managed.rules.decoration);
+        if let Some(server) = rule {
+            return if server {
+                DecorationMode::ServerSide
+            } else {
+                DecorationMode::ClientSide
+            };
+        }
+        let preferred = self.preferred_decoration_mode();
+        match self.config.decorations.mode {
+            DecorationModeConfig::Auto if self.config.window.server_side_decorations => {
+                client_decoration_request(surface).unwrap_or(preferred)
+            }
+            _ => preferred,
+        }
+    }
+
     pub fn window_has_server_decoration(&self, window: &Window) -> bool {
         if self.window_is_fullscreen(window) {
             return false;
         }
         match self.config.decorations.mode {
-            DecorationModeConfig::Server => true,
-            DecorationModeConfig::Client | DecorationModeConfig::None => false,
-            DecorationModeConfig::Auto => {
-                self.config.window.server_side_decorations && window_wants_server_decoration(window)
-            }
+            DecorationModeConfig::None => false,
+            // A client that never negotiated decorations is only framed when
+            // the compositor forces them; otherwise it draws its own.
+            mode => window_negotiated_decoration(window)
+                .map(|negotiated| negotiated == DecorationMode::ServerSide)
+                .unwrap_or(mode == DecorationModeConfig::Server),
         }
     }
 
     fn refresh_decoration_modes(&mut self) {
-        let mode = self.preferred_decoration_mode();
         for managed in self.windows.values() {
             let Some(toplevel) = managed.window.toplevel() else {
                 continue;
             };
-            let requested = managed.rules.decoration.map(|server| {
-                if server {
-                    DecorationMode::ServerSide
-                } else {
-                    DecorationMode::ClientSide
-                }
-            });
-            let mode = requested.unwrap_or(mode);
+            let mode = self.resolve_decoration_mode(toplevel.wl_surface());
             set_surface_decoration_mode(toplevel.wl_surface(), mode);
             toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
             if toplevel.is_initial_configure_sent() {
@@ -2386,16 +2425,39 @@ pub fn set_surface_decoration_mode(surface: &WlSurface, mode: DecorationMode) {
     });
 }
 
-pub fn window_wants_server_decoration(window: &Window) -> bool {
-    let Some(surface) = window.wl_surface() else {
-        return false;
-    };
+/// The mode last sent to the client, or `None` if it never bound a
+/// decoration protocol for this surface.
+pub fn window_negotiated_decoration(window: &Window) -> Option<DecorationMode> {
+    let surface = window.wl_surface()?;
     with_states(&surface, |states| {
         states
             .data_map
             .get::<std::cell::Cell<DecorationMode>>()
-            .map(|cell| cell.get() == DecorationMode::ServerSide)
-            .unwrap_or(true)
+            .map(std::cell::Cell::get)
+    })
+}
+
+/// What the client itself asked for through xdg-decoration or the KDE
+/// protocol, kept apart from the effective mode so policy changes (config
+/// reloads, window rules) can be re-resolved without forgetting it.
+struct ClientDecorationRequest(std::cell::Cell<Option<DecorationMode>>);
+
+pub fn set_client_decoration_request(surface: &WlSurface, mode: Option<DecorationMode>) {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get_or_insert(|| ClientDecorationRequest(std::cell::Cell::new(None)))
+            .0
+            .set(mode);
+    });
+}
+
+fn client_decoration_request(surface: &WlSurface) -> Option<DecorationMode> {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ClientDecorationRequest>()
+            .and_then(|request| request.0.get())
     })
 }
 

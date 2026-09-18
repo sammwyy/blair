@@ -10,12 +10,19 @@ use smithay::{
             default_primary_scanout_output_compare,
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             render_elements,
-            solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             AsRenderElements, Element, Kind, RenderElementStates,
         },
         gles::{GlesPixelProgram, GlesRenderer, GlesTexProgram},
         Color32F,
+    },
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            damage::OutputDamageTracker,
+            gles::{GlesTarget, GlesTexture},
+            Bind, ExportMem, Offscreen,
+        },
     },
     desktop::{
         layer_map_for_output,
@@ -29,12 +36,16 @@ use smithay::{
     },
     input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData},
     output::Output,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Transform},
     wayland::{compositor::with_states, seat::WaylandFocus, shell::wlr_layer::Layer},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
 
-use crate::{config::WindowLayout, decorations::DecorationFrame, state::BlairState};
+use crate::{
+    config::{DecorationButton, TitlebarColorMode, WindowLayout},
+    decorations::DecorationFrame,
+    state::BlairState,
+};
 use blair_protocol::Rect;
 
 pub use capture::{capture_region, screenshot};
@@ -42,7 +53,10 @@ pub use clip::RoundedClip;
 pub use decoration::WindowDecoration;
 
 use clip::ClippedSurfaceElement;
-use decoration::{FrameElement, FrameParams};
+use decoration::{
+    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitlebarPixelSource,
+    TitlebarStrip,
+};
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
 
@@ -64,7 +78,6 @@ render_elements! {
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Clipped=ClippedSurfaceElement,
     Frame=FrameElement,
-    Solid=SolidColorRenderElement,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -72,14 +85,24 @@ render_elements! {
 pub struct Shaders {
     clip: GlesTexProgram,
     frame: GlesPixelProgram,
+    titlebar_blend: GlesTexProgram,
 }
 
 impl Shaders {
     pub fn compile(renderer: &mut GlesRenderer) -> Option<Self> {
-        let shaders =
-            clip::compile(renderer).and_then(|clip| Ok((clip, decoration::compile(renderer)?)));
+        let shaders = clip::compile(renderer).and_then(|clip| {
+            Ok((
+                clip,
+                decoration::compile(renderer)?,
+                decoration::compile_titlebar_blend(renderer)?,
+            ))
+        });
         match shaders {
-            Ok((clip, frame)) => Some(Self { clip, frame }),
+            Ok((clip, frame, titlebar_blend)) => Some(Self {
+                clip,
+                frame,
+                titlebar_blend,
+            }),
             Err(error) => {
                 tracing::error!(%error, "failed to compile decoration shaders; server-side decorations disabled");
                 None
@@ -156,7 +179,7 @@ pub fn output_elements(
     };
 
     let font = creamui_fonts::resolve(
-        creamui_fonts::DEFAULT_FAMILY,
+        &creamui_fonts::preferred_family(),
         creamui_fonts::FontWeight::Regular,
     );
 
@@ -241,7 +264,7 @@ fn cursor_elements(
         return;
     }
     let relative = pointer - ctx.output_geo.loc.to_f64();
-    let icon = match &state.pointer_cursor {
+    let icon = match &state.pointer_cursor() {
         CursorImageStatus::Hidden => return,
         CursorImageStatus::Surface(surface) if surface.alive() => {
             let hotspot = with_states(surface, |states| {
@@ -292,7 +315,7 @@ fn cursor_elements(
 }
 
 pub fn cursor_is_animated(state: &BlairState, output: &Output) -> bool {
-    match &state.pointer_cursor {
+    match &state.pointer_cursor() {
         CursorImageStatus::Named(icon) => state
             .cursor
             .is_animated(*icon, output.current_scale().integer_scale()),
@@ -365,67 +388,134 @@ fn window_elements(
         .unwrap_or_default();
 
     let decorated = frame.has_border && shaders.is_some();
-    if decorated {
-        let theme = state.decoration_theme().clone();
-        let decoration = state.decorations.entry(id).or_default();
-        if frame.has_titlebar {
-            let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
-            for (buffer, (rect, color)) in decoration.buttons.iter_mut().zip([
-                (geometry.close_btn, theme.close_button),
-                (geometry.maximize_btn, theme.maximize_button),
-                (geometry.minimize_btn, theme.minimize_button),
-            ]) {
-                if rect.width <= 0 || rect.height <= 0 {
-                    continue;
-                }
-                buffer.update((rect.width, rect.height), rgba(color));
-                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
-                elements.push(
-                    SolidColorRenderElement::from_buffer(
-                        buffer,
-                        location.to_physical_precise_round(scale),
-                        scale,
-                        alpha,
-                        Kind::Unspecified,
-                    )
-                    .into(),
-                );
+    // Sampled before drawing the titlebar contents: in blend mode their
+    // colors follow whatever the client paints at its top edge.
+    let titlebar_source = match shaders {
+        Some(shaders)
+            if decorated
+                && frame.has_titlebar
+                && state.decoration_theme().titlebar_mode == TitlebarColorMode::Blend =>
+        {
+            let decoration = state.decorations.entry(id).or_default();
+            titlebar_pixel_source(
+                renderer,
+                decoration,
+                &surface,
+                window,
+                frame.client.size,
+                scale,
+                shaders,
+            )
+        }
+        _ => {
+            if let Some(decoration) = state.decorations.get_mut(&id) {
+                decoration.strip = None;
             }
+            None
+        }
+    };
 
-            let title_color = if focused {
-                theme.active_title_text
+    if decorated && frame.has_titlebar {
+        let theme = state.decoration_theme().clone();
+        let buffer_scale = (scale.ceil() as i32).max(1);
+        let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
+        let fill = if focused {
+            theme.active_titlebar
+        } else {
+            theme.inactive_titlebar
+        };
+        let background = titlebar_source
+            .as_ref()
+            .and_then(|source| source.average)
+            .map_or(fill, |average| over(average, fill));
+        let foreground = contrasting(background);
+        // Unfocused windows fade their text and glyphs toward the
+        // background instead of switching to a separate palette.
+        let muted = if focused {
+            foreground
+        } else {
+            mix(foreground, background, 0.45)
+        };
+        let decoration = state.decorations.entry(id).or_default();
+        for (index, (button, rect, glyph, semantic)) in [
+            (
+                DecorationButton::Close,
+                geometry.close_btn,
+                ButtonGlyph::Close,
+                theme.close_button,
+            ),
+            (
+                DecorationButton::Maximize,
+                geometry.maximize_btn,
+                ButtonGlyph::Maximize,
+                theme.maximize_button,
+            ),
+            (
+                DecorationButton::Minimize,
+                geometry.minimize_btn,
+                ButtonGlyph::Minimize,
+                theme.minimize_button,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if rect.width <= 0 || rect.height <= 0 {
+                continue;
+            }
+            let look = if state.hovered_button == Some((id, button)) {
+                ButtonLook {
+                    glyph,
+                    disc: semantic,
+                    glyph_color: contrasting(semantic),
+                }
             } else {
-                theme.inactive_title_text
+                ButtonLook {
+                    glyph,
+                    disc: with_alpha(foreground, if focused { 0x1c } else { 0x10 }),
+                    glyph_color: with_alpha(muted, 0xd8),
+                }
             };
-            let title_size = (theme.titlebar_height as f32 * 0.5).clamp(10.0, 20.0);
-            decoration.update_title(
-                font,
-                &title_text,
-                title_size,
-                title_color,
-                geometry.title.width,
-                geometry.title.height,
-                theme.title_centered,
-            );
-            if let Some((buffer, size)) = decoration.title_buffer() {
-                let location =
-                    Point::<i32, Logical>::from((geometry.title.x, geometry.title.y)) - origin;
+            decoration.update_button(index, look, rect.width, buffer_scale);
+            if let Some((buffer, size)) = decoration.button_buffer(index) {
+                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
                 push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
             }
+        }
 
-            if theme.show_icon && geometry.icon.width > 0 {
-                let letter = title_glyph(&title_text, app_id.as_deref());
-                let background = if focused {
-                    theme.active_border
-                } else {
-                    theme.inactive_border
-                };
-                decoration.update_icon(font, letter, background, title_color, geometry.icon.width);
-                if let Some((buffer, size)) = decoration.icon_buffer() {
-                    let location =
-                        Point::<i32, Logical>::from((geometry.icon.x, geometry.icon.y)) - origin;
-                    push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
-                }
+        let title_size = (theme.titlebar_height as f32 * 0.41).clamp(10.0, 18.0);
+        decoration.update_title(
+            font,
+            &title_text,
+            title_size,
+            muted,
+            geometry.title.width,
+            geometry.title.height,
+            theme.title_centered,
+            buffer_scale,
+        );
+        if let Some((buffer, size)) = decoration.title_buffer() {
+            let location =
+                Point::<i32, Logical>::from((geometry.title.x, geometry.title.y)) - origin;
+            push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+        }
+
+        if theme.show_icon && geometry.icon.width > 0 {
+            let icon = app_id.as_deref().and_then(|app_id| {
+                state
+                    .icon_cache
+                    .get(app_id, geometry.icon.width * buffer_scale)
+            });
+            let key = format!(
+                "{}|{}|{buffer_scale}",
+                app_id.as_deref().unwrap_or(""),
+                geometry.icon.width
+            );
+            decoration.update_icon(&key, icon.as_deref(), geometry.icon.width, buffer_scale);
+            if let Some((buffer, size)) = decoration.icon_buffer() {
+                let location =
+                    Point::<i32, Logical>::from((geometry.icon.x, geometry.icon.y)) - origin;
+                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
             }
         }
     }
@@ -474,6 +564,9 @@ fn window_elements(
             } else {
                 theme.inactive_border
             }),
+            // Stays painted under the sampled strip so a translucent first
+            // row blends onto the theme color, not onto whatever is behind
+            // the window.
             titlebar_color: rgba(if focused {
                 theme.active_titlebar
             } else {
@@ -482,10 +575,170 @@ fn window_elements(
         };
         let decoration = state.decorations.entry(id).or_default();
         decoration.update(frame.frame, params);
-        if let Some(element) = decoration.element(&shaders.frame, origin, scale, alpha) {
+        if titlebar_source
+            .as_ref()
+            .is_some_and(|source| source.changed)
+        {
+            decoration.damage_titlebar();
+        }
+        if let Some(element) = decoration.element(
+            &shaders.frame,
+            origin,
+            scale,
+            alpha,
+            titlebar_source.as_ref().map(|source| &source.pixels),
+        ) {
             elements.push(element.into());
         }
     }
+}
+
+/// How far below the top edge of the window content the titlebar color is
+/// sampled, in logical pixels. Clients often draw a 1px highlight or border
+/// on their very first row, which would otherwise tint the whole titlebar.
+const TITLEBAR_SAMPLE_DEPTH: f64 = 2.0;
+
+struct SampledTitlebar {
+    pixels: TitlebarPixelSource,
+    /// Whether the strip changed since the previous frame.
+    changed: bool,
+    /// The strip's average color, premultiplied, for picking contrasting
+    /// text and button colors.
+    average: Option<[u8; 4]>,
+}
+
+/// Refreshes the window's cached titlebar strip and returns it.
+fn titlebar_pixel_source(
+    renderer: &mut GlesRenderer,
+    decoration: &mut WindowDecoration,
+    surface: &WlSurface,
+    window: &Window,
+    size: smithay::utils::Size<i32, Logical>,
+    scale: f64,
+    shaders: &Shaders,
+) -> Option<SampledTitlebar> {
+    let size = size.to_physical_precise_round(scale);
+    if size.is_empty() {
+        decoration.strip = None;
+        return None;
+    }
+    // Only one row is rendered. Besides being cheap, a 1px-tall target
+    // sidesteps GL's bottom-up framebuffers: in a full-height offscreen
+    // render, buffer row 0 is the window's *bottom* row.
+    let strip_size = smithay::utils::Size::<i32, Physical>::from((size.w, 1));
+    let reusable = decoration
+        .strip
+        .as_ref()
+        .is_some_and(|strip| strip.size == strip_size && strip.scale == scale);
+    if !reusable {
+        let texture = Offscreen::<GlesTexture>::create_buffer(
+            renderer,
+            Fourcc::Abgr8888,
+            strip_size.to_logical(1).to_buffer(1, Transform::Normal),
+        )
+        .map_err(|error| tracing::warn!(%error, "failed to allocate titlebar pixel source"))
+        .ok()?;
+        decoration.strip = Some(TitlebarStrip {
+            texture,
+            tracker: OutputDamageTracker::new(strip_size, scale, Transform::Normal),
+            size: strip_size,
+            scale,
+            rendered: false,
+            average: None,
+        });
+    }
+    let strip = decoration.strip.as_mut()?;
+
+    let depth = ((TITLEBAR_SAMPLE_DEPTH * scale).round() as i32).clamp(0, size.h - 1);
+    let location = (Point::<i32, Logical>::from((0, 0)) - window.geometry().loc)
+        .to_physical_precise_round(scale)
+        - Point::<i32, Physical>::from((0, depth));
+    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(
+            renderer,
+            surface,
+            location,
+            scale,
+            1.0,
+            Kind::Unspecified,
+        );
+    let changed = {
+        let mut framebuffer = renderer
+            .bind(&mut strip.texture)
+            .map_err(|error| tracing::warn!(%error, "failed to bind titlebar pixel source"))
+            .ok()?;
+        let age = usize::from(strip.rendered);
+        let result = strip
+            .tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                age,
+                &elements,
+                Color32F::new(0.0, 0.0, 0.0, 0.0),
+            )
+            .map_err(|error| tracing::warn!(%error, "failed to render titlebar pixel source"))
+            .ok()?;
+        let changed = result.damage.is_some_and(|damage| !damage.is_empty());
+        if changed || strip.average.is_none() {
+            // A single row is tiny; reading it back only when the client
+            // repaints that row keeps the stall off the steady state.
+            strip.average = average_row(renderer, &framebuffer, strip_size.w);
+        }
+        changed
+    };
+    strip.rendered = true;
+    Some(SampledTitlebar {
+        pixels: TitlebarPixelSource {
+            texture: strip.texture.clone(),
+            row: Rectangle::new((0.0, 0.0).into(), (strip_size.w as f64, 1.0).into()),
+            transform: Transform::Normal,
+            program: shaders.titlebar_blend.clone(),
+        },
+        changed,
+        average: strip.average,
+    })
+}
+
+fn average_row(
+    renderer: &mut GlesRenderer,
+    framebuffer: &GlesTarget<'_>,
+    width: i32,
+) -> Option<[u8; 4]> {
+    let mapping = renderer
+        .copy_framebuffer(
+            framebuffer,
+            Rectangle::from_size((width, 1).into()),
+            Fourcc::Abgr8888,
+        )
+        .map_err(|error| tracing::debug!(%error, "failed to read back the titlebar strip"))
+        .ok()?;
+    let pixels = renderer.map_texture(&mapping).ok()?;
+    let count = (pixels.len() / 4).max(1) as u64;
+    let mut sum = [0u64; 4];
+    for px in pixels.chunks_exact(4) {
+        for (total, channel) in sum.iter_mut().zip(px) {
+            *total += u64::from(*channel);
+        }
+    }
+    Some(sum.map(|total| (total / count) as u8))
+}
+
+/// Composites a premultiplied `top` over an opaque straight `base`.
+fn over(top: [u8; 4], base: [u8; 4]) -> [u8; 4] {
+    let inverse = 255 - u16::from(top[3]);
+    let channel =
+        |t: u8, b: u8| (u16::from(t) + (u16::from(b) * inverse + 127) / 255).min(255) as u8;
+    [
+        channel(top[0], base[0]),
+        channel(top[1], base[1]),
+        channel(top[2], base[2]),
+        255,
+    ]
+}
+
+fn with_alpha(color: [u8; 4], alpha: u8) -> [u8; 4] {
+    [color[0], color[1], color[2], alpha]
 }
 
 fn push_memory_element(
@@ -511,22 +764,6 @@ fn push_memory_element(
         Ok(element) => elements.push(element.into()),
         Err(error) => tracing::warn!(%error, "failed to import a decoration glyph buffer"),
     }
-}
-
-/// The letter shown on the titlebar's fallback icon badge, from the first
-/// alphanumeric character of the title, falling back to the app id.
-fn title_glyph(title: &str, app_id: Option<&str>) -> char {
-    title
-        .chars()
-        .find(char::is_ascii_alphanumeric)
-        .or_else(|| {
-            app_id
-                .into_iter()
-                .flat_map(str::chars)
-                .find(char::is_ascii_alphanumeric)
-        })
-        .map(|ch| ch.to_ascii_uppercase())
-        .unwrap_or('?')
 }
 
 pub fn rgba(color: [u8; 4]) -> Color32F {
@@ -566,7 +803,7 @@ fn for_each_surface_root(state: &BlairState, mut f: impl FnMut(&WlSurface)) {
             f(popup.wl_surface());
         }
     }
-    if let CursorImageStatus::Surface(surface) = &state.pointer_cursor {
+    if let CursorImageStatus::Surface(surface) = &state.pointer_cursor() {
         f(surface);
     }
     if let Some(icon) = &state.dnd_icon {

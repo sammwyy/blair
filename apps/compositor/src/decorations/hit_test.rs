@@ -20,7 +20,11 @@ pub enum DecorationPart {
     ResizeBottomRight,
 }
 
-const GRAB_MARGIN: f64 = 8.0;
+const GRAB_MARGIN: f64 = 16.0;
+
+/// How far outside the visible frame the resize handles still respond, in
+/// logical pixels.
+pub const RESIZE_OUTSET: i32 = 6;
 
 pub fn hit_test_frame(
     client: Rect,
@@ -34,7 +38,11 @@ pub fn hit_test_frame(
     let fy = geom.frame.y as f64;
     let fw = geom.frame.width as f64;
     let fh = geom.frame.height as f64;
-    let within_frame = point.x >= fx && point.x <= fx + fw && point.y >= fy && point.y <= fy + fh;
+    let outset = f64::from(RESIZE_OUTSET);
+    let within_frame = point.x >= fx - outset
+        && point.x <= fx + fw + outset
+        && point.y >= fy - outset
+        && point.y <= fy + fh + outset;
     let near_top = point.y < fy + GRAB_MARGIN;
     let near_bottom = point.y > fy + fh - GRAB_MARGIN;
     let near_left = point.x < fx + GRAB_MARGIN;
@@ -99,6 +107,8 @@ mod tests {
         DecorationTheme {
             titlebar_height: 30,
             border_width: 4,
+            corner_radius: 0,
+            titlebar_mode: crate::config::TitlebarColorMode::Theme,
             active_titlebar: [0; 4],
             inactive_titlebar: [0; 4],
             active_border: [0; 4],
@@ -106,14 +116,34 @@ mod tests {
             close_button: [0; 4],
             maximize_button: [0; 4],
             minimize_button: [0; 4],
-            active_title_text: [0; 4],
-            inactive_title_text: [0; 4],
             button_layout: vec![DecorationButton::Close],
             button_side: DecorationButtonSide::Right,
             title_centered: false,
             show_icon: false,
             drag_margin,
         }
+    }
+
+    #[test]
+    fn edges_resize_just_outside_the_frame_even_without_a_border() {
+        let mut theme = theme(0);
+        theme.border_width = 0;
+        let left_of_frame = Point {
+            x: (CLIENT.x - 3) as f64,
+            y: (CLIENT.y + 100) as f64,
+        };
+        assert_eq!(
+            hit_test_frame(CLIENT, left_of_frame, &theme, true),
+            DecorationPart::ResizeLeft
+        );
+        let far_away = Point {
+            x: (CLIENT.x - 20) as f64,
+            y: (CLIENT.y + 100) as f64,
+        };
+        assert_eq!(
+            hit_test_frame(CLIENT, far_away, &theme, true),
+            DecorationPart::None
+        );
     }
 
     #[test]

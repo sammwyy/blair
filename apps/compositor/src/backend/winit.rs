@@ -78,12 +78,13 @@ impl WinitData {
     /// Reflects the pointer cursor onto the host window. Client-provided
     /// cursor surfaces are drawn by us, so the host cursor hides then.
     fn sync_host_cursor(&mut self, state: &BlairState) {
-        if self.host_cursor.as_ref() == Some(&state.pointer_cursor) {
+        let cursor = state.pointer_cursor();
+        if self.host_cursor.as_ref() == Some(&cursor) {
             return;
         }
-        self.host_cursor = Some(state.pointer_cursor.clone());
+        self.host_cursor = Some(cursor.clone());
         let window = self.backend.window();
-        match &state.pointer_cursor {
+        match &cursor {
             CursorImageStatus::Hidden | CursorImageStatus::Surface(_) => {
                 window.set_cursor_visible(false)
             }
