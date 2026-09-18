@@ -138,6 +138,15 @@ inactive_border = "#313244"
 close_button = "#f38ba8"
 maximize_button = "#a6e3a1"
 minimize_button = "#f9e2af"
+active_title_text = "#cdd6f4"
+inactive_title_text = "#6c7086"
+# Track the CreamUI system theme's accent, surface, and text colors live,
+# overriding the colors above.
+follow_system_theme = true
+title_centered = false
+show_icon = true
+# Pixels excluded from window dragging at each end of the titlebar.
+drag_margin = 0
 
 [decorations.buttons]
 layout = ["minimize", "maximize", "close"]

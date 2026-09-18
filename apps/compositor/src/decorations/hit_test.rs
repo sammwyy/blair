@@ -60,8 +60,11 @@ pub fn hit_test_frame(
     if geom.minimize_btn.contains(point) {
         return DecorationPart::MinimizeButton;
     }
-    if has_titlebar && geom.titlebar.contains(point) {
+    if has_titlebar && geom.drag.contains(point) {
         return DecorationPart::Titlebar;
+    }
+    if has_titlebar && geom.titlebar.contains(point) {
+        return DecorationPart::None;
     }
     if geom.client.contains(point) {
         return DecorationPart::Client;
@@ -78,4 +81,72 @@ pub fn hit_test_frame(
     }
 
     DecorationPart::None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DecorationButton, DecorationButtonSide};
+
+    const CLIENT: Rect = Rect {
+        x: 100,
+        y: 100,
+        width: 300,
+        height: 200,
+    };
+
+    fn theme(drag_margin: i32) -> DecorationTheme {
+        DecorationTheme {
+            titlebar_height: 30,
+            border_width: 4,
+            active_titlebar: [0; 4],
+            inactive_titlebar: [0; 4],
+            active_border: [0; 4],
+            inactive_border: [0; 4],
+            close_button: [0; 4],
+            maximize_button: [0; 4],
+            minimize_button: [0; 4],
+            active_title_text: [0; 4],
+            inactive_title_text: [0; 4],
+            button_layout: vec![DecorationButton::Close],
+            button_side: DecorationButtonSide::Right,
+            title_centered: false,
+            show_icon: false,
+            drag_margin,
+        }
+    }
+
+    #[test]
+    fn titlebar_center_is_draggable_without_a_margin() {
+        let theme = theme(0);
+        let point = Point {
+            x: (CLIENT.x + CLIENT.width / 2) as f64,
+            y: (CLIENT.y - 15) as f64,
+        };
+        assert_eq!(
+            hit_test_frame(CLIENT, point, &theme, true),
+            DecorationPart::Titlebar
+        );
+    }
+
+    #[test]
+    fn a_drag_margin_excludes_the_titlebar_edges_from_dragging() {
+        let theme = theme(40);
+        let near_left_edge = Point {
+            x: (CLIENT.x + 5) as f64,
+            y: (CLIENT.y - 15) as f64,
+        };
+        assert_eq!(
+            hit_test_frame(CLIENT, near_left_edge, &theme, true),
+            DecorationPart::None
+        );
+        let center = Point {
+            x: (CLIENT.x + CLIENT.width / 2) as f64,
+            y: (CLIENT.y - 15) as f64,
+        };
+        assert_eq!(
+            hit_test_frame(CLIENT, center, &theme, true),
+            DecorationPart::Titlebar
+        );
+    }
 }

@@ -559,6 +559,17 @@ pub struct DecorationConfig {
     pub close_button: String,
     pub maximize_button: String,
     pub minimize_button: String,
+    pub active_title_text: String,
+    pub inactive_title_text: String,
+    /// When enabled, the active border, titlebar, title text, and button
+    /// colors above are ignored and instead tracked live from the CreamUI
+    /// system theme (accent, surface, and text tokens).
+    pub follow_system_theme: bool,
+    pub title_centered: bool,
+    pub show_icon: bool,
+    /// Pixels excluded from window dragging at each end of the titlebar,
+    /// beyond the icon and buttons.
+    pub drag_margin: i32,
     pub buttons: DecorationButtonsConfig,
 }
 
@@ -666,6 +677,12 @@ impl Default for DecorationConfig {
             close_button: "#f38ba8".to_string(),
             maximize_button: "#a6e3a1".to_string(),
             minimize_button: "#f9e2af".to_string(),
+            active_title_text: "#cdd6f4".to_string(),
+            inactive_title_text: "#6c7086".to_string(),
+            follow_system_theme: true,
+            title_centered: false,
+            show_icon: true,
+            drag_margin: 0,
             buttons: DecorationButtonsConfig::default(),
         }
     }
@@ -676,6 +693,7 @@ impl DecorationConfig {
         if !(0..=16).contains(&self.border_width)
             || !(0..=64).contains(&self.corner_radius)
             || !(0..=96).contains(&self.titlebar_height)
+            || !(0..=256).contains(&self.drag_margin)
         {
             anyhow::bail!("invalid decoration dimensions");
         }
@@ -691,8 +709,11 @@ impl DecorationConfig {
         Ok(())
     }
 
-    pub fn to_theme(&self) -> DecorationTheme {
-        DecorationTheme {
+    /// `accent` overrides the active border, and (when
+    /// [`Self::follow_system_theme`] is set) the titlebar, title text, and
+    /// button colors with live CreamUI system theme tokens.
+    pub fn to_theme(&self, accent: Option<SystemAccent>) -> DecorationTheme {
+        let mut theme = DecorationTheme {
             titlebar_height: self.titlebar_height,
             border_width: self.border_width,
             active_titlebar: parse_color(&self.active_titlebar),
@@ -702,8 +723,56 @@ impl DecorationConfig {
             close_button: parse_color(&self.close_button),
             maximize_button: parse_color(&self.maximize_button),
             minimize_button: parse_color(&self.minimize_button),
+            active_title_text: parse_color(&self.active_title_text),
+            inactive_title_text: parse_color(&self.inactive_title_text),
             button_layout: self.buttons.layout.clone(),
             button_side: self.buttons.side,
+            title_centered: self.title_centered,
+            show_icon: self.show_icon,
+            drag_margin: self.drag_margin,
+        };
+        if let Some(accent) = accent {
+            theme.active_border = accent.accent;
+            if self.follow_system_theme {
+                theme.active_titlebar = accent.surface_elevated;
+                theme.inactive_titlebar = accent.surface;
+                theme.active_title_text = accent.text_primary;
+                theme.inactive_title_text = accent.text_secondary;
+                theme.close_button = accent.danger;
+                theme.maximize_button = accent.success;
+                theme.minimize_button = accent.warning;
+            }
+        }
+        theme
+    }
+}
+
+/// Color tokens read live from the CreamUI system theme, used to keep
+/// server-side decorations in sync with the desktop's active appearance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemAccent {
+    pub accent: [u8; 4],
+    pub surface: [u8; 4],
+    pub surface_elevated: [u8; 4],
+    pub text_primary: [u8; 4],
+    pub text_secondary: [u8; 4],
+    pub danger: [u8; 4],
+    pub success: [u8; 4],
+    pub warning: [u8; 4],
+}
+
+impl From<creamui_theme::ResolvedAppearance> for SystemAccent {
+    fn from(resolved: creamui_theme::ResolvedAppearance) -> Self {
+        let to_bytes = |color: creamui_theme::Color| [color.r, color.g, color.b, color.a];
+        Self {
+            accent: to_bytes(resolved.accent),
+            surface: to_bytes(resolved.theme.colors.surface),
+            surface_elevated: to_bytes(resolved.theme.colors.surface_elevated),
+            text_primary: to_bytes(resolved.theme.colors.text_primary),
+            text_secondary: to_bytes(resolved.theme.colors.text_secondary),
+            danger: to_bytes(resolved.theme.colors.danger),
+            success: to_bytes(resolved.theme.colors.success),
+            warning: to_bytes(resolved.theme.colors.warning),
         }
     }
 }
@@ -989,6 +1058,18 @@ mod tests {
         let restored: CompositorConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.window.default_width, config.window.default_width);
         assert!(restored.integrations.dbus);
+    }
+
+    #[test]
+    fn packaged_sample_config_parses_and_validates() {
+        let text = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/config/config.toml"),
+        )
+        .expect("read packaged sample config");
+        let config: CompositorConfig = toml::from_str(&text).expect("parse packaged sample config");
+        validate(&config).expect("packaged sample config should validate");
+        assert!(config.decorations.follow_system_theme);
+        assert_eq!(config.decorations.drag_margin, 0);
     }
 
     #[test]

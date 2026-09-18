@@ -8,7 +8,7 @@ use smithay::{
     backend::renderer::{
         element::{
             default_primary_scanout_output_compare,
-            memory::MemoryRenderBufferRenderElement,
+            memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             render_elements,
             solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
@@ -155,6 +155,11 @@ pub fn output_elements(
         viewport,
     };
 
+    let font = creamui_fonts::resolve(
+        creamui_fonts::DEFAULT_FAMILY,
+        creamui_fonts::FontWeight::Regular,
+    );
+
     let mut elements = Vec::new();
     cursor_elements(renderer, state, output, &ctx, cursor_mode, &mut elements);
     if let Some(icon) = state.dnd_icon.as_ref().filter(|icon| icon.alive()) {
@@ -186,6 +191,7 @@ pub fn output_elements(
             window,
             &ctx,
             shaders,
+            &font,
             &mut elements,
         );
     }
@@ -324,6 +330,7 @@ fn window_elements(
     window: &Window,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
+    font: &fontdue::Font,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let (Some(frame), Some(surface), Some(id)) = (
@@ -350,16 +357,23 @@ fn window_elements(
         ));
     }
 
+    let focused = state.focused_window == Some(id);
+    let (title_text, app_id) = state
+        .windows
+        .get(&id)
+        .map(|managed| (managed.title.clone(), managed.app_id.clone()))
+        .unwrap_or_default();
+
     let decorated = frame.has_border && shaders.is_some();
     if decorated {
         let theme = state.decoration_theme().clone();
         let decoration = state.decorations.entry(id).or_default();
         if frame.has_titlebar {
-            let buttons = DecorationFrame::compute(to_rect(frame.client), &theme, true);
+            let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
             for (buffer, (rect, color)) in decoration.buttons.iter_mut().zip([
-                (buttons.close_btn, theme.close_button),
-                (buttons.maximize_btn, theme.maximize_button),
-                (buttons.minimize_btn, theme.minimize_button),
+                (geometry.close_btn, theme.close_button),
+                (geometry.maximize_btn, theme.maximize_button),
+                (geometry.minimize_btn, theme.minimize_button),
             ]) {
                 if rect.width <= 0 || rect.height <= 0 {
                     continue;
@@ -376,6 +390,42 @@ fn window_elements(
                     )
                     .into(),
                 );
+            }
+
+            let title_color = if focused {
+                theme.active_title_text
+            } else {
+                theme.inactive_title_text
+            };
+            let title_size = (theme.titlebar_height as f32 * 0.5).clamp(10.0, 20.0);
+            decoration.update_title(
+                font,
+                &title_text,
+                title_size,
+                title_color,
+                geometry.title.width,
+                geometry.title.height,
+                theme.title_centered,
+            );
+            if let Some((buffer, size)) = decoration.title_buffer() {
+                let location =
+                    Point::<i32, Logical>::from((geometry.title.x, geometry.title.y)) - origin;
+                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+            }
+
+            if theme.show_icon && geometry.icon.width > 0 {
+                let letter = title_glyph(&title_text, app_id.as_deref());
+                let background = if focused {
+                    theme.active_border
+                } else {
+                    theme.inactive_border
+                };
+                decoration.update_icon(font, letter, background, title_color, geometry.icon.width);
+                if let Some((buffer, size)) = decoration.icon_buffer() {
+                    let location =
+                        Point::<i32, Logical>::from((geometry.icon.x, geometry.icon.y)) - origin;
+                    push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+                }
             }
         }
     }
@@ -411,7 +461,6 @@ fn window_elements(
 
     if let (true, Some(shaders)) = (decorated, shaders) {
         let theme = state.decoration_theme();
-        let focused = state.focused_window == Some(id);
         let params = FrameParams {
             radius: state.corner_radius(frame.frame) as f32,
             border_width: theme.border_width as f32,
@@ -437,6 +486,47 @@ fn window_elements(
             elements.push(element.into());
         }
     }
+}
+
+fn push_memory_element(
+    renderer: &mut GlesRenderer,
+    buffer: &MemoryRenderBuffer,
+    location: Point<i32, Logical>,
+    size: smithay::utils::Size<i32, Logical>,
+    scale: f64,
+    alpha: f32,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let physical_location: Point<i32, Physical> = location.to_physical_precise_round(scale);
+    let physical_location = physical_location.to_f64();
+    match MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        physical_location,
+        buffer,
+        Some(alpha),
+        None,
+        Some(size),
+        Kind::Unspecified,
+    ) {
+        Ok(element) => elements.push(element.into()),
+        Err(error) => tracing::warn!(%error, "failed to import a decoration glyph buffer"),
+    }
+}
+
+/// The letter shown on the titlebar's fallback icon badge, from the first
+/// alphanumeric character of the title, falling back to the app id.
+fn title_glyph(title: &str, app_id: Option<&str>) -> char {
+    title
+        .chars()
+        .find(char::is_ascii_alphanumeric)
+        .or_else(|| {
+            app_id
+                .into_iter()
+                .flat_map(str::chars)
+                .find(char::is_ascii_alphanumeric)
+        })
+        .map(|ch| ch.to_ascii_uppercase())
+        .unwrap_or('?')
 }
 
 pub fn rgba(color: [u8; 4]) -> Color32F {

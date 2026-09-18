@@ -10,6 +10,12 @@ use crate::{
     INTERFACE_NAME, OBJECT_PATH, SERVICE_NAME,
 };
 
+/// CreamUI's public theme-reload contract (`coconut_core::ipc`), emitted by
+/// the settings app whenever the system theme or accent color changes.
+const THEME_INTERFACE: &str = "org.creamui.Theme";
+const THEME_PATH: &str = "/org/creamui/Theme";
+const THEME_RELOAD_MEMBER: &str = "ReloadTheme";
+
 /// Starts the D-Bus service thread. `environment` is published to the bus so
 /// D-Bus activated services inherit the session variables.
 pub fn serve(
@@ -108,6 +114,34 @@ async fn run(
                 continue;
             }
             disconnect_commands.send(Command::ClientDisconnected(args.name().to_string()));
+        }
+    });
+
+    let theme_commands = commands.clone();
+    let theme_connection = connection.clone();
+    tokio::spawn(async move {
+        let rule = match MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .interface(THEME_INTERFACE)
+            .and_then(|builder| builder.path(THEME_PATH))
+            .and_then(|builder| builder.member(THEME_RELOAD_MEMBER))
+            .map(|builder| builder.build())
+        {
+            Ok(rule) => rule,
+            Err(err) => {
+                tracing::warn!(%err, "failed to subscribe to CreamUI theme changes");
+                return;
+            }
+        };
+        let mut stream = match MessageStream::for_match_rule(rule, &theme_connection, None).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                tracing::warn!(%err, "failed to monitor CreamUI theme changes");
+                return;
+            }
+        };
+        while let Some(Ok(_)) = stream.next().await {
+            theme_commands.send(Command::ThemeChanged);
         }
     });
 

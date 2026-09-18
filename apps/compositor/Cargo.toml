@@ -31,4 +31,8 @@ wayland-server.workspace = true
 xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"
+fontdue = "0.9"
+creamui-theme = { path = "../../../creamui/crates/theme" }
+creamui-theme-loader = { path = "../../../creamui/crates/theme-loader" }
+creamui-fonts = { path = "../../../creamui/crates/fonts" }
 tracy-client = { version = "0.18", optional = true }

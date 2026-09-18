@@ -77,7 +77,7 @@ use smithay::{
 use crate::{
     config::{
         AnimationConfig, AnimationCurve, BindingConfig, CompositorConfig, DecorationModeConfig,
-        WindowLayout, WindowRuleConfig, WorkspacesConfig,
+        SystemAccent, WindowLayout, WindowRuleConfig, WorkspacesConfig,
     },
     cursor::CursorManager,
     decorations::DecorationTheme,
@@ -172,6 +172,7 @@ pub struct BlairState {
     pub clock: Clock<Monotonic>,
     pub config: CompositorConfig,
     decoration_theme: DecorationTheme,
+    system_accent: Option<SystemAccent>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -227,6 +228,16 @@ pub struct BlairState {
     pub render_stats: RenderStats,
 
     pub events: Arc<dyn EventChannel>,
+}
+
+fn load_system_accent() -> Option<SystemAccent> {
+    match creamui_theme_loader::SystemThemeLoader::new().load() {
+        Ok(resolved) => Some(resolved.into()),
+        Err(error) => {
+            tracing::debug!(%error, "no CreamUI system theme found, using configured colors");
+            None
+        }
+    }
 }
 
 fn configured_workspaces(config: &WorkspacesConfig) -> Vec<Workspace> {
@@ -311,13 +322,15 @@ impl BlairState {
         rules.set_configured(&config.rules);
         let workspaces = configured_workspaces(&config.workspaces);
         let next_workspace_id = config.workspaces.count + 1;
-        let decoration_theme = config.decorations.to_theme();
+        let system_accent = load_system_accent();
+        let decoration_theme = config.decorations.to_theme(system_accent);
         let mut state = Self {
             display_handle,
             loop_handle,
             loop_signal,
             clock: Clock::new(),
             decoration_theme,
+            system_accent,
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -392,6 +405,16 @@ impl BlairState {
 
     pub fn decoration_theme(&self) -> &DecorationTheme {
         &self.decoration_theme
+    }
+
+    /// Re-reads the CreamUI system theme and re-derives the decoration
+    /// theme from it, in response to an `org.creamui.Theme.ReloadTheme`
+    /// D-Bus signal.
+    pub fn reload_system_theme(&mut self) {
+        self.system_accent = load_system_accent();
+        self.decoration_theme = self.config.decorations.to_theme(self.system_accent);
+        tracing::info!("reloaded decoration colors from the CreamUI system theme");
+        self.request_redraw();
     }
 
     pub fn corner_radius(&self, frame: Rectangle<i32, Logical>) -> i32 {
@@ -590,7 +613,7 @@ impl BlairState {
             self.refresh_child_env();
         }
         if previous.decorations != self.config.decorations {
-            self.decoration_theme = self.config.decorations.to_theme();
+            self.decoration_theme = self.config.decorations.to_theme(self.system_accent);
         }
         if previous.decorations.mode != self.config.decorations.mode
             || previous.window.server_side_decorations != self.config.window.server_side_decorations

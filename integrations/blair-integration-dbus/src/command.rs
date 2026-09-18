@@ -74,5 +74,6 @@ pub enum Command {
         id: String,
     },
     ClientDisconnected(String),
+    ThemeChanged,
     Quit,
 }

@@ -184,6 +184,7 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
                 backend.unregister_window_rule(&client, &id);
             }
             Command::ClientDisconnected(client) => backend.unregister_client(&client),
+            Command::ThemeChanged => backend.theme_changed(),
             Command::Quit => backend.quit(),
         }
     }

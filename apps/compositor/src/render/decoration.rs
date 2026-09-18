@@ -1,14 +1,23 @@
 use smithay::{
-    backend::renderer::{
-        element::{solid::SolidColorBuffer, Element, Id, Kind, RenderElement},
-        gles::{
-            GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType,
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            element::{
+                memory::MemoryRenderBuffer, solid::SolidColorBuffer, Element, Id, Kind,
+                RenderElement,
+            },
+            gles::{
+                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, Uniform, UniformName,
+                UniformType,
+            },
+            utils::CommitCounter,
+            Color32F,
         },
-        utils::CommitCounter,
-        Color32F,
     },
     utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform},
 };
+
+use crate::decorations::RasterizedGlyphs;
 
 const FRAME_SHADER: &str = r#"
 precision mediump float;
@@ -72,6 +81,15 @@ pub struct WindowDecoration {
     area: Rectangle<i32, Logical>,
     params: Option<FrameParams>,
     pub buttons: [SolidColorBuffer; 3],
+    title: GlyphCache,
+    icon: GlyphCache,
+}
+
+#[derive(Debug, Default)]
+struct GlyphCache {
+    key: Option<String>,
+    buffer: Option<MemoryRenderBuffer>,
+    size: Size<i32, Logical>,
 }
 
 impl Default for WindowDecoration {
@@ -82,6 +100,8 @@ impl Default for WindowDecoration {
             area: Rectangle::default(),
             params: None,
             buttons: Default::default(),
+            title: GlyphCache::default(),
+            icon: GlyphCache::default(),
         }
     }
 }
@@ -93,6 +113,68 @@ impl WindowDecoration {
             self.params = Some(params);
             self.commit.increment();
         }
+    }
+
+    /// Rasterizes `text` into the title glyph cache when the cache key
+    /// (text, color, box, and alignment) changed since the last call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_title(
+        &mut self,
+        font: &fontdue::Font,
+        text: &str,
+        size: f32,
+        color: [u8; 4],
+        max_width: i32,
+        height: i32,
+        centered: bool,
+    ) {
+        let key = format!("{text}|{size}|{color:?}|{max_width}|{height}|{centered}");
+        if self.title.key.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        self.title.key = Some(key);
+        let glyphs = crate::decorations::rasterize_title(
+            font, text, size, color, max_width, height, centered,
+        );
+        self.title.buffer = glyphs.as_ref().map(buffer_from_glyphs);
+        self.title.size = glyphs
+            .map(|glyphs| (glyphs.width, glyphs.height).into())
+            .unwrap_or_default();
+    }
+
+    /// Rasterizes a monogram badge into the icon glyph cache when the
+    /// cache key (letter, colors, and size) changed since the last call.
+    pub fn update_icon(
+        &mut self,
+        font: &fontdue::Font,
+        letter: char,
+        background: [u8; 4],
+        foreground: [u8; 4],
+        size: i32,
+    ) {
+        let key = format!("{letter}|{background:?}|{foreground:?}|{size}");
+        if self.icon.key.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        self.icon.key = Some(key);
+        let glyphs =
+            crate::decorations::rasterize_monogram(font, letter, background, foreground, size);
+        self.icon.size = (glyphs.width, glyphs.height).into();
+        self.icon.buffer = Some(buffer_from_glyphs(&glyphs));
+    }
+
+    pub fn title_buffer(&self) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
+        self.title
+            .buffer
+            .as_ref()
+            .map(|buffer| (buffer, self.title.size))
+    }
+
+    pub fn icon_buffer(&self) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
+        self.icon
+            .buffer
+            .as_ref()
+            .map(|buffer| (buffer, self.icon.size))
     }
 
     pub fn element(
@@ -191,4 +273,15 @@ impl RenderElement<GlesRenderer> for FrameElement {
 fn premultiplied(color: Color32F) -> (f32, f32, f32, f32) {
     let a = color.a();
     (color.r() * a, color.g() * a, color.b() * a, a)
+}
+
+fn buffer_from_glyphs(glyphs: &RasterizedGlyphs) -> MemoryRenderBuffer {
+    MemoryRenderBuffer::from_slice(
+        &glyphs.pixels,
+        Fourcc::Abgr8888,
+        (glyphs.width, glyphs.height),
+        1,
+        Transform::Normal,
+        None,
+    )
 }

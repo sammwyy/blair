@@ -11,9 +11,15 @@ pub struct FrameGeometry {
     pub close_btn: Rect,
     pub maximize_btn: Rect,
     pub minimize_btn: Rect,
+    pub icon: Rect,
+    pub title: Rect,
+    pub drag: Rect,
 }
 
 pub struct DecorationFrame;
+
+const ICON_PADDING: i32 = 6;
+const TITLE_PADDING: i32 = 8;
 
 impl DecorationFrame {
     /// Lays out the frame so the themed border traces the outer edge of the
@@ -45,18 +51,43 @@ impl DecorationFrame {
             height: th,
         };
 
+        let icon_size = (th - ICON_PADDING * 2).max(0);
+        let icon = if has_titlebar && theme.show_icon && icon_size > 0 {
+            Rect {
+                x: titlebar.x + ICON_PADDING,
+                y: titlebar.y + ICON_PADDING,
+                width: icon_size,
+                height: icon_size,
+            }
+        } else {
+            Rect::default()
+        };
+        // The icon always sits at the very left of the titlebar, ahead of
+        // the buttons even when they are also on the left side.
+        let icon_reserved = if theme.show_icon && icon_size > 0 {
+            icon_size + ICON_PADDING * 2
+        } else {
+            TITLE_PADDING
+        };
+
         let mut close_btn = Rect::default();
         let mut maximize_btn = Rect::default();
         let mut minimize_btn = Rect::default();
         let gap = 4;
         let count = theme.button_layout.len() as i32;
+        let buttons_width = if count > 0 {
+            count * btn_size + (count - 1) * gap + TITLE_PADDING
+        } else {
+            0
+        };
+        let left_anchor = titlebar.x + icon_reserved;
         for (index, button) in theme.button_layout.iter().enumerate() {
             let index = index as i32;
             let x = match theme.button_side {
-                DecorationButtonSide::Left => titlebar.x + 8 + index * (btn_size + gap),
+                DecorationButtonSide::Left => left_anchor + index * (btn_size + gap),
                 DecorationButtonSide::Right => {
                     titlebar.x + titlebar.width
-                        - 8
+                        - TITLE_PADDING
                         - (count - index) * btn_size
                         - (count - index - 1) * gap
                 }
@@ -74,6 +105,31 @@ impl DecorationFrame {
             }
         }
 
+        let title_left = if matches!(theme.button_side, DecorationButtonSide::Left) {
+            left_anchor + buttons_width
+        } else {
+            left_anchor
+        };
+        let title_right = if matches!(theme.button_side, DecorationButtonSide::Right) {
+            titlebar.x + titlebar.width - buttons_width
+        } else {
+            titlebar.x + titlebar.width - TITLE_PADDING
+        };
+        let title = Rect {
+            x: title_left,
+            y: titlebar.y,
+            width: (title_right - title_left).max(0),
+            height: titlebar.height,
+        };
+
+        let drag_margin = theme.drag_margin.max(0);
+        let drag = Rect {
+            x: titlebar.x + drag_margin,
+            y: titlebar.y,
+            width: (titlebar.width - drag_margin * 2).max(0),
+            height: titlebar.height,
+        };
+
         FrameGeometry {
             frame,
             titlebar,
@@ -81,6 +137,9 @@ impl DecorationFrame {
             close_btn,
             maximize_btn,
             minimize_btn,
+            icon,
+            title,
+            drag,
         }
     }
 }
@@ -107,12 +166,17 @@ mod tests {
             close_button: [0; 4],
             maximize_button: [0; 4],
             minimize_button: [0; 4],
+            active_title_text: [0; 4],
+            inactive_title_text: [0; 4],
             button_layout: vec![
                 DecorationButton::Minimize,
                 DecorationButton::Maximize,
                 DecorationButton::Close,
             ],
             button_side: DecorationButtonSide::Right,
+            title_centered: false,
+            show_icon: true,
+            drag_margin: 0,
         }
     }
 
@@ -154,5 +218,44 @@ mod tests {
         assert!(geom.minimize_btn.x < geom.maximize_btn.x);
         assert!(geom.maximize_btn.x < geom.close_btn.x);
         assert_eq!(geom.close_btn.y, CLIENT.y - 30 + 4);
+    }
+
+    #[test]
+    fn icon_sits_at_the_very_left_regardless_of_button_side() {
+        let mut theme = theme(4);
+        theme.button_side = DecorationButtonSide::Left;
+        let geom = DecorationFrame::compute(CLIENT, &theme, true);
+
+        assert_eq!(geom.icon.x, geom.titlebar.x + ICON_PADDING);
+        assert!(geom.title.x > geom.minimize_btn.x + geom.minimize_btn.width);
+    }
+
+    #[test]
+    fn left_side_buttons_never_overlap_the_icon() {
+        let mut theme = theme(4);
+        theme.button_side = DecorationButtonSide::Left;
+        let geom = DecorationFrame::compute(CLIENT, &theme, true);
+
+        assert!(geom.minimize_btn.x >= geom.icon.x + geom.icon.width);
+    }
+
+    #[test]
+    fn hiding_the_icon_gives_its_space_to_the_title() {
+        let mut theme = theme(4);
+        theme.show_icon = false;
+        let geom = DecorationFrame::compute(CLIENT, &theme, true);
+
+        assert_eq!(geom.icon, Rect::default());
+        assert!(geom.title.x < geom.titlebar.x + ICON_PADDING * 2);
+    }
+
+    #[test]
+    fn drag_margin_shrinks_the_draggable_region_symmetrically() {
+        let mut theme = theme(4);
+        theme.drag_margin = 10;
+        let geom = DecorationFrame::compute(CLIENT, &theme, true);
+
+        assert_eq!(geom.drag.x, geom.titlebar.x + 10);
+        assert_eq!(geom.drag.width, geom.titlebar.width - 20);
     }
 }

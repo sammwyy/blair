@@ -351,6 +351,10 @@ impl CompositorApi for BlairState {
         self.rules.unregister_client(client);
     }
 
+    fn theme_changed(&mut self) {
+        self.reload_system_theme();
+    }
+
     fn quit(&mut self) {
         self.request_exit();
     }

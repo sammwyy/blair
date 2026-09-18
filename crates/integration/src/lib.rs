@@ -74,6 +74,8 @@ pub trait CompositorApi {
     fn register_window_rule(&mut self, client: &str, id: &str, rule_toml: &str) -> bool;
     fn unregister_window_rule(&mut self, client: &str, id: &str);
     fn unregister_client(&mut self, client: &str);
+    /// The CreamUI system theme changed and should be reloaded.
+    fn theme_changed(&mut self);
     fn quit(&mut self);
 }
 
