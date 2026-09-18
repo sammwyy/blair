@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver},
         Arc,
     },
     thread::JoinHandle,
@@ -10,7 +10,7 @@ use blair_integration::{CompositorApi, EventChannel, Transport};
 use blair_protocol::{Rect, WindowId};
 
 use crate::{
-    command::Command,
+    command::{Command, CommandSender},
     wire::{DbusWindow, DbusWorkspace},
 };
 
@@ -20,7 +20,7 @@ pub struct DbusIntegration {
     _thread: JoinHandle<()>,
 }
 
-struct DbusEventChannel(Sender<blair_protocol::CompositorEvent>);
+struct DbusEventChannel(std::sync::mpsc::Sender<blair_protocol::CompositorEvent>);
 
 impl EventChannel for DbusEventChannel {
     fn publish(&self, event: blair_protocol::CompositorEvent) {
@@ -29,10 +29,16 @@ impl EventChannel for DbusEventChannel {
 }
 
 impl DbusIntegration {
-    pub fn start() -> Self {
+    /// `wake` is called after every queued request so the compositor's event
+    /// loop picks it up without polling.
+    pub fn start(wake: Arc<dyn Fn() + Send + Sync>, environment: Vec<(String, String)>) -> Self {
         let (commands_tx, commands) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
-        let thread = crate::server::serve(commands_tx, events_rx);
+        let thread = crate::server::serve(
+            CommandSender::new(commands_tx, wake),
+            events_rx,
+            environment,
+        );
         Self {
             commands,
             events: Arc::new(DbusEventChannel(events_tx)),
@@ -108,6 +114,20 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
             Command::Outputs(reply) => {
                 let _ = reply.send(backend.outputs());
             }
+            Command::RenderStats(reply) => {
+                let _ = reply.send(backend.render_stats());
+            }
+            Command::Screenshot {
+                output,
+                path,
+                reply,
+            } => backend.screenshot(
+                &output,
+                &path,
+                Box::new(move |written| {
+                    let _ = reply.send(written);
+                }),
+            ),
             Command::WindowSettings(reply) => {
                 let _ = reply.send(backend.window_settings());
             }

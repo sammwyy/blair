@@ -1,16 +1,25 @@
 mod backend;
 mod config;
+mod cursor;
 mod decorations;
+mod grabs;
+mod handlers;
 mod input;
 mod integrations;
 mod logging;
 mod render;
+mod rules;
+mod screencopy;
 mod shortcuts;
 mod state;
+mod stats;
 
 use anyhow::{bail, Context, Result};
 
 fn main() -> Result<()> {
+    #[cfg(feature = "profile-with-tracy")]
+    tracy_client::Client::start();
+
     let startup = parse_startup_options(std::env::args().skip(1))?;
     let log_path = logging::setup();
     logging::install_panic_hook();

@@ -1,7 +1,30 @@
-use blair_protocol::ShortcutBinding;
+use std::sync::{mpsc::Sender, Arc};
+
+use blair_protocol::{RenderStats, ShortcutBinding};
 use tokio::sync::oneshot;
 
 use crate::wire::{DbusWindow, DbusWorkspace};
+
+/// Queues compositor requests and wakes the compositor's event loop.
+#[derive(Clone)]
+pub struct CommandSender {
+    commands: Sender<Command>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl CommandSender {
+    pub fn new(commands: Sender<Command>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self { commands, wake }
+    }
+
+    pub fn send(&self, command: Command) -> bool {
+        let sent = self.commands.send(command).is_ok();
+        if sent {
+            (self.wake)();
+        }
+        sent
+    }
+}
 
 pub enum Command {
     ListWindows(oneshot::Sender<Vec<DbusWindow>>),
@@ -16,6 +39,12 @@ pub enum Command {
     MoveResizeWindow(u64, (i32, i32, i32, i32), oneshot::Sender<bool>),
     WorkArea(String, oneshot::Sender<(i32, i32, i32, i32)>),
     Outputs(oneshot::Sender<Vec<String>>),
+    RenderStats(oneshot::Sender<RenderStats>),
+    Screenshot {
+        output: String,
+        path: String,
+        reply: oneshot::Sender<bool>,
+    },
     WindowSettings(oneshot::Sender<(i32, i32, i32, bool)>),
     LayoutSettings(oneshot::Sender<(String, i32, i32)>),
     SetLayoutSettings(String, i32, i32, oneshot::Sender<bool>),

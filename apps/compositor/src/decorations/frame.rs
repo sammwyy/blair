@@ -11,10 +11,6 @@ pub struct FrameGeometry {
     pub close_btn: Rect,
     pub maximize_btn: Rect,
     pub minimize_btn: Rect,
-    pub border_top: Rect,
-    pub border_bottom: Rect,
-    pub border_left: Rect,
-    pub border_right: Rect,
 }
 
 pub struct DecorationFrame;
@@ -85,30 +81,6 @@ impl DecorationFrame {
             close_btn,
             maximize_btn,
             minimize_btn,
-            border_top: Rect {
-                x: frame.x,
-                y: frame.y,
-                width: frame.width,
-                height: bw,
-            },
-            border_bottom: Rect {
-                x: frame.x,
-                y: frame.y + frame.height - bw,
-                width: frame.width,
-                height: bw,
-            },
-            border_left: Rect {
-                x: frame.x,
-                y: frame.y + bw,
-                width: bw,
-                height: frame.height - bw * 2,
-            },
-            border_right: Rect {
-                x: frame.x + frame.width - bw,
-                y: frame.y + bw,
-                width: bw,
-                height: frame.height - bw * 2,
-            },
         }
     }
 }
@@ -145,43 +117,42 @@ mod tests {
     }
 
     #[test]
-    fn border_wraps_the_titlebar_as_well_as_the_client() {
+    fn frame_wraps_the_titlebar_as_well_as_the_client() {
         let geom = DecorationFrame::compute(CLIENT, &theme(4), true);
 
         assert_eq!(geom.frame.y, CLIENT.y - 30 - 4);
         assert_eq!(geom.frame.x, CLIENT.x - 4);
         assert_eq!(geom.frame.width, CLIENT.width + 8);
         assert_eq!(geom.frame.height, CLIENT.height + 30 + 8);
-
-        assert_eq!(geom.border_top.y, geom.frame.y);
-        assert_eq!(geom.border_top.width, geom.frame.width);
         assert_eq!(geom.titlebar.x, CLIENT.x);
         assert_eq!(geom.titlebar.width, CLIENT.width);
-        assert_eq!(geom.border_left.y, geom.frame.y + 4);
-        assert_eq!(
-            geom.border_left.height,
-            geom.frame.height - geom.border_top.height - geom.border_bottom.height
-        );
     }
 
     #[test]
-    fn zero_border_width_collapses_border_pieces_but_keeps_the_titlebar() {
+    fn zero_border_width_keeps_the_titlebar() {
         let geom = DecorationFrame::compute(CLIENT, &theme(0), true);
 
-        assert_eq!(geom.border_top.height, 0);
-        assert_eq!(geom.border_left.width, 0);
         assert_eq!(geom.frame.y, CLIENT.y - 30);
         assert_eq!(geom.titlebar.height, 30);
     }
 
     #[test]
-    fn without_a_titlebar_the_border_still_frames_the_client() {
+    fn without_a_titlebar_the_frame_only_grows_by_the_border() {
         let geom = DecorationFrame::compute(CLIENT, &theme(4), false);
 
         assert_eq!(geom.titlebar.height, 0);
         assert_eq!(geom.frame.y, CLIENT.y - 4);
         assert_eq!(geom.frame.height, CLIENT.height + 8);
-        assert_eq!(geom.border_top.y, geom.frame.y);
-        assert_eq!(geom.border_top.width, geom.frame.width);
+    }
+
+    #[test]
+    fn buttons_sit_inside_the_titlebar_on_the_configured_side() {
+        let geom = DecorationFrame::compute(CLIENT, &theme(4), true);
+        let titlebar_end = geom.titlebar.x + geom.titlebar.width;
+
+        assert!(geom.close_btn.x + geom.close_btn.width <= titlebar_end);
+        assert!(geom.minimize_btn.x < geom.maximize_btn.x);
+        assert!(geom.maximize_btn.x < geom.close_btn.x);
+        assert_eq!(geom.close_btn.y, CLIENT.y - 30 + 4);
     }
 }

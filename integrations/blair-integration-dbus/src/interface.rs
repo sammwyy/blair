@@ -1,26 +1,26 @@
-use std::sync::mpsc::Sender;
-
 use tokio::sync::oneshot;
 use zbus::{interface, message::Header, object_server::SignalEmitter};
 
 use crate::{
-    command::Command,
+    command::{Command, CommandSender},
     wire::{DbusWindow, DbusWorkspace},
 };
 use blair_protocol::{ShortcutBinding, ShortcutCommand};
 
 pub struct CompositorInterface {
-    commands: Sender<Command>,
+    commands: CommandSender,
 }
 
 impl CompositorInterface {
-    pub fn new(commands: Sender<Command>) -> Self {
+    pub fn new(commands: CommandSender) -> Self {
         Self { commands }
     }
 
     async fn call<T>(&self, build: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.commands.send(build(reply_tx)).ok()?;
+        if !self.commands.send(build(reply_tx)) {
+            return None;
+        }
         reply_rx.await.ok()
     }
 }
@@ -101,6 +101,33 @@ impl CompositorInterface {
 
     async fn outputs(&self) -> Vec<String> {
         self.call(Command::Outputs).await.unwrap_or_default()
+    }
+
+    /// Writes a PNG screenshot of `output` (empty selects the focused one)
+    /// to the absolute `path`.
+    async fn screenshot(&self, output: &str, path: &str) -> bool {
+        self.call(|reply| Command::Screenshot {
+            output: output.to_owned(),
+            path: path.to_owned(),
+            reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Returns `(frames, empty_frames, fps, build_ms, render_ms,
+    /// render_max_ms, present_interval_ms)` for the last reporting interval.
+    async fn render_stats(&self) -> (u64, u64, f64, f64, f64, f64, f64) {
+        let stats = self.call(Command::RenderStats).await.unwrap_or_default();
+        (
+            stats.frames,
+            stats.empty_frames,
+            stats.fps,
+            stats.build_ms_avg,
+            stats.render_ms_avg,
+            stats.render_ms_max,
+            stats.present_interval_ms_avg,
+        )
     }
 
     async fn window_settings(&self) -> (i32, i32, i32, bool) {
@@ -211,7 +238,7 @@ impl CompositorInterface {
         let Some(client) = header.sender() else {
             return;
         };
-        let _ = self.commands.send(Command::UnbindShortcut {
+        self.commands.send(Command::UnbindShortcut {
             client: client.to_string(),
             id: id.to_owned(),
         });
@@ -242,14 +269,14 @@ impl CompositorInterface {
         let Some(client) = header.sender() else {
             return;
         };
-        let _ = self.commands.send(Command::UnregisterWindowRule {
+        self.commands.send(Command::UnregisterWindowRule {
             client: client.to_string(),
             id: id.to_owned(),
         });
     }
 
     async fn quit(&self) {
-        let _ = self.commands.send(Command::Quit);
+        self.commands.send(Command::Quit);
     }
 
     #[zbus(signal)]
@@ -268,6 +295,13 @@ impl CompositorInterface {
 
     #[zbus(signal)]
     pub async fn focus_cleared(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn window_app_id_changed(
+        emitter: &SignalEmitter<'_>,
+        id: u64,
+        app_id: &str,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     pub async fn window_title_changed(
@@ -314,6 +348,19 @@ impl CompositorInterface {
         width: i32,
         height: i32,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn workspace_activated(
+        emitter: &SignalEmitter<'_>,
+        output: &str,
+        id: u64,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn workspaces_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn configuration_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
     pub async fn shortcut_activated(emitter: &SignalEmitter<'_>, id: &str) -> zbus::Result<()>;

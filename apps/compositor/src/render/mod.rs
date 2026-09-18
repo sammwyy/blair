@@ -1,0 +1,533 @@
+mod capture;
+mod clip;
+mod decoration;
+
+use std::time::Duration;
+
+use smithay::{
+    backend::renderer::{
+        element::{
+            default_primary_scanout_output_compare,
+            memory::MemoryRenderBufferRenderElement,
+            render_elements,
+            solid::SolidColorRenderElement,
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            AsRenderElements, Element, Kind, RenderElementStates,
+        },
+        gles::{GlesPixelProgram, GlesRenderer, GlesTexProgram},
+        Color32F,
+    },
+    desktop::{
+        layer_map_for_output,
+        utils::{
+            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
+            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
+            update_surface_primary_scanout_output, with_surfaces_surface_tree,
+            OutputPresentationFeedback,
+        },
+        PopupManager, Window,
+    },
+    input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData},
+    output::Output,
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
+    wayland::{compositor::with_states, seat::WaylandFocus, shell::wlr_layer::Layer},
+};
+use wayland_server::protocol::wl_surface::WlSurface;
+
+use crate::{config::WindowLayout, decorations::DecorationFrame, state::BlairState};
+use blair_protocol::Rect;
+
+pub use capture::{capture_region, screenshot};
+pub use clip::RoundedClip;
+pub use decoration::WindowDecoration;
+
+use clip::ClippedSurfaceElement;
+use decoration::{FrameElement, FrameParams};
+
+pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
+
+/// Who draws the pointer cursor. The nested backend lets the host draw
+/// named cursors, so only client-provided cursor surfaces are composited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMode {
+    Composited,
+    HostNamed,
+    Hidden,
+}
+
+/// Frame callbacks of surfaces that are not visible anywhere are still sent
+/// at roughly this interval so clients never block forever on them.
+const HIDDEN_FRAME_THROTTLE: Duration = Duration::from_millis(995);
+
+render_elements! {
+    pub OutputRenderElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Clipped=ClippedSurfaceElement,
+    Frame=FrameElement,
+    Solid=SolidColorRenderElement,
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
+#[derive(Clone)]
+pub struct Shaders {
+    clip: GlesTexProgram,
+    frame: GlesPixelProgram,
+}
+
+impl Shaders {
+    pub fn compile(renderer: &mut GlesRenderer) -> Option<Self> {
+        let shaders =
+            clip::compile(renderer).and_then(|clip| Ok((clip, decoration::compile(renderer)?)));
+        match shaders {
+            Ok((clip, frame)) => Some(Self { clip, frame }),
+            Err(error) => {
+                tracing::error!(%error, "failed to compile decoration shaders; server-side decorations disabled");
+                None
+            }
+        }
+    }
+}
+
+pub struct WindowFrame {
+    pub client: Rectangle<i32, Logical>,
+    pub frame: Rectangle<i32, Logical>,
+    pub has_border: bool,
+    pub has_titlebar: bool,
+}
+
+pub fn window_frame(state: &BlairState, window: &Window) -> Option<WindowFrame> {
+    let client = state.space.element_geometry(window)?;
+    let has_border = state.window_has_server_decoration(window);
+    let has_titlebar = has_border
+        && state.config.window.layout != WindowLayout::Tiling
+        && !state.window_is_fullscreen(window);
+    let frame = if has_border {
+        let geometry =
+            DecorationFrame::compute(to_rect(client), state.decoration_theme(), has_titlebar);
+        from_rect(geometry.frame)
+    } else {
+        client
+    };
+    Some(WindowFrame {
+        client,
+        frame,
+        has_border,
+        has_titlebar,
+    })
+}
+
+pub fn z_ordered_windows(state: &BlairState, output: &Output) -> Vec<Window> {
+    let mut windows: Vec<_> = state
+        .space
+        .elements()
+        .filter(|window| state.window_visible_on_output(window, output))
+        .cloned()
+        .collect();
+    windows.sort_by_key(|window| {
+        (
+            state.window_is_fullscreen(window),
+            state.window_always_on_top(window),
+        )
+    });
+    windows
+}
+
+/// Builds the render elements of `output`, front to back.
+pub fn output_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    shaders: Option<&Shaders>,
+    cursor_mode: CursorMode,
+) -> Vec<OutputRenderElement> {
+    profiling::scope!("output_elements");
+    let Some(output_geo) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    let scale = output.current_scale().fractional_scale();
+    let viewport = output
+        .current_mode()
+        .map(|mode| mode.size)
+        .unwrap_or_default();
+    let ctx = FrameContext {
+        output_geo,
+        scale,
+        viewport,
+    };
+
+    let mut elements = Vec::new();
+    cursor_elements(renderer, state, output, &ctx, cursor_mode, &mut elements);
+    if let Some(icon) = state.dnd_icon.as_ref().filter(|icon| icon.alive()) {
+        let location = state.pointer_location().to_i32_round::<i32>() - output_geo.loc;
+        elements.extend(surface_tree_elements(
+            renderer,
+            icon,
+            location.to_physical_precise_round(scale),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    let windows = z_ordered_windows(state, output);
+    let fullscreen = windows
+        .last()
+        .is_some_and(|window| state.window_is_fullscreen(window));
+
+    layer_elements(renderer, output, scale, &[Layer::Overlay], &mut elements);
+    if !fullscreen {
+        layer_elements(renderer, output, scale, &[Layer::Top], &mut elements);
+    }
+    for window in windows.iter().rev() {
+        window_elements(
+            renderer,
+            state,
+            output,
+            window,
+            &ctx,
+            shaders,
+            &mut elements,
+        );
+    }
+    if fullscreen {
+        return elements;
+    }
+    layer_elements(
+        renderer,
+        output,
+        scale,
+        &[Layer::Bottom, Layer::Background],
+        &mut elements,
+    );
+    elements
+}
+
+struct FrameContext {
+    output_geo: Rectangle<i32, Logical>,
+    scale: f64,
+    viewport: smithay::utils::Size<i32, Physical>,
+}
+
+fn surface_tree_elements(
+    renderer: &mut GlesRenderer,
+    surface: &WlSurface,
+    location: Point<i32, Physical>,
+    scale: f64,
+    alpha: f32,
+    kind: Kind,
+) -> Vec<OutputRenderElement> {
+    render_elements_from_surface_tree(renderer, surface, location, scale, alpha, kind)
+}
+
+fn cursor_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    ctx: &FrameContext,
+    cursor_mode: CursorMode,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    if cursor_mode == CursorMode::Hidden {
+        return;
+    }
+    let pointer = state.pointer_location();
+    if !ctx.output_geo.to_f64().contains(pointer) {
+        return;
+    }
+    let relative = pointer - ctx.output_geo.loc.to_f64();
+    let icon = match &state.pointer_cursor {
+        CursorImageStatus::Hidden => return,
+        CursorImageStatus::Surface(surface) if surface.alive() => {
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|data| data.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let location = (relative - hotspot.to_f64())
+                .to_physical(ctx.scale)
+                .to_i32_round();
+            elements.extend(surface_tree_elements(
+                renderer,
+                surface,
+                location,
+                ctx.scale,
+                1.0,
+                Kind::Cursor,
+            ));
+            return;
+        }
+        CursorImageStatus::Surface(_) => CursorIcon::Default,
+        CursorImageStatus::Named(icon) => *icon,
+    };
+    if cursor_mode == CursorMode::HostNamed {
+        return;
+    }
+    let buffer_scale = output.current_scale().integer_scale();
+    let time = state.clock_now();
+    let (buffer, hotspot) = state.cursor.image(icon, buffer_scale, time);
+    let location = (relative - hotspot.to_f64())
+        .to_physical(ctx.scale)
+        .to_i32_round::<i32>()
+        .to_f64();
+    match MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        location,
+        buffer,
+        None,
+        None,
+        None,
+        Kind::Cursor,
+    ) {
+        Ok(element) => elements.push(element.into()),
+        Err(error) => tracing::warn!(%error, "failed to import cursor image"),
+    }
+}
+
+pub fn cursor_is_animated(state: &BlairState, output: &Output) -> bool {
+    match &state.pointer_cursor {
+        CursorImageStatus::Named(icon) => state
+            .cursor
+            .is_animated(*icon, output.current_scale().integer_scale()),
+        _ => false,
+    }
+}
+
+fn layer_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    scale: f64,
+    layers: &[Layer],
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let map = layer_map_for_output(output);
+    for &layer in layers {
+        for surface in map.layers_on(layer).rev() {
+            let Some(geometry) = map.layer_geometry(surface) else {
+                continue;
+            };
+            elements.extend(surface.render_elements::<OutputRenderElement>(
+                renderer,
+                geometry.loc.to_physical_precise_round(scale),
+                Scale::from(scale),
+                1.0,
+            ));
+        }
+    }
+}
+
+fn window_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    window: &Window,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let (Some(frame), Some(surface), Some(id)) = (
+        window_frame(state, window),
+        window.wl_surface(),
+        state.window_id(window),
+    ) else {
+        return;
+    };
+    let alpha = state.window_opacity(window, output);
+    let scale = ctx.scale;
+    let origin = ctx.output_geo.loc;
+    let render_loc = frame.client.loc - window.geometry().loc - origin;
+
+    for (popup, offset) in PopupManager::popups_for_surface(&surface) {
+        let location = render_loc + window.geometry().loc + offset - popup.geometry().loc;
+        elements.extend(surface_tree_elements(
+            renderer,
+            popup.wl_surface(),
+            location.to_physical_precise_round(scale),
+            scale,
+            alpha,
+            Kind::Unspecified,
+        ));
+    }
+
+    let decorated = frame.has_border && shaders.is_some();
+    if decorated {
+        let theme = state.decoration_theme().clone();
+        let decoration = state.decorations.entry(id).or_default();
+        if frame.has_titlebar {
+            let buttons = DecorationFrame::compute(to_rect(frame.client), &theme, true);
+            for (buffer, (rect, color)) in decoration.buttons.iter_mut().zip([
+                (buttons.close_btn, theme.close_button),
+                (buttons.maximize_btn, theme.maximize_button),
+                (buttons.minimize_btn, theme.minimize_button),
+            ]) {
+                if rect.width <= 0 || rect.height <= 0 {
+                    continue;
+                }
+                buffer.update((rect.width, rect.height), rgba(color));
+                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
+                elements.push(
+                    SolidColorRenderElement::from_buffer(
+                        buffer,
+                        location.to_physical_precise_round(scale),
+                        scale,
+                        alpha,
+                        Kind::Unspecified,
+                    )
+                    .into(),
+                );
+            }
+        }
+    }
+
+    let clip = decorated.then(|| {
+        let radius = state.corner_radius(frame.frame);
+        let inner = (radius - state.decoration_theme().border_width).max(0) as f32 * scale as f32;
+        let top = if frame.has_titlebar { 0.0 } else { inner };
+        RoundedClip {
+            rect: Rectangle::new(frame.client.loc - origin, frame.client.size)
+                .to_physical_precise_round(scale),
+            radii: [top, top, inner, inner],
+            viewport: ctx.viewport,
+        }
+    });
+    let content: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
+        renderer,
+        &surface,
+        render_loc.to_physical_precise_round(scale),
+        scale,
+        alpha,
+        Kind::Unspecified,
+    );
+    for element in content {
+        match (clip, shaders) {
+            (Some(clip), Some(shaders)) if clip.affects(element.geometry(Scale::from(scale))) => {
+                elements
+                    .push(ClippedSurfaceElement::new(element, shaders.clip.clone(), clip).into());
+            }
+            _ => elements.push(element.into()),
+        }
+    }
+
+    if let (true, Some(shaders)) = (decorated, shaders) {
+        let theme = state.decoration_theme();
+        let focused = state.focused_window == Some(id);
+        let params = FrameParams {
+            radius: state.corner_radius(frame.frame) as f32,
+            border_width: theme.border_width as f32,
+            titlebar_height: if frame.has_titlebar {
+                theme.titlebar_height as f32
+            } else {
+                0.0
+            },
+            border_color: rgba(if focused {
+                theme.active_border
+            } else {
+                theme.inactive_border
+            }),
+            titlebar_color: rgba(if focused {
+                theme.active_titlebar
+            } else {
+                theme.inactive_titlebar
+            }),
+        };
+        let decoration = state.decorations.entry(id).or_default();
+        decoration.update(frame.frame, params);
+        if let Some(element) = decoration.element(&shaders.frame, origin, scale, alpha) {
+            elements.push(element.into());
+        }
+    }
+}
+
+pub fn rgba(color: [u8; 4]) -> Color32F {
+    Color32F::new(
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+        f32::from(color[3]) / 255.0,
+    )
+}
+
+pub fn to_rect(rect: Rectangle<i32, Logical>) -> Rect {
+    Rect {
+        x: rect.loc.x,
+        y: rect.loc.y,
+        width: rect.size.w,
+        height: rect.size.h,
+    }
+}
+
+pub fn from_rect(rect: Rect) -> Rectangle<i32, Logical> {
+    Rectangle::new((rect.x, rect.y).into(), (rect.width, rect.height).into())
+}
+
+fn for_each_surface_root(state: &BlairState, mut f: impl FnMut(&WlSurface)) {
+    for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+        let surface = toplevel.wl_surface();
+        f(surface);
+        for (popup, _) in PopupManager::popups_for_surface(surface) {
+            f(popup.wl_surface());
+        }
+    }
+    for layer in &state.layer_surfaces {
+        let surface = layer.wl_surface();
+        f(surface);
+        for (popup, _) in PopupManager::popups_for_surface(surface) {
+            f(popup.wl_surface());
+        }
+    }
+    if let CursorImageStatus::Surface(surface) = &state.pointer_cursor {
+        f(surface);
+    }
+    if let Some(icon) = &state.dnd_icon {
+        f(icon);
+    }
+}
+
+pub fn update_primary_scanout_output(
+    state: &BlairState,
+    output: &Output,
+    render_states: &RenderElementStates,
+) {
+    for_each_surface_root(state, |root| {
+        with_surfaces_surface_tree(root, |surface, states| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                states,
+                render_states,
+                default_primary_scanout_output_compare,
+            );
+        });
+    });
+}
+
+pub fn send_frame_callbacks(state: &BlairState, output: &Output, time: Duration) {
+    profiling::scope!("send_frame_callbacks");
+    for_each_surface_root(state, |root| {
+        send_frames_surface_tree(
+            root,
+            output,
+            time,
+            Some(HIDDEN_FRAME_THROTTLE),
+            surface_primary_scanout_output,
+        );
+    });
+}
+
+pub fn take_presentation_feedback(
+    state: &BlairState,
+    output: &Output,
+    render_states: &RenderElementStates,
+) -> OutputPresentationFeedback {
+    let mut feedback = OutputPresentationFeedback::new(output);
+    for_each_surface_root(state, |root| {
+        take_presentation_feedback_surface_tree(
+            root,
+            &mut feedback,
+            surface_primary_scanout_output,
+            |surface, _| surface_presentation_feedback_flags_from_states(surface, render_states),
+        );
+    });
+    feedback
+}

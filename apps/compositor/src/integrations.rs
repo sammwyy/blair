@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use blair_integration::{CompositorApi, EventChannel, EventFanout, Transport};
 use blair_integration_dbus::DbusIntegration;
-use blair_protocol::{Rect, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
+use blair_protocol::{Rect, RenderStats, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
 
 use crate::config::{BindingConfig, DecorationModeConfig, WindowLayout};
 use crate::state::BlairState;
@@ -13,11 +13,17 @@ pub struct Integrations {
 }
 
 impl Integrations {
-    pub fn start(dbus_enabled: bool) -> Self {
+    /// `wake` is handed to integration threads so queued requests wake the
+    /// compositor's event loop.
+    pub fn start(
+        dbus_enabled: bool,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        environment: Vec<(String, String)>,
+    ) -> Self {
         let mut transports: Vec<Box<dyn Transport>> = Vec::new();
         let mut event_channels = Vec::new();
         if dbus_enabled {
-            let dbus = DbusIntegration::start();
+            let dbus = DbusIntegration::start(wake, environment);
             event_channels.push(dbus.event_channel());
             transports.push(Box::new(dbus));
         }
@@ -87,6 +93,14 @@ impl CompositorApi for BlairState {
         BlairState::outputs(self)
     }
 
+    fn screenshot(&mut self, output: &str, path: &str, reply: Box<dyn FnOnce(bool) + Send>) {
+        self.request_screenshot(output, path, reply);
+    }
+
+    fn render_stats(&self) -> RenderStats {
+        self.render_stats
+    }
+
     fn window_settings(&self) -> (i32, i32, i32, bool) {
         let decoration = &self.config.decorations;
         (
@@ -126,10 +140,17 @@ impl CompositorApi for BlairState {
         self.config.window.layout = layout;
         self.config.window.work_area_padding = work_area_padding;
         self.config.decorations.corner_radius = corner_radius;
-        if crate::config::save(&self.config).is_err() {
+        if let Err(error) = crate::config::save(&self.config) {
+            tracing::warn!(%error, "failed to persist layout settings");
             return false;
         }
-        self.tile_focused_window();
+        tracing::info!(
+            ?layout,
+            work_area_padding,
+            corner_radius,
+            "layout settings updated by an integration"
+        );
+        self.retile_focused_workspace();
         self.request_redraw();
         true
     }
@@ -182,12 +203,22 @@ impl CompositorApi for BlairState {
     }
 
     fn set_configuration(&mut self, configuration: &str) -> bool {
-        let Ok(next) = toml::from_str(configuration) else {
-            return false;
+        let next = match toml::from_str(configuration) {
+            Ok(next) => next,
+            Err(error) => {
+                tracing::warn!(%error, "integration sent an invalid configuration");
+                return false;
+            }
         };
-        if crate::config::validate(&next).is_err() || crate::config::save(&next).is_err() {
+        if let Err(error) = crate::config::validate(&next) {
+            tracing::warn!(%error, "integration sent a configuration that failed validation");
             return false;
         }
+        if let Err(error) = crate::config::save(&next) {
+            tracing::warn!(%error, "failed to persist the configuration");
+            return false;
+        }
+        tracing::info!("configuration replaced by an integration");
         self.apply_config(next);
         true
     }
@@ -309,7 +340,7 @@ impl CompositorApi for BlairState {
     }
 
     fn unregister_window_rule(&mut self, client: &str, id: &str) {
-        self.unregister_temporary_rule(client, id);
+        self.rules.unregister(client, id);
     }
 
     fn unregister_client(&mut self, client: &str) {
@@ -317,7 +348,7 @@ impl CompositorApi for BlairState {
             return;
         }
         self.shortcuts.unregister_client(client);
-        self.unregister_temporary_rules(client);
+        self.rules.unregister_client(client);
     }
 
     fn quit(&mut self) {

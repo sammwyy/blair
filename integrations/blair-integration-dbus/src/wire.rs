@@ -38,6 +38,18 @@ impl From<&WorkspaceInfo> for DbusWorkspace {
     }
 }
 
+impl From<DbusWorkspace> for WorkspaceInfo {
+    fn from(workspace: DbusWorkspace) -> Self {
+        Self {
+            id: workspace.id,
+            name: workspace.name,
+            active: workspace.active,
+            output: (!workspace.output.is_empty()).then_some(workspace.output),
+            window_count: workspace.window_count as usize,
+        }
+    }
+}
+
 impl From<DbusWindow> for WindowInfo {
     fn from(window: DbusWindow) -> Self {
         Self {

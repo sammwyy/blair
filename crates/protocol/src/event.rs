@@ -18,6 +18,10 @@ pub enum CompositorEvent {
         id: WindowId,
         title: String,
     },
+    WindowAppIdChanged {
+        id: WindowId,
+        app_id: String,
+    },
     WindowGeometryChanged {
         id: WindowId,
         geometry: Rect,
@@ -42,6 +46,13 @@ pub enum CompositorEvent {
         output: String,
         area: Rect,
     },
+    WorkspaceActivated {
+        output: String,
+        id: u64,
+    },
+    /// The workspace set or a workspace's window count changed.
+    WorkspacesChanged,
+    ConfigurationChanged,
     ShortcutActivated {
         client: String,
         id: String,

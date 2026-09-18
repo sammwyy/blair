@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::Rect;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(pub u64);
 
 impl fmt::Display for WindowId {

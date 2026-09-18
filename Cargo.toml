@@ -50,6 +50,8 @@ smithay = { version = "0.7.0", features = [
   "desktop",
 ] }
 wayland-server = "0.31"
+xcursor = "0.3"
+profiling = "1"
 
 blair-protocol = { version = "0.1.0", path = "crates/protocol" }
 blair-integration = { version = "0.1.0", path = "crates/integration" }

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use blair_protocol::{CompositorEvent, Rect, ShortcutBinding, WindowId, WindowInfo, WorkspaceInfo};
+use blair_protocol::{
+    CompositorEvent, Rect, RenderStats, ShortcutBinding, WindowId, WindowInfo, WorkspaceInfo,
+};
 
 /// Receives compositor events. Integrations provide implementations for their
 /// own transport; the compositor never needs to know the transport details.
@@ -41,6 +43,10 @@ pub trait CompositorApi {
     fn move_resize_window(&mut self, id: WindowId, geometry: Rect) -> bool;
     fn work_area(&self, output: &str) -> Rect;
     fn outputs(&self) -> Vec<String>;
+    /// Renders `output` (empty selects the focused one) into a PNG at `path`.
+    fn screenshot(&mut self, output: &str, path: &str, reply: Box<dyn FnOnce(bool) + Send>);
+    /// Frame timings of the most recent reporting interval.
+    fn render_stats(&self) -> RenderStats;
     fn window_settings(&self) -> (i32, i32, i32, bool);
     fn layout_settings(&self) -> (String, i32, i32);
     fn set_layout_settings(

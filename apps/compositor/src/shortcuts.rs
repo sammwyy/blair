@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::input::keyboard::{keysyms, Keysym};
-
 #[derive(Debug, Default)]
 pub struct ShortcutRegistry {
     bindings: Vec<ShortcutBinding>,
@@ -42,8 +40,24 @@ enum ShortcutKey {
     F(u8),
 }
 
+const MAX_BINDINGS_PER_CLIENT: usize = 256;
+
 impl ShortcutRegistry {
     pub fn bind(&mut self, client: &str, id: &str, accelerator: &str) -> bool {
+        if self
+            .bindings
+            .iter()
+            .filter(|existing| existing.client == client)
+            .count()
+            >= MAX_BINDINGS_PER_CLIENT
+            && !self
+                .bindings
+                .iter()
+                .any(|existing| existing.client == client && existing.id == id)
+        {
+            tracing::warn!(client, "shortcut limit reached");
+            return false;
+        }
         let binding = match parse_binding(client, id, accelerator) {
             Ok(binding) => binding,
             Err(err) => {
@@ -78,8 +92,11 @@ impl ShortcutRegistry {
         }
     }
 
-    pub fn binding_count(&self) -> usize {
-        self.bindings.len()
+    /// Drops the physical key state, used when the compositor stops
+    /// receiving key events (VT switch, host focus loss).
+    pub fn clear_pressed(&mut self) {
+        self.pressed_keys.clear();
+        self.active_bindings.clear();
     }
 
     pub fn update_key(&mut self, keycode: u32, pressed: bool) {
@@ -209,28 +226,6 @@ fn key_aliases() -> HashMap<&'static str, ShortcutKey> {
     ])
 }
 
-fn f_key_number(sym: Keysym) -> Option<u8> {
-    match u32::from(sym) {
-        keysyms::KEY_F1 => Some(1),
-        keysyms::KEY_F2 => Some(2),
-        keysyms::KEY_F3 => Some(3),
-        keysyms::KEY_F4 => Some(4),
-        keysyms::KEY_F5 => Some(5),
-        keysyms::KEY_F6 => Some(6),
-        keysyms::KEY_F7 => Some(7),
-        keysyms::KEY_F8 => Some(8),
-        keysyms::KEY_F9 => Some(9),
-        keysyms::KEY_F10 => Some(10),
-        keysyms::KEY_F11 => Some(11),
-        keysyms::KEY_F12 => Some(12),
-        _ => None,
-    }
-}
-
-pub fn vt_from_keysym(sym: Keysym) -> Option<i32> {
-    f_key_number(sym).map(i32::from)
-}
-
 pub fn update_physical_mods(mods: &mut PhysicalMods, keycode: u32, pressed: bool) {
     match keycode {
         x if x == evdev_to_smithay(29) || x == evdev_to_smithay(97) => mods.ctrl = pressed,
@@ -323,7 +318,7 @@ mod tests {
     fn activates_a_shortcut_for_its_client() {
         let mut registry = ShortcutRegistry::default();
         assert!(registry.bind(":1.4", "launcher", "Super+Space"));
-        assert_eq!(registry.binding_count(), 1);
+        assert_eq!(registry.bindings.len(), 1);
         registry.update_key(evdev_to_smithay(57), true);
         assert_eq!(
             registry.maybe_activate_physical(PhysicalMods {
@@ -343,7 +338,7 @@ mod tests {
         registry.bind(":1.4", "toggle", "Ctrl+Alt+T");
         registry.bind(":1.5", "toggle", "Super+T");
         registry.bind(":1.4", "toggle", "Super+T");
-        assert_eq!(registry.binding_count(), 2);
+        assert_eq!(registry.bindings.len(), 2);
     }
 
     #[test]
@@ -353,14 +348,14 @@ mod tests {
         registry.bind(":1.4", "launcher", "Super+Space");
         registry.bind(":1.5", "launcher", "Super+Space");
         registry.unregister_client(":1.4");
-        assert_eq!(registry.binding_count(), 1);
+        assert_eq!(registry.bindings.len(), 1);
     }
 
     #[test]
     fn rejects_accelerators_without_modifiers() {
         let mut registry = ShortcutRegistry::default();
         assert!(!registry.bind(":1.4", "broken", "T"));
-        assert_eq!(registry.binding_count(), 0);
+        assert_eq!(registry.bindings.len(), 0);
     }
 
     #[test]

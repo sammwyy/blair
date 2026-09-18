@@ -68,6 +68,13 @@ fn decode(message: &Message) -> Option<CompositorEvent> {
                 title,
             })
         }
+        "WindowAppIdChanged" => {
+            let (id, app_id) = body.deserialize::<(u64, String)>().ok()?;
+            Some(CompositorEvent::WindowAppIdChanged {
+                id: WindowId(id),
+                app_id,
+            })
+        }
         "WindowGeometryChanged" => {
             let (id, x, y, width, height) = body.deserialize::<(u64, i32, i32, i32, i32)>().ok()?;
             Some(CompositorEvent::WindowGeometryChanged {
@@ -116,6 +123,12 @@ fn decode(message: &Message) -> Option<CompositorEvent> {
                 },
             })
         }
+        "WorkspaceActivated" => {
+            let (output, id) = body.deserialize::<(String, u64)>().ok()?;
+            Some(CompositorEvent::WorkspaceActivated { output, id })
+        }
+        "WorkspacesChanged" => Some(CompositorEvent::WorkspacesChanged),
+        "ConfigurationChanged" => Some(CompositorEvent::ConfigurationChanged),
         "ShortcutActivated" => {
             body.deserialize::<String>()
                 .ok()

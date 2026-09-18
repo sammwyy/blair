@@ -1,5 +1,7 @@
 use blair_integration_dbus::CompositorProxy;
-use blair_protocol::{Rect, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
+use blair_protocol::{
+    Rect, RenderStats, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo, WorkspaceInfo,
+};
 use zbus::Connection;
 
 use crate::Events;
@@ -68,6 +70,50 @@ impl BlairClient {
 
     pub async fn outputs(&self) -> zbus::Result<Vec<String>> {
         self.proxy.outputs().await
+    }
+
+    pub async fn workspaces(&self) -> zbus::Result<Vec<WorkspaceInfo>> {
+        Ok(self
+            .proxy
+            .list_workspaces()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub async fn switch_workspace(&self, id: u64) -> zbus::Result<bool> {
+        self.proxy.switch_workspace(id).await
+    }
+
+    pub async fn move_window_to_workspace(
+        &self,
+        window: WindowId,
+        workspace: u64,
+    ) -> zbus::Result<bool> {
+        self.proxy
+            .move_window_to_workspace(window.0, workspace)
+            .await
+    }
+
+    /// Writes a PNG screenshot of `output` (empty selects the focused one).
+    pub async fn screenshot(&self, output: &str, path: &str) -> zbus::Result<bool> {
+        self.proxy.screenshot(output, path).await
+    }
+
+    /// Frame timings of the compositor's most recent reporting interval.
+    pub async fn render_stats(&self) -> zbus::Result<RenderStats> {
+        let (frames, empty_frames, fps, build, render, render_max, interval) =
+            self.proxy.render_stats().await?;
+        Ok(RenderStats {
+            frames,
+            empty_frames,
+            fps,
+            build_ms_avg: build,
+            render_ms_avg: render,
+            render_ms_max: render_max,
+            present_interval_ms_avg: interval,
+        })
     }
 
     pub async fn window_settings(&self) -> zbus::Result<(i32, i32, i32, bool)> {

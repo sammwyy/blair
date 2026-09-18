@@ -3,7 +3,7 @@ export XDG_CURRENT_DESKTOP=Blair
 export XDG_SESSION_DESKTOP=Blair
 export XDG_SESSION_TYPE=wayland
 
-export RUST_LOG="${RUST_LOG:-blair=trace,warn}"
+export RUST_LOG="${RUST_LOG:-blair=debug,warn}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 export EGL_LOG_LEVEL="${EGL_LOG_LEVEL:-warning}"

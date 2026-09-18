@@ -36,6 +36,11 @@ curve = "ease-in-out"
 # Enables the built-in D-Bus transport integration.
 dbus = true
 
+# Falls back to XCURSOR_THEME/XCURSOR_SIZE, then to the "default" theme at 24.
+[cursor]
+theme = "Adwaita"
+size = 24
+
 [input.keyboard]
 layout = "us"
 variant = ""
@@ -114,7 +119,11 @@ scale = 1.0
 default_width = 900
 default_height = 600
 layout = "floating"
+# Margin around the tiled area, spacing between tiles, and the share of the
+# width taken by the master window.
 work_area_padding = 16
+gap = 8
+master_ratio = 0.5
 
 [decorations]
 # server | client | auto | none

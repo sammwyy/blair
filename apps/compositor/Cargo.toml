@@ -10,6 +10,9 @@ categories.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
@@ -25,3 +28,7 @@ blair-integration.workspace = true
 blair-integration-dbus.workspace = true
 smithay.workspace = true
 wayland-server.workspace = true
+xcursor.workspace = true
+profiling.workspace = true
+png = "0.17"
+tracy-client = { version = "0.18", optional = true }

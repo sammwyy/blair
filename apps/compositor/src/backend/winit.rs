@@ -1,78 +1,205 @@
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use anyhow::{Context, Result};
-use smithay::reexports::winit::{platform::pump_events::PumpStatus, window::Window as HostWindow};
 use smithay::{
     backend::{
-        input::{
-            AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-            PointerButtonEvent,
-        },
-        renderer::{gles::GlesRenderer, utils::draw_render_elements, Frame, Renderer},
-        winit::{self, WinitEvent, WinitInput},
+        egl::EGLDevice,
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma, ImportEgl},
+        winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    input::{keyboard::FilterResult, pointer::CursorImageStatus},
+    input::pointer::CursorImageStatus,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::wayland_server::Display,
-    utils::{Rectangle, Transform, SERIAL_COUNTER},
+    reexports::{
+        calloop::EventLoop,
+        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+        wayland_server::Display,
+    },
+    utils::Transform,
+    wayland::{
+        dmabuf::{DmabufFeedbackBuilder, DmabufGlobal},
+        presentation::Refresh,
+    },
 };
-use wayland_server::ListeningSocket;
 
 use crate::{
-    config::{CompositorConfig, ConfigPaths, ConfigWatcher, OutputTransform},
-    decorations::RoundedCornerShaders,
-    input::{
-        begin_window_drag, handle_decoration_press, handle_pointer_axis,
-        lower_layer_surface_under, move_dragged_window, upper_layer_surface_under,
-        window_surface_under, window_under_including_decoration, WindowDrag,
-    },
-    integrations,
+    config::{CompositorConfig, OutputTransform},
+    input::{process_input_event, reset_keyboard_state, InputHooks},
     render::{
-        bottom_layer_elements, cursor_surface_elements, dnd_icon_elements, draw_window,
-        ensure_rounded_corner_shader, popup_elements, send_frame_callbacks, top_layer_elements,
-        window_content_elements, BACKGROUND_COLOR,
+        cursor_is_animated, output_elements, send_frame_callbacks, take_presentation_feedback,
+        update_primary_scanout_output, CursorMode, Shaders, CLEAR_COLOR,
     },
-    state::{BlairState, ClientState},
+    state::BlairState,
+    stats::FrameTimer,
 };
 
-const BTN_LEFT: u32 = 0x110;
+const OUTPUT_NAME: &str = "winit-0";
+const REFRESH_MILLIHZ: i32 = 60_000;
+const FRAME_PACING: std::time::Duration = std::time::Duration::from_millis(16);
+
+struct NestedHooks;
+
+impl InputHooks for NestedHooks {}
+
+struct WinitData {
+    backend: WinitGraphicsBackend<GlesRenderer>,
+    damage_tracker: OutputDamageTracker,
+    output: Output,
+    shaders: Option<Shaders>,
+    timer: FrameTimer,
+    host_cursor: Option<CursorImageStatus>,
+    pacer: super::FramePacer,
+    force_redraw: bool,
+    /// Buffer age of the next back buffer, sampled right after a swap so the
+    /// EGL surface is guaranteed to be current.
+    age: usize,
+}
+
+impl WinitData {
+    fn resize(&mut self, state: &mut BlairState) {
+        let size = self.backend.window_size();
+        let mode = OutputMode {
+            size,
+            refresh: REFRESH_MILLIHZ,
+        };
+        self.output
+            .change_current_state(Some(mode), None, None, None);
+        self.output.set_preferred(mode);
+        self.damage_tracker = OutputDamageTracker::new(
+            size,
+            self.output.current_scale().fractional_scale(),
+            Transform::Flipped180,
+        );
+        self.force_redraw = true;
+        self.age = 0;
+        state.output_changed(&self.output);
+        tracing::debug!(w = size.w, h = size.h, "host window resized");
+    }
+
+    /// Reflects the pointer cursor onto the host window. Client-provided
+    /// cursor surfaces are drawn by us, so the host cursor hides then.
+    fn sync_host_cursor(&mut self, state: &BlairState) {
+        if self.host_cursor.as_ref() == Some(&state.pointer_cursor) {
+            return;
+        }
+        self.host_cursor = Some(state.pointer_cursor.clone());
+        let window = self.backend.window();
+        match &state.pointer_cursor {
+            CursorImageStatus::Hidden | CursorImageStatus::Surface(_) => {
+                window.set_cursor_visible(false)
+            }
+            CursorImageStatus::Named(icon) => {
+                window.set_cursor(*icon);
+                window.set_cursor_visible(true);
+            }
+        }
+    }
+
+    fn render(&mut self, state: &mut BlairState) {
+        profiling::scope!("render_winit");
+        let build_start = Instant::now();
+        let elements = output_elements(
+            self.backend.renderer(),
+            state,
+            &self.output,
+            self.shaders.as_ref(),
+            CursorMode::HostNamed,
+        );
+        let build = build_start.elapsed();
+
+        let render_start = Instant::now();
+        let age = self.age;
+        let (renderer, mut framebuffer) = match self.backend.bind() {
+            Ok(bound) => bound,
+            Err(error) => {
+                tracing::warn!(%error, "failed to bind the host surface");
+                return;
+            }
+        };
+        let result = self.damage_tracker.render_output(
+            renderer,
+            &mut framebuffer,
+            age,
+            &elements,
+            CLEAR_COLOR,
+        );
+        drop(framebuffer);
+
+        let (damage, states) = match result {
+            Ok(result) => (
+                result.damage.filter(|damage| !damage.is_empty()).cloned(),
+                result.states,
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "render failed");
+                return;
+            }
+        };
+        // Submitting blocks on the host vsync, so it is not part of the
+        // measured render time.
+        let render = render_start.elapsed();
+        let damaged = damage.is_some();
+        if let Some(damage) = damage {
+            match self.backend.submit(Some(&damage)) {
+                Ok(()) => self.age = self.backend.buffer_age().unwrap_or(0),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to submit the host surface");
+                    self.age = 0;
+                }
+            }
+        }
+
+        update_primary_scanout_output(state, &self.output, &states);
+        let mut feedback = take_presentation_feedback(state, &self.output, &states);
+        feedback.presented(
+            state.clock.now(),
+            Refresh::Unknown,
+            0,
+            wp_presentation_feedback::Kind::empty(),
+        );
+        send_frame_callbacks(state, &self.output, state.clock_now());
+
+        self.timer.record_frame(build, render, damaged);
+        self.timer.record_presented(Instant::now());
+        self.timer.maybe_report(&mut state.render_stats);
+
+        let animating = state.animations_active() || cursor_is_animated(state, &self.output);
+        self.pacer.keep_awake(state, animating);
+    }
+
+    /// Renders when a repaint is due, at most once per host frame.
+    fn dispatch_redraw(&mut self, state: &mut BlairState) {
+        if std::mem::take(&mut self.force_redraw) {
+            self.pacer.force_redraw();
+        }
+        if self.pacer.poll(state) {
+            self.render(state);
+        }
+    }
+}
 
 pub fn run(config: CompositorConfig) -> Result<()> {
-    let mut display: Display<BlairState> =
-        Display::new().context("failed to create Wayland display")?;
-    let dh = display.handle();
+    let mut event_loop: EventLoop<'static, BlairState> =
+        EventLoop::try_new().context("failed to create the event loop")?;
+    let display: Display<BlairState> =
+        Display::new().context("failed to create the Wayland display")?;
+    let display_handle = display.handle();
 
-    let temp_loop = smithay::reexports::calloop::EventLoop::<'static, ()>::try_new()
-        .context("failed to create event loop")?;
-    let loop_signal = temp_loop.get_signal();
-    drop(temp_loop);
-
-    let mut integrations = integrations::Integrations::start(config.integrations.dbus);
-    let mut config_watcher = start_config_watcher(&config);
+    let (socket, events) = super::setup(&event_loop, display, &config, false)?;
     let mut state = BlairState::new(
-        dh.clone(),
-        loop_signal,
+        display_handle.clone(),
+        event_loop.handle(),
+        event_loop.get_signal(),
         config,
-        integrations.event_channel(),
+        events,
     );
+    state.set_wayland_display(&socket);
 
-    let (mut backend, mut winit) = winit::init::<GlesRenderer>()
-        .map_err(|err| anyhow::anyhow!("failed to init winit backend: {err:?}"))?;
+    let (mut backend, winit_source) = winit::init::<GlesRenderer>()
+        .map_err(|error| anyhow::anyhow!("failed to init the winit backend: {error:?}"))?;
 
-    let listener =
-        ListeningSocket::bind_auto("wayland", 1..33).context("failed to bind Wayland socket")?;
-    let socket_name = listener
-        .socket_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "wayland-1".to_string());
-    tracing::info!(socket = %socket_name, "Wayland socket ready");
-    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-
-    let mut clients = Vec::new();
-    let mut rounded_corner_shader: Option<RoundedCornerShaders> = None;
-
+    let size = backend.window_size();
     let output = Output::new(
-        "winit-0".to_string(),
+        OUTPUT_NAME.to_string(),
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
@@ -80,419 +207,163 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             model: "Winit".to_string(),
         },
     );
-    let win_size = backend.window_size();
-    let output_mode = OutputMode {
-        size: win_size,
-        refresh: 60_000,
+    let mode = OutputMode {
+        size,
+        refresh: REFRESH_MILLIHZ,
     };
-    let output_config = state.config.outputs.get("winit-0");
+    let output_config = state.config.outputs.get(OUTPUT_NAME);
     let location = output_config
         .and_then(|config| config.position)
         .unwrap_or([0, 0]);
-    let transform = output_config
-        .and_then(|config| config.parsed_transform().ok().flatten())
-        .map(to_smithay_transform)
-        .unwrap_or(Transform::Normal);
     let scale = output_config
         .and_then(|config| config.scale)
         .map(Scale::Fractional);
-    if let Some(configured_mode) =
-        output_config.and_then(|config| config.parsed_mode().ok().flatten())
-    {
-        if configured_mode.width != win_size.w
-            || configured_mode.height != win_size.h
-            || configured_mode.refresh_millihz != output_mode.refresh
-        {
-            tracing::warn!(
-                output = "winit-0",
-                requested = ?configured_mode,
-                actual = ?output_mode,
-                "nested backend cannot change its host window mode; using host mode"
-            );
-        }
-    }
-    if output_config.and_then(|config| config.enabled) == Some(false) {
-        tracing::warn!(
-            output = "winit-0",
-            "refusing to disable the only active output"
-        );
-    }
-    if output_config.and_then(|config| config.vrr).is_some() {
-        tracing::warn!(
-            output = "winit-0",
-            "VRR is unavailable in the nested backend"
-        );
-    }
+    warn_unsupported_output_config(&state.config, mode);
     output.change_current_state(
-        Some(output_mode),
-        Some(transform),
+        Some(mode),
+        None,
         scale,
         Some((location[0], location[1]).into()),
     );
-    output.set_preferred(output_mode);
-    output.create_global::<BlairState>(&dh);
+    output.set_preferred(mode);
+    let _global = output.create_global::<BlairState>(&display_handle);
     state.add_output(&output, (location[0], location[1]).into());
+    tracing::info!(width = size.w, height = size.h, "winit output created");
 
-    tracing::info!(
-        width = win_size.w,
-        height = win_size.h,
-        "winit output created"
-    );
+    let shaders = Shaders::compile(backend.renderer());
+    init_dmabuf(&mut state, &mut backend, &display_handle);
+
+    let scale = output.current_scale().fractional_scale();
+    let data = Rc::new(RefCell::new(WinitData {
+        damage_tracker: OutputDamageTracker::new(size, scale, Transform::Flipped180),
+        backend,
+        output,
+        shaders,
+        timer: FrameTimer::new(OUTPUT_NAME),
+        host_cursor: None,
+        pacer: super::FramePacer::new(FRAME_PACING),
+        force_redraw: true,
+        age: 0,
+    }));
+
+    let event_data = Rc::clone(&data);
+    event_loop
+        .handle()
+        .insert_source(winit_source, move |event, _, state: &mut BlairState| {
+            let mut data = event_data.borrow_mut();
+            match event {
+                WinitEvent::Resized { .. } => data.resize(state),
+                WinitEvent::Input(event) => {
+                    process_input_event(state, event, &mut NestedHooks);
+                }
+                WinitEvent::Focus(false) => reset_keyboard_state(state),
+                WinitEvent::Redraw => {
+                    state.request_redraw();
+                }
+                WinitEvent::CloseRequested => {
+                    tracing::info!("host window closed — stopping compositor");
+                    state.request_exit();
+                }
+                WinitEvent::Focus(true) => {}
+            }
+        })
+        .map_err(|error| anyhow::anyhow!("winit source: {error}"))?;
 
     state.spawn_autostarts();
+    tracing::info!("entering the nested event loop");
 
-    let start_time = std::time::Instant::now();
-    let mut running = true;
-    let mut drag: Option<WindowDrag> = None;
-    // Forces a render on the first iteration and after each resize.
-    let mut force_redraw = true;
-
-    tracing::info!("entering main loop");
-
-    while running {
-        let status = winit.dispatch_new_events(|event| match event {
-            WinitEvent::Resized { size, .. } => {
-                let mode = OutputMode {
-                    size,
-                    refresh: 60_000,
-                };
-                output.change_current_state(Some(mode), None, None, None);
-                state.output_resized(&output);
-                force_redraw = true;
-                tracing::debug!(w = size.w, h = size.h, "output resized");
-            }
-            WinitEvent::Input(input_event) => {
-                handle_input(&mut state, input_event, &mut drag);
-            }
-            WinitEvent::CloseRequested => {
-                tracing::info!("window close requested — stopping compositor");
-                running = false;
-            }
-            WinitEvent::Focus(_) | WinitEvent::Redraw => {}
-        });
-
-        match status {
-            PumpStatus::Continue => {}
-            PumpStatus::Exit(_) => {
-                tracing::info!("winit exited");
-                break;
-            }
+    event_loop.run(None, &mut state, move |state| {
+        let mut data = data.borrow_mut();
+        let WinitData {
+            backend,
+            output,
+            shaders,
+            ..
+        } = &mut *data;
+        super::import_pending_dmabufs(state, backend.renderer());
+        super::process_screenshots(state, backend.renderer(), output, shaders.as_ref());
+        super::process_captures(state, backend.renderer(), output, shaders.as_ref());
+        state.refresh();
+        data.sync_host_cursor(state);
+        data.dispatch_redraw(state);
+        if let Err(error) = state.display_handle.flush_clients() {
+            tracing::warn!(%error, "failed to flush clients");
         }
-
-        if !running {
-            break;
-        }
-
-        if let Some(watcher) = config_watcher.as_mut() {
-            watcher.reload_if_due(&mut state);
-        }
-        state.supervise_autostarts();
-
-        if let Ok(Some(stream)) = listener.accept() {
-            match display
-                .handle()
-                .insert_client(stream, Arc::new(ClientState::default()))
-            {
-                Ok(client) => {
-                    clients.push(client);
-                    tracing::debug!("new Wayland client connected");
-                }
-                Err(err) => tracing::warn!(%err, "failed to insert Wayland client"),
-            }
-        }
-
-        // Service pending client requests before the render/submit below,
-        // which blocks on the host compositor's vsync — otherwise a
-        // freshly connected client (e.g. an autostarted one) can sit
-        // unanswered for a full host frame before its first response.
-        display
-            .dispatch_clients(&mut state)
-            .context("dispatch error")?;
-        display.flush_clients().context("flush error")?;
-
-        sync_host_cursor(&state, backend.window());
-
-        // Skip rendering entirely unless something actually changed.
-        let redraw_requested = state.take_redraw_request();
-        let should_render = force_redraw || redraw_requested || state.animations_active();
-        force_redraw = false;
-
-        if should_render {
-            let size = backend.window_size();
-            let damage = Rectangle::from_size(size);
-
-            {
-                let (renderer, mut framebuffer) = match backend.bind() {
-                    Ok(bound) => bound,
-                    Err(err) => {
-                        tracing::warn!(%err, "failed to bind renderer");
-                        continue;
-                    }
-                };
-
-                let bottom_elements = bottom_layer_elements(renderer, &output);
-                let window_content = window_content_elements(renderer, &state, &output);
-                let top_elements = top_layer_elements(renderer, &output);
-                let popups = popup_elements(renderer, &state, &output);
-                let dnd_icon = dnd_icon_elements(renderer, &state);
-                let cursor = cursor_surface_elements(renderer, &state);
-                let corner_shader =
-                    ensure_rounded_corner_shader(renderer, &mut rounded_corner_shader);
-
-                // Winit's framebuffer has an inverted Y axis.
-                match renderer.render(&mut framebuffer, size, Transform::Flipped180) {
-                    Ok(mut frame) => {
-                        let _ = frame.clear(BACKGROUND_COLOR, &[damage]);
-                        let _ = draw_render_elements(&mut frame, 1.0, &bottom_elements, &[damage]);
-                        for (window, content) in &window_content {
-                            if let Err(err) = draw_window(
-                                &mut frame,
-                                &state,
-                                window,
-                                content,
-                                &[damage],
-                                corner_shader.as_ref(),
-                            ) {
-                                tracing::warn!(%err, "failed to draw window");
-                            }
-                        }
-                        let _ = draw_render_elements(&mut frame, 1.0, &top_elements, &[damage]);
-                        let _ = draw_render_elements(&mut frame, 1.0, &popups, &[damage]);
-                        let _ = draw_render_elements(&mut frame, 1.0, &dnd_icon, &[damage]);
-                        let _ = draw_render_elements(&mut frame, 1.0, &cursor, &[damage]);
-                        let _ = frame.finish();
-                    }
-                    Err(err) => tracing::warn!(%err, "render error"),
-                }
-
-                send_frame_callbacks(&state, start_time.elapsed().as_millis() as u32);
-            }
-
-            backend.submit(Some(&[damage])).ok();
-        }
-
-        if let Some(window) = state.take_pending_move_request() {
-            if let Some(pointer) = state.seat.get_pointer() {
-                let pos = pointer.current_location();
-                begin_window_drag(&mut state, &mut drag, window, pos);
-            }
-        }
-
-        integrations.drain(&mut state);
-        if state.exit_requested {
-            running = false;
-        }
-
-        state.space.refresh();
-        state.popup_manager.cleanup();
-    }
+    })?;
 
     tracing::info!("compositor exiting");
     Ok(())
 }
 
-fn start_config_watcher(config: &CompositorConfig) -> Option<ConfigWatcher> {
-    if !config.general.hot_reload {
-        tracing::info!("configuration hot reload disabled");
-        return None;
-    }
-
-    match ConfigWatcher::new(&ConfigPaths::default()) {
-        Ok(watcher) => Some(watcher),
-        Err(error) => {
-            tracing::error!(%error, "failed to start config watcher; continuing without hot reload");
-            None
-        }
-    }
-}
-
-/// Reflects the pointer-cursor request onto the host window. `Surface`
-/// cursors are drawn ourselves (see [`cursor_surface_elements`]), so the
-/// host cursor stays hidden then.
-fn sync_host_cursor(state: &BlairState, window: &HostWindow) {
-    match &state.pointer_cursor {
-        CursorImageStatus::Hidden => window.set_cursor_visible(false),
-        CursorImageStatus::Named(icon) => {
-            window.set_cursor_visible(true);
-            window.set_cursor(*icon);
-        }
-        CursorImageStatus::Surface(_) => window.set_cursor_visible(false),
-    }
-}
-
-fn to_smithay_transform(transform: OutputTransform) -> Transform {
-    match transform {
-        OutputTransform::Normal => Transform::Normal,
-        OutputTransform::Rotate90 => Transform::_90,
-        OutputTransform::Rotate180 => Transform::_180,
-        OutputTransform::Rotate270 => Transform::_270,
-        OutputTransform::Flipped => Transform::Flipped,
-        OutputTransform::Flipped90 => Transform::Flipped90,
-        OutputTransform::Flipped180 => Transform::Flipped180,
-        OutputTransform::Flipped270 => Transform::Flipped270,
-    }
-}
-
-fn handle_input(
+fn init_dmabuf(
     state: &mut BlairState,
-    event: InputEvent<WinitInput>,
-    drag: &mut Option<WindowDrag>,
+    backend: &mut WinitGraphicsBackend<GlesRenderer>,
+    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
 ) {
-    match event {
-        InputEvent::Keyboard { event } => {
-            if let Some(keyboard) = state.seat.get_keyboard() {
-                let key_state = event.state();
-                tracing::debug!(
-                    keycode = u32::from(event.key_code()),
-                    state = ?key_state,
-                    "winit keyboard event"
-                );
-                keyboard.input::<(), _>(
-                    state,
-                    event.key_code(),
-                    key_state,
-                    SERIAL_COUNTER.next_serial(),
-                    event.time_msec(),
-                    move |state, _mods, _keysym| {
-                        let keycode = u32::from(event.key_code());
-                        let pressed = key_state == KeyState::Pressed;
-                        crate::shortcuts::update_physical_mods(
-                            &mut state.physical_mods,
-                            keycode,
-                            pressed,
-                        );
-                        state.shortcuts.update_key(keycode, pressed);
-                        let activated =
-                            state.shortcuts.maybe_activate_physical(state.physical_mods);
-                        if pressed && state.activate_shortcuts(activated) {
-                            return FilterResult::Intercept(());
-                        }
-                        FilterResult::Forward
-                    },
-                );
-            }
-        }
-        InputEvent::PointerMotionAbsolute { event } => {
-            let output = state.space.outputs().next().cloned();
-            if let Some(output) = output {
-                let output_geo = state.space.output_geometry(&output).unwrap_or_default();
-                let pos = event.position_transformed(output_geo.size);
-                state.set_focused_output_at(pos);
-                tracing::trace!(x = pos.x, y = pos.y, "winit pointer motion");
-                if let Some(pointer) = state.seat.get_pointer() {
-                    move_dragged_window(state, drag.as_ref(), pos);
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let focus = upper_layer_surface_under(state, pos)
-                        .map(|(surface, loc, _)| (surface, loc))
-                        .or_else(|| window_surface_under(state, pos))
-                        .or_else(|| {
-                            lower_layer_surface_under(state, pos)
-                                .map(|(surface, loc, _)| (surface, loc))
-                        });
-                    pointer.motion(
-                        state,
-                        focus,
-                        &smithay::input::pointer::MotionEvent {
-                            location: pos,
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(state);
-                }
-            }
-        }
-        InputEvent::PointerButton { event } => {
-            use smithay::input::pointer::ButtonEvent;
-            tracing::debug!(
-                button = event.button_code(),
-                state = ?event.state(),
-                "winit pointer button"
+    let renderer = backend.renderer();
+    if let Err(error) = renderer.bind_wl_display(display_handle) {
+        tracing::debug!(%error, "EGL wl_display binding unavailable");
+    }
+    let render_node = EGLDevice::device_for_display(renderer.egl_context().display())
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+    let formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
+    let global: Option<DmabufGlobal> = match render_node {
+        Some(node) => DmabufFeedbackBuilder::new(node.dev_id(), formats.clone())
+            .build()
+            .map_err(|error| tracing::warn!(%error, "failed to build dmabuf feedback"))
+            .ok()
+            .map(|feedback| {
+                state
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<BlairState>(display_handle, &feedback)
+            }),
+        None => Some(
+            state
+                .dmabuf_state
+                .create_global::<BlairState>(display_handle, formats),
+        ),
+    };
+    if global.is_some() {
+        tracing::info!("linux-dmabuf enabled");
+    }
+    state.dmabuf_global = global;
+}
+
+fn warn_unsupported_output_config(config: &CompositorConfig, mode: OutputMode) {
+    let Some(output) = config.outputs.get(OUTPUT_NAME) else {
+        return;
+    };
+    if let Ok(Some(requested)) = output.parsed_mode() {
+        if requested.width != mode.size.w
+            || requested.height != mode.size.h
+            || requested.refresh_millihz != mode.refresh
+        {
+            tracing::warn!(
+                output = OUTPUT_NAME,
+                ?requested,
+                "the nested backend cannot change its host window mode"
             );
-            if let Some(pointer) = state.seat.get_pointer() {
-                let serial = SERIAL_COUNTER.next_serial();
-                if event.button_code() == BTN_LEFT && event.state() == ButtonState::Released {
-                    drag.take();
-                }
-                if event.state() == ButtonState::Pressed {
-                    let pos = pointer.current_location();
-                    if let Some((surface, _, can_focus)) = upper_layer_surface_under(state, pos) {
-                        tracing::debug!(
-                            x = pos.x,
-                            y = pos.y,
-                            can_focus,
-                            "click hit a layer surface"
-                        );
-                        if can_focus {
-                            if let Some(keyboard) = state.seat.get_keyboard() {
-                                keyboard.set_focus(state, Some(surface), serial);
-                            }
-                        } else if let Some(keyboard) = state.seat.get_keyboard() {
-                            keyboard.set_focus(state, None, serial);
-                        }
-                    } else if let Some(window) = window_under_including_decoration(state, pos) {
-                        tracing::debug!(x = pos.x, y = pos.y, "click hit a window");
-                        state.focus_window(&window);
-                        if event.button_code() == BTN_LEFT
-                            && handle_decoration_press(state, drag, window, pos)
-                        {
-                            return;
-                        }
-                    } else if let Some((surface, _, can_focus)) =
-                        lower_layer_surface_under(state, pos)
-                    {
-                        tracing::debug!(
-                            x = pos.x,
-                            y = pos.y,
-                            can_focus,
-                            "click hit a lower layer surface"
-                        );
-                        if can_focus {
-                            if let Some(keyboard) = state.seat.get_keyboard() {
-                                keyboard.set_focus(state, Some(surface), serial);
-                            }
-                        } else if let Some(keyboard) = state.seat.get_keyboard() {
-                            keyboard.set_focus(state, None, serial);
-                        }
-                    } else {
-                        tracing::debug!(x = pos.x, y = pos.y, "click hit nothing — clearing focus");
-                        if let Some(keyboard) = state.seat.get_keyboard() {
-                            keyboard.set_focus(state, None, serial);
-                        }
-                    }
-                }
-                let pos = pointer.current_location();
-                let focus = upper_layer_surface_under(state, pos)
-                    .map(|(surface, loc, _)| (surface, loc))
-                    .or_else(|| window_surface_under(state, pos))
-                    .or_else(|| {
-                        lower_layer_surface_under(state, pos)
-                            .map(|(surface, loc, _)| (surface, loc))
-                    });
-                pointer.motion(
-                    state,
-                    focus,
-                    &smithay::input::pointer::MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.button(
-                    state,
-                    &ButtonEvent {
-                        button: event.button_code(),
-                        state: event.state(),
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(state);
-            }
         }
-        InputEvent::PointerAxis { event } => {
-            handle_pointer_axis::<WinitInput, _>(state, &event);
-        }
-        _ => {}
+    }
+    if output.enabled == Some(false) {
+        tracing::warn!(output = OUTPUT_NAME, "refusing to disable the only output");
+    }
+    if output.vrr.is_some() {
+        tracing::warn!(
+            output = OUTPUT_NAME,
+            "VRR is unavailable in the nested backend"
+        );
+    }
+    if output
+        .parsed_transform()
+        .ok()
+        .flatten()
+        .is_some_and(|transform| transform != OutputTransform::Normal)
+    {
+        tracing::warn!(
+            output = OUTPUT_NAME,
+            "output transforms are unavailable in the nested backend"
+        );
     }
 }

@@ -2,16 +2,20 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use smithay::reexports::calloop::{
+    self,
+    timer::{TimeoutAction, Timer},
+    LoopHandle, RegistrationToken,
+};
 use toml::Value;
 
-use crate::decorations::DecorationTheme;
+use crate::{decorations::DecorationTheme, state::BlairState};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -29,6 +33,32 @@ pub struct CompositorConfig {
     pub window: WindowConfig,
     #[serde(alias = "decoration")]
     pub decorations: DecorationConfig,
+    pub cursor: CursorConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CursorConfig {
+    /// Falls back to `XCURSOR_THEME`, then to the `default` theme.
+    pub theme: Option<String>,
+    /// Falls back to `XCURSOR_SIZE`, then to 24.
+    pub size: Option<u32>,
+}
+
+impl CursorConfig {
+    fn validate(&self) -> Result<()> {
+        if self
+            .theme
+            .as_deref()
+            .is_some_and(|theme| theme.trim().is_empty())
+        {
+            anyhow::bail!("cursor theme cannot be empty");
+        }
+        if self.size.is_some_and(|size| !(8..=256).contains(&size)) {
+            anyhow::bail!("cursor size must be between 8 and 256");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,7 +187,7 @@ pub struct IntegrationsConfig {
     pub dbus: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InputConfig {
     pub keyboard: KeyboardConfig,
@@ -248,16 +278,6 @@ pub struct TouchpadConfig {
     pub disable_while_typing: bool,
 }
 
-impl Default for InputConfig {
-    fn default() -> Self {
-        Self {
-            keyboard: KeyboardConfig::default(),
-            mouse: MouseConfig::default(),
-            touchpad: TouchpadConfig::default(),
-        }
-    }
-}
-
 impl Default for KeyboardConfig {
     fn default() -> Self {
         Self {
@@ -317,7 +337,7 @@ pub struct BindingConfig {
     pub value: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
     pub enabled: Option<bool>,
@@ -326,19 +346,6 @@ pub struct OutputConfig {
     pub scale: Option<f64>,
     pub transform: Option<String>,
     pub vrr: Option<bool>,
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            enabled: None,
-            mode: None,
-            position: None,
-            scale: None,
-            transform: None,
-            vrr: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -446,7 +453,7 @@ impl BindingConfig {
 }
 
 /// A declarative rule evaluated, in order, when an XDG toplevel is created.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowRuleConfig {
     pub app_id: Option<String>,
@@ -465,28 +472,6 @@ pub struct WindowRuleConfig {
     pub opacity: Option<f32>,
     pub always_on_top: Option<bool>,
     pub decoration: Option<bool>,
-}
-
-impl Default for WindowRuleConfig {
-    fn default() -> Self {
-        Self {
-            app_id: None,
-            title: None,
-            class: None,
-            regex: None,
-            role: None,
-            window_type: None,
-            floating: None,
-            tiled: None,
-            workspace: None,
-            output: None,
-            size: None,
-            position: None,
-            opacity: None,
-            always_on_top: None,
-            decoration: None,
-        }
-    }
 }
 
 impl WindowRuleConfig {
@@ -537,14 +522,19 @@ impl WindowRuleConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     pub default_width: i32,
     pub default_height: i32,
     pub server_side_decorations: bool,
     pub layout: WindowLayout,
+    /// Margin kept between the tiled area and the work area.
     pub work_area_padding: i32,
+    /// Spacing between tiled windows.
+    pub gap: i32,
+    /// Share of the width taken by the master window when tiling.
+    pub master_ratio: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -641,7 +631,24 @@ impl Default for WindowConfig {
             server_side_decorations: true,
             layout: WindowLayout::Floating,
             work_area_padding: 16,
+            gap: 8,
+            master_ratio: 0.5,
         }
+    }
+}
+
+impl WindowConfig {
+    fn validate(&self) -> Result<()> {
+        if self.default_width <= 0 || self.default_height <= 0 {
+            anyhow::bail!("window default size must be positive");
+        }
+        if !(0..=512).contains(&self.work_area_padding) || !(0..=512).contains(&self.gap) {
+            anyhow::bail!("window padding and gap must be between 0 and 512");
+        }
+        if !self.master_ratio.is_finite() || !(0.1..=0.9).contains(&self.master_ratio) {
+            anyhow::bail!("window master_ratio must be between 0.1 and 0.9");
+        }
+        Ok(())
     }
 }
 
@@ -797,84 +804,98 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     }
     config.input.validate()?;
     config.workspaces.validate()?;
+    config.window.validate()?;
     config.decorations.validate()?;
     config.animations.validate()?;
+    config.cursor.validate()?;
     Ok(())
 }
 
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 
-/// Watches the configuration roots and reports a reload after changes settle.
+/// Watches the configuration roots and reloads once changes settle.
 ///
-/// The watcher intentionally only observes existing roots. Creating a new
-/// configuration root still requires a compositor restart, while edits to an
-/// active configuration are picked up immediately.
-pub struct ConfigWatcher {
-    _watcher: RecommendedWatcher,
-    events: Receiver<notify::Result<notify::Event>>,
-    last_event: Option<Instant>,
-    paths: ConfigPaths,
-}
+/// Only existing roots are observed: creating a new configuration root still
+/// requires a restart, while edits to an active configuration apply live.
+pub fn watch(handle: &LoopHandle<'static, BlairState>, config: &CompositorConfig) -> Result<()> {
+    if !config.general.hot_reload {
+        tracing::info!("configuration hot reload disabled");
+        return Ok(());
+    }
+    let paths = ConfigPaths::default();
+    let (sender, channel) = calloop::channel::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = sender.send(event);
+    })
+    .context("failed to initialize configuration watcher")?;
 
-impl ConfigWatcher {
-    pub fn new(paths: &ConfigPaths) -> Result<Self> {
-        let (sender, events) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |event| {
-            let _ = sender.send(event);
-        })
-        .context("failed to initialize configuration watcher")?;
-
-        for directory in [&paths.system_dir, &paths.user_dir] {
-            if directory.is_dir() {
-                watcher
-                    .watch(directory, RecursiveMode::Recursive)
-                    .with_context(|| {
-                        format!("failed to watch config directory {}", directory.display())
-                    })?;
+    let mut watched = 0;
+    for directory in [&paths.system_dir, &paths.user_dir] {
+        if !directory.is_dir() {
+            continue;
+        }
+        match watcher.watch(directory, RecursiveMode::Recursive) {
+            Ok(()) => {
+                watched += 1;
                 tracing::debug!(path = %directory.display(), "watching config directory");
             }
+            Err(error) => {
+                tracing::warn!(%error, path = %directory.display(), "failed to watch config directory")
+            }
         }
-
-        Ok(Self {
-            _watcher: watcher,
-            events,
-            last_event: None,
-            paths: paths.clone(),
-        })
+    }
+    if watched == 0 {
+        tracing::info!("no configuration directory to watch");
+        return Ok(());
     }
 
-    /// Returns true once filesystem activity has been quiet for the debounce
-    /// interval. Files are deliberately parsed only by the caller at that
-    /// point, never from the notify callback.
-    pub fn reload_due(&mut self) -> bool {
-        while let Ok(event) = self.events.try_recv() {
+    let mut pending: Option<RegistrationToken> = None;
+    let timer_handle = handle.clone();
+    handle
+        .insert_source(channel, move |event, _, state: &mut BlairState| {
+            // Keeps the watcher alive for as long as the source is registered.
+            let _ = &watcher;
+            let calloop::channel::Event::Msg(event) = event else {
+                return;
+            };
             match event {
                 Ok(event) => {
-                    tracing::debug!(?event.kind, paths = ?event.paths, "config filesystem event");
-                    self.last_event = Some(Instant::now());
+                    tracing::trace!(?event.kind, paths = ?event.paths, "config filesystem event")
                 }
-                Err(error) => tracing::warn!(%error, "config watcher error"),
+                Err(error) => {
+                    tracing::warn!(%error, "config watcher error");
+                    return;
+                }
             }
+            if !state.config.general.hot_reload {
+                return;
+            }
+            if let Some(token) = pending.take() {
+                timer_handle.remove(token);
+            }
+            pending = timer_handle
+                .insert_source(
+                    Timer::from_duration(RELOAD_DEBOUNCE),
+                    |_, _, state: &mut BlairState| {
+                        reload(state);
+                        TimeoutAction::Drop
+                    },
+                )
+                .ok();
+        })
+        .map_err(|error| anyhow::anyhow!("config watcher source: {error}"))?;
+    Ok(())
+}
+
+fn reload(state: &mut BlairState) {
+    match load_from_paths(&ConfigPaths::default()) {
+        Ok(next) if next == state.config => {}
+        Ok(next) => {
+            state.apply_config(next);
+            tracing::info!("configuration reloaded");
         }
-
-        self.last_event
-            .is_some_and(|last_event| last_event.elapsed() >= RELOAD_DEBOUNCE)
-            && self.last_event.take().is_some()
-    }
-
-    pub fn reload_if_due(&mut self, state: &mut crate::state::BlairState) {
-        if !state.config.general.hot_reload || !self.reload_due() {
-            return;
-        }
-
-        match load_from_paths(&self.paths) {
-            Ok(next) => {
-                state.apply_config(next);
-                tracing::info!("configuration reloaded");
-            }
-            Err(error) => {
-                tracing::error!(%error, "configuration reload failed; keeping previous configuration")
-            }
+        Err(error) => {
+            tracing::error!(%error, "configuration reload failed; keeping previous configuration")
         }
     }
 }
@@ -948,7 +969,13 @@ pub fn save(config: &CompositorConfig) -> Result<()> {
             .with_context(|| format!("failed to create config dir {}", parent.display()))?;
     }
     let toml = toml::to_string_pretty(config).context("failed to serialize compositor config")?;
-    fs::write(&path, toml).with_context(|| format!("failed to write config to {}", path.display()))
+    // Written through a temporary file so the watcher never reads a partial
+    // configuration and a failed write cannot truncate the previous one.
+    let temporary = path.with_extension("toml.tmp");
+    fs::write(&temporary, toml)
+        .with_context(|| format!("failed to write config to {}", temporary.display()))?;
+    fs::rename(&temporary, &path)
+        .with_context(|| format!("failed to replace config {}", path.display()))
 }
 
 #[cfg(test)]

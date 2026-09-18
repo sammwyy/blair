@@ -12,6 +12,8 @@ required to build, install, or run Blair.
 ## Highlights
 
 - Native Wayland compositor with nested Winit and direct DRM/KMS backends.
+- Damage-tracked rendering with hardware cursor and overlay planes on DRM.
+- GPU clients through `linux-dmabuf`, plus themed `xcursor` pointers.
 - Per-output workspaces: switching on one monitor leaves the others alone.
 - Layered TOML configuration with safe hot reload.
 - Config bindings plus process-owned temporary bindings and window rules.
@@ -89,6 +91,21 @@ output = "DP-1"
 Workspaces are global identities, but every output displays a different one.
 When a target is already visible elsewhere, Blair swaps the outputs.
 
+### Layout
+
+```toml
+[window]
+layout = "tiling" # floating | tiling
+work_area_padding = 16
+gap = 8
+master_ratio = 0.55
+```
+
+Floating windows open centered and are moved and resized with the pointer.
+Tiling gives the first window of a workspace a master column and stacks the
+rest beside it, keeping `gap` between tiles and `work_area_padding` around
+them; windows with a `floating = true` rule stay free even while tiling.
+
 ### Windows and decorations
 
 ```toml
@@ -150,11 +167,17 @@ curve = "ease-out"
 [animations.workspace]
 duration = 200
 curve = "ease-in-out"
+
+[cursor]
+theme = "Adwaita"
+size = 24
 ```
 
 With no output entries, Blair uses a safe automatic profile. Current animations
 fade window opens and workspace changes; curves are `linear`, `ease-in`,
-`ease-out`, and `ease-in-out`.
+`ease-out`, and `ease-in-out`. The cursor theme falls back to `XCURSOR_THEME`
+and `XCURSOR_SIZE`, and whatever Blair resolves is exported to the programs it
+starts so applications match the compositor.
 
 ## Install and run
 
@@ -204,14 +227,45 @@ can hot reload safely.
 |---|---|
 | Compositor | Smithay, XDG shell/decoration, layer-shell, clipboard/DnD |
 | Backends | Winit nested development; DRM/KMS + libinput direct sessions |
+| Rendering | GLES2, damage tracking, DRM planes, shader-based decorations |
 | Integration | Transport-neutral `CompositorApi`, `Transport`, `EventChannel` |
 | Default transport | Optional D-Bus (`integrations.dbus = true`) |
+
+### Wayland protocols
+
+`wl_compositor` (v6), `wl_subcompositor`, `wl_shm`, `wl_seat` (v9), `wl_output`,
+`xdg_shell`, `xdg-decoration`, `xdg-activation`, `xdg-output`,
+`wlr-layer-shell`, `linux-dmabuf` (v5, with feedback), `presentation-time`,
+`viewporter`, `fractional-scale`, `cursor-shape`, `relative-pointer`,
+`pointer-constraints`, `single-pixel-buffer`, `primary-selection`,
+`wlr-data-control`, `wlr-screencopy`, `ext-foreign-toplevel-list`,
+`ext-idle-notify`, `idle-inhibit`, `pointer-gestures`, `alpha-modifier`,
+`keyboard-shortcuts-inhibit`, and KDE's `server-decoration`.
+
+Screenshot and recording tools that speak `wlr-screencopy` (`grim`,
+`wf-recorder`, the wlroots desktop portal) work out of the box; the D-Bus
+`Screenshot` method writes a PNG directly for shells that prefer it.
+
+### Rendering and pacing
+
+Every repaint goes through damage tracking: only the regions that changed are
+redrawn and submitted. The DRM backend composites with Smithay's
+`DrmCompositor`, so the pointer lands on the hardware cursor plane and moves
+without recomposing the screen, and unchanged clients can be scanned out
+directly. Repaints are paced by the display: one per vblank, and nothing is
+rendered while the screen is idle.
+
+Frame timings are summarized in the log every five seconds at `debug` level
+(`frame timings`), and the same numbers are available to integrations through
+the `RenderStats` D-Bus method. Building with `--features profile-with-tracy`
+streams detailed spans to a [Tracy](https://github.com/wolfpld/tracy) profiler.
 
 D-Bus is a transport, not a compositor dependency. Additional integrations can
 implement the same contracts. The D-Bus service is `org.blair.Compositor`, path
 `/org/blair/Compositor`, interface `org.blair.Compositor1`; it exposes window
 and workspace control, work areas, outputs, settings, shortcuts, and temporary
-window rules. `blair-client` is the async Rust wrapper.
+window rules. It also renders PNG screenshots (`Screenshot`) and reports frame
+timings (`RenderStats`). `blair-client` is the async Rust wrapper.
 
 Temporary shortcuts and rules belong to the calling D-Bus connection and are
 removed automatically when it disconnects. Temporary rules use the same fields
@@ -220,6 +274,7 @@ as one `[[rules]]` item, without the array-table header.
 The direct DRM backend currently activates one connector. State and rendering
 are prepared for per-output workspaces; full multi-connector DRM activation is
 the next backend step. Winit inherits display mode and VRR limits from its host.
+Known gaps are tracked in [TODO.md](TODO.md).
 
 ### Build
 

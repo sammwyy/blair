@@ -22,8 +22,13 @@ pub enum DecorationPart {
 
 const GRAB_MARGIN: f64 = 8.0;
 
-pub fn hit_test_frame(client: Rect, point: Point, theme: &DecorationTheme) -> DecorationPart {
-    let geom = DecorationFrame::compute(client, theme, true);
+pub fn hit_test_frame(
+    client: Rect,
+    point: Point,
+    theme: &DecorationTheme,
+    has_titlebar: bool,
+) -> DecorationPart {
+    let geom = DecorationFrame::compute(client, theme, has_titlebar);
 
     let fx = geom.frame.x as f64;
     let fy = geom.frame.y as f64;
@@ -55,7 +60,7 @@ pub fn hit_test_frame(client: Rect, point: Point, theme: &DecorationTheme) -> De
     if geom.minimize_btn.contains(point) {
         return DecorationPart::MinimizeButton;
     }
-    if geom.titlebar.contains(point) {
+    if has_titlebar && geom.titlebar.contains(point) {
         return DecorationPart::Titlebar;
     }
     if geom.client.contains(point) {
