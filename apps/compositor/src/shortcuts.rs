@@ -375,6 +375,53 @@ mod tests {
     }
 
     #[test]
+    fn supports_function_keys_combined_with_a_modifier() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind(":1.4", "screenshot", "Super+F3"));
+        registry.update_key(evdev_to_smithay(61), true);
+        assert_eq!(
+            registry.maybe_activate_physical(PhysicalMods {
+                logo: true,
+                ..Default::default()
+            }),
+            vec![ActivatedShortcut {
+                client: ":1.4".to_string(),
+                id: "screenshot".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn function_key_shortcuts_do_not_activate_with_the_wrong_modifier() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind(":1.4", "close", "Alt+F4"));
+        registry.update_key(evdev_to_smithay(62), true);
+        assert!(registry
+            .maybe_activate_physical(PhysicalMods {
+                logo: true,
+                ..Default::default()
+            })
+            .is_empty());
+        assert_eq!(
+            registry.maybe_activate_physical(PhysicalMods {
+                alt: true,
+                ..Default::default()
+            }),
+            vec![ActivatedShortcut {
+                client: ":1.4".to_string(),
+                id: "close".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn function_keys_up_to_f12_are_recognized() {
+        assert!(validate_accelerator("Ctrl+F11").is_ok());
+        assert!(validate_accelerator("Ctrl+F12").is_ok());
+        assert!(validate_accelerator("Ctrl+F13").is_err());
+    }
+
+    #[test]
     fn supports_number_row_keys() {
         let mut registry = ShortcutRegistry::default();
         assert!(registry.bind("config", "workspace-1", "Super+1"));
