@@ -448,6 +448,14 @@ impl BlairState {
             .max(0)
     }
 
+    pub fn popup_corner_radius(&self, size: Size<i32, Logical>) -> i32 {
+        self.decoration_theme
+            .popup_corner_radius
+            .min(size.w / 2)
+            .min(size.h / 2)
+            .max(0)
+    }
+
     pub fn request_exit(&mut self) {
         tracing::info!("compositor exit requested");
         self.exit_requested = true;

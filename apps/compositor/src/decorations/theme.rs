@@ -7,6 +7,8 @@ pub struct DecorationTheme {
     pub titlebar_height: i32,
     pub border_width: i32,
     pub corner_radius: i32,
+    /// Same as `corner_radius`, but for popups/dialogs.
+    pub popup_corner_radius: i32,
     pub titlebar_mode: TitlebarColorMode,
     pub active_titlebar: [u8; 4],
     pub inactive_titlebar: [u8; 4],

@@ -560,6 +560,9 @@ pub struct DecorationConfig {
     /// Fallback window corner radius, used only when no CreamUI system
     /// appearance is available; otherwise its `corners` preference wins.
     pub corner_radius: i32,
+    /// Same as `corner_radius`, but for popups/dialogs (`xdg_popup`
+    /// surfaces, e.g. a `coconut` panel).
+    pub popup_corner_radius: i32,
     /// Titlebar fill for `titlebar_color = "theme"` without a CreamUI theme.
     pub active_titlebar: String,
     pub inactive_titlebar: String,
@@ -785,6 +788,7 @@ impl Default for DecorationConfig {
             border: BorderColorMode::Theme,
             border_size: BorderSize::Normal,
             corner_radius: 12,
+            popup_corner_radius: 16,
             active_titlebar: "#1e1e2e".to_string(),
             inactive_titlebar: "#11111b".to_string(),
             active_border: "#89b4fa".to_string(),
@@ -808,6 +812,7 @@ impl Default for DecorationConfig {
 impl DecorationConfig {
     fn validate(&self) -> Result<()> {
         if !(0..=64).contains(&self.corner_radius)
+            || !(0..=64).contains(&self.popup_corner_radius)
             || !(0..=96).contains(&self.titlebar_height)
             || !(0..=256).contains(&self.drag_margin)
         {
@@ -876,6 +881,9 @@ impl DecorationConfig {
             corner_radius: system
                 .map(|system| system.corners.window_radius())
                 .unwrap_or(self.corner_radius),
+            popup_corner_radius: system
+                .map(|system| system.corners.popup_radius())
+                .unwrap_or(self.popup_corner_radius),
             titlebar_mode: self.titlebar_color,
             active_titlebar: titlebar.0,
             inactive_titlebar: titlebar.1,

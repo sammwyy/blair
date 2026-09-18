@@ -11,7 +11,7 @@ use smithay::{
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             render_elements,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            AsRenderElements, Element, Kind, RenderElementStates,
+            Element, Kind, RenderElementStates,
         },
         gles::{GlesPixelProgram, GlesRenderer, GlesTexProgram},
         Color32F,
@@ -36,7 +36,7 @@ use smithay::{
     },
     input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData},
     output::Output,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Transform},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{compositor::with_states, seat::WaylandFocus, shell::wlr_layer::Layer},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -202,9 +202,25 @@ pub fn output_elements(
         .last()
         .is_some_and(|window| state.window_is_fullscreen(window));
 
-    layer_elements(renderer, output, scale, &[Layer::Overlay], &mut elements);
+    layer_elements(
+        renderer,
+        state,
+        output,
+        &ctx,
+        shaders,
+        &[Layer::Overlay],
+        &mut elements,
+    );
     if !fullscreen {
-        layer_elements(renderer, output, scale, &[Layer::Top], &mut elements);
+        layer_elements(
+            renderer,
+            state,
+            output,
+            &ctx,
+            shaders,
+            &[Layer::Top],
+            &mut elements,
+        );
     }
     for window in windows.iter().rev() {
         window_elements(
@@ -223,8 +239,10 @@ pub fn output_elements(
     }
     layer_elements(
         renderer,
+        state,
         output,
-        scale,
+        &ctx,
+        shaders,
         &[Layer::Bottom, Layer::Background],
         &mut elements,
     );
@@ -323,25 +341,100 @@ pub fn cursor_is_animated(state: &BlairState, output: &Output) -> bool {
     }
 }
 
+/// Renders each layer's own content plus its popups, popups clipped
+/// separately (not via `LayerSurface::render_elements`, which bundles them
+/// unclipped) so a dock-anchored panel gets the same corner clip as a
+/// toplevel-anchored one.
 fn layer_elements(
     renderer: &mut GlesRenderer,
+    state: &BlairState,
     output: &Output,
-    scale: f64,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
     layers: &[Layer],
     elements: &mut Vec<OutputRenderElement>,
 ) {
+    let scale = ctx.scale;
     let map = layer_map_for_output(output);
     for &layer in layers {
         for surface in map.layers_on(layer).rev() {
             let Some(geometry) = map.layer_geometry(surface) else {
                 continue;
             };
-            elements.extend(surface.render_elements::<OutputRenderElement>(
+            let wl_surface = surface.wl_surface();
+            for (popup, popup_offset) in PopupManager::popups_for_surface(wl_surface) {
+                push_popup_elements(
+                    renderer,
+                    state,
+                    ctx,
+                    shaders,
+                    &popup,
+                    geometry.loc + popup_offset,
+                    1.0,
+                    elements,
+                );
+            }
+            elements.extend(surface_tree_elements(
                 renderer,
+                wl_surface,
                 geometry.loc.to_physical_precise_round(scale),
-                Scale::from(scale),
+                scale,
                 1.0,
+                Kind::Unspecified,
             ));
+        }
+    }
+}
+
+/// Renders one popup at `root` (its window-geometry origin, output-logical
+/// coords), clipped to `state`'s popup corner radius.
+#[allow(clippy::too_many_arguments)]
+fn push_popup_elements(
+    renderer: &mut GlesRenderer,
+    state: &BlairState,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    popup: &smithay::desktop::PopupKind,
+    root: Point<i32, Logical>,
+    alpha: f32,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let scale = ctx.scale;
+    let content_location = root.to_physical_precise_round(scale);
+    let content: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
+        renderer,
+        popup.wl_surface(),
+        content_location,
+        scale,
+        alpha,
+        Kind::Unspecified,
+    );
+    // `popup.geometry()` stays zero for these popups (the client never
+    // calls xdg_surface::set_window_geometry), so the clip is sized from
+    // the actual rendered content instead.
+    let bounds = content
+        .iter()
+        .map(|element| element.geometry(Scale::from(scale)))
+        .reduce(|a, b| a.merge(b));
+    let clip = shaders.zip(bounds).map(|(_, bounds)| {
+        let logical_size: Size<i32, Logical> = (
+            (bounds.size.w as f64 / scale) as i32,
+            (bounds.size.h as f64 / scale) as i32,
+        )
+            .into();
+        let radius = state.popup_corner_radius(logical_size) as f32 * scale as f32;
+        RoundedClip {
+            rect: bounds,
+            radii: [radius; 4],
+            viewport: ctx.viewport,
+        }
+    });
+    for element in content {
+        match (clip, shaders) {
+            (Some(clip), Some(shaders)) if clip.affects(element.geometry(Scale::from(scale))) => {
+                elements.push(ClippedSurfaceElement::new(element, shaders.clip.clone(), clip).into());
+            }
+            _ => elements.push(element.into()),
         }
     }
 }
@@ -369,15 +462,8 @@ fn window_elements(
     let render_loc = frame.client.loc - window.geometry().loc - origin;
 
     for (popup, offset) in PopupManager::popups_for_surface(&surface) {
-        let location = render_loc + window.geometry().loc + offset - popup.geometry().loc;
-        elements.extend(surface_tree_elements(
-            renderer,
-            popup.wl_surface(),
-            location.to_physical_precise_round(scale),
-            scale,
-            alpha,
-            Kind::Unspecified,
-        ));
+        let root = render_loc + window.geometry().loc + offset;
+        push_popup_elements(renderer, state, ctx, shaders, &popup, root, alpha, elements);
     }
 
     let focused = state.focused_window == Some(id);

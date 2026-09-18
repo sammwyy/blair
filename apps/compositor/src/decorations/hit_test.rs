@@ -108,6 +108,7 @@ mod tests {
             titlebar_height: 30,
             border_width: 4,
             corner_radius: 0,
+            popup_corner_radius: 0,
             titlebar_mode: crate::config::TitlebarColorMode::Theme,
             active_titlebar: [0; 4],
             inactive_titlebar: [0; 4],
