@@ -1,12 +1,24 @@
+[package]
+name = "blair"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
 [workspace]
 members = [
-  "apps/compositor",
   "crates/protocol",
   "crates/blur-protocol",
   "crates/integration",
   "integrations/blair-integration-dbus",
   "crates/client",
 ]
+default-members = ["."]
 resolver = "2"
 
 [profile.release]
@@ -59,3 +71,32 @@ blair-blur-protocol = { version = "0.1.0", path = "crates/blur-protocol" }
 blair-integration = { version = "0.1.0", path = "crates/integration" }
 blair-integration-dbus = { version = "0.1.0", path = "integrations/blair-integration-dbus" }
 blair-client = { version = "0.1.0", path = "crates/client" }
+
+[features]
+profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+notify.workspace = true
+regex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+signal-hook.workspace = true
+blair-protocol.workspace = true
+blair-integration.workspace = true
+blair-integration-dbus.workspace = true
+smithay.workspace = true
+wayland-server.workspace = true
+blair-blur-protocol = { workspace = true, features = ["server"] }
+xcursor.workspace = true
+profiling.workspace = true
+png = "0.17"
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+creamui-theme = { version = "0.1.2", path = "../creamui/crates/theme" }
+creamui-theme-loader = { version = "0.1.1", path = "../creamui/crates/theme-loader" }
+creamui-fonts = { version = "0.1.1", path = "../creamui/crates/fonts" }
+tracy-client = { version = "0.18", optional = true }
