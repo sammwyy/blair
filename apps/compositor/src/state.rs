@@ -75,6 +75,7 @@ use smithay::{
 };
 
 use crate::{
+    blur,
     config::{
         AnimationConfig, AnimationCurve, BindingConfig, CompositorConfig, DecorationModeConfig,
         SystemAccent, WindowLayout, WindowRuleConfig, WorkspacesConfig,
@@ -300,6 +301,7 @@ impl BlairState {
         let idle_notifier_state = IdleNotifierState::new(dh, loop_handle.clone());
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
         screencopy::register::<Self>(dh);
+        blur::register(dh);
         let kde_decoration_state = KdeDecorationState::new::<Self>(
             dh,
             if config.window.server_side_decorations {

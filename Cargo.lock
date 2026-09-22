@@ -172,6 +172,7 @@ name = "blair"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blair-blur-protocol",
  "blair-integration",
  "blair-integration-dbus",
  "blair-protocol",
@@ -194,6 +195,17 @@ dependencies = [
  "tracy-client",
  "wayland-server",
  "xcursor",
+]
+
+[[package]]
+name = "blair-blur-protocol"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

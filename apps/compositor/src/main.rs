@@ -1,4 +1,5 @@
 mod backend;
+mod blur;
 mod config;
 mod cursor;
 mod decorations;

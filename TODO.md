@@ -33,3 +33,10 @@
 - The reordering of decoration buttons (`decorations.buttons.layout`) has no
   settings UI in `coconut`; only the button side and the fixed
   minimize/maximize/close order are editable there.
+- `blair_blur_unstable_v1`'s backdrop capture (`render/blur.rs`) renders a
+  full-output-sized offscreen texture per blurred window per frame instead
+  of only the cropped blur region, and its single-pass 9x9-tap shader shows
+  faint tap-pattern aliasing at larger radii compared to a real two-pass
+  separable Gaussian. Blurred windows also don't recursively blur each
+  other's backdrop — a blurred window's backdrop capture renders windows
+  behind it without their own blur applied.

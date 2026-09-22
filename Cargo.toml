@@ -2,6 +2,7 @@
 members = [
   "apps/compositor",
   "crates/protocol",
+  "crates/blur-protocol",
   "crates/integration",
   "integrations/blair-integration-dbus",
   "crates/client",
@@ -54,6 +55,7 @@ xcursor = "0.3"
 profiling = "1"
 
 blair-protocol = { version = "0.1.0", path = "crates/protocol" }
+blair-blur-protocol = { version = "0.1.0", path = "crates/blur-protocol" }
 blair-integration = { version = "0.1.0", path = "crates/integration" }
 blair-integration-dbus = { version = "0.1.0", path = "integrations/blair-integration-dbus" }
 blair-client = { version = "0.1.0", path = "crates/client" }

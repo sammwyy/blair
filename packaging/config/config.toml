@@ -160,3 +160,8 @@ drag_margin = 0
 [decorations.buttons]
 layout = ["minimize", "maximize", "close"]
 side = "right"
+
+# Background blur behind a client's blair_blur_v1 region.
+[blur]
+enabled = true
+radius = 16

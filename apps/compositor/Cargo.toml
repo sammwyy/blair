@@ -28,6 +28,7 @@ blair-integration.workspace = true
 blair-integration-dbus.workspace = true
 smithay.workspace = true
 wayland-server.workspace = true
+blair-blur-protocol = { workspace = true, features = ["server"] }
 xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"

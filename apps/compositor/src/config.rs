@@ -34,6 +34,7 @@ pub struct CompositorConfig {
     #[serde(alias = "decoration")]
     pub decorations: DecorationConfig,
     pub cursor: CursorConfig,
+    pub blur: BlurConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +57,32 @@ impl CursorConfig {
         }
         if self.size.is_some_and(|size| !(8..=256).contains(&size)) {
             anyhow::bail!("cursor size must be between 8 and 256");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BlurConfig {
+    pub enabled: bool,
+    /// Blur shader sample spacing in pixels; higher blurs more strongly.
+    pub radius: i32,
+}
+
+impl Default for BlurConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            radius: 16,
+        }
+    }
+}
+
+impl BlurConfig {
+    fn validate(&self) -> Result<()> {
+        if !(0..=64).contains(&self.radius) {
+            anyhow::bail!("blur radius must be between 0 and 64");
         }
         Ok(())
     }
@@ -1035,6 +1062,7 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     config.decorations.validate()?;
     config.animations.validate()?;
     config.cursor.validate()?;
+    config.blur.validate()?;
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+mod blur;
 mod capture;
 mod clip;
 mod decoration;
@@ -79,6 +80,7 @@ render_elements! {
     Clipped=ClippedSurfaceElement,
     Frame=FrameElement,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Blur=blur::BlurredBackdropElement,
 }
 
 #[derive(Clone)]
@@ -86,6 +88,7 @@ pub struct Shaders {
     clip: GlesTexProgram,
     frame: GlesPixelProgram,
     titlebar_blend: GlesTexProgram,
+    blur: GlesTexProgram,
 }
 
 impl Shaders {
@@ -95,16 +98,18 @@ impl Shaders {
                 clip,
                 decoration::compile(renderer)?,
                 decoration::compile_titlebar_blend(renderer)?,
+                blur::compile(renderer)?,
             ))
         });
         match shaders {
-            Ok((clip, frame, titlebar_blend)) => Some(Self {
+            Ok((clip, frame, titlebar_blend, blur)) => Some(Self {
                 clip,
                 frame,
                 titlebar_blend,
+                blur,
             }),
             Err(error) => {
-                tracing::error!(%error, "failed to compile decoration shaders; server-side decorations disabled");
+                tracing::error!(%error, "failed to compile decoration/blur shaders; server-side decorations and background blur disabled");
                 None
             }
         }
@@ -222,7 +227,7 @@ pub fn output_elements(
             &mut elements,
         );
     }
-    for window in windows.iter().rev() {
+    for (index, window) in windows.iter().enumerate().rev() {
         window_elements(
             renderer,
             state,
@@ -231,6 +236,17 @@ pub fn output_elements(
             &ctx,
             shaders,
             &font,
+            &mut elements,
+        );
+        push_window_blur(
+            renderer,
+            state,
+            output,
+            &ctx,
+            shaders,
+            &font,
+            &windows[..index],
+            window,
             &mut elements,
         );
     }
@@ -432,11 +448,57 @@ fn push_popup_elements(
     for element in content {
         match (clip, shaders) {
             (Some(clip), Some(shaders)) if clip.affects(element.geometry(Scale::from(scale))) => {
-                elements.push(ClippedSurfaceElement::new(element, shaders.clip.clone(), clip).into());
+                elements
+                    .push(ClippedSurfaceElement::new(element, shaders.clip.clone(), clip).into());
             }
             _ => elements.push(element.into()),
         }
     }
+}
+
+/// Pushes a blurred backdrop for `window`, if it has an active
+/// `blair_blur_v1` region, sampling `windows_behind` (this output's stack
+/// below `window`, back to front) plus the bottom/background layers.
+#[allow(clippy::too_many_arguments)]
+fn push_window_blur(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    font: &fontdue::Font,
+    windows_behind: &[Window],
+    window: &Window,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    if !state.config.blur.enabled {
+        return;
+    }
+    let Some(surface) = window.wl_surface() else {
+        return;
+    };
+    let Some(region) = crate::blur::blur_of(&surface) else {
+        return;
+    };
+    let Some(frame) = window_frame(state, window) else {
+        return;
+    };
+    let content_origin = frame.client.loc - window.geometry().loc - ctx.output_geo.loc;
+    let frame_rect = match region.0 {
+        None => Rectangle::new(content_origin, frame.client.size),
+        Some(rect) => Rectangle::new(content_origin + rect.loc, rect.size),
+    };
+    blur::push_backdrop(
+        renderer,
+        state,
+        output,
+        ctx,
+        shaders,
+        font,
+        windows_behind,
+        frame_rect,
+        elements,
+    );
 }
 
 fn window_elements(

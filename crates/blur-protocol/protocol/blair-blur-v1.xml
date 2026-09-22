@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="blair_blur_unstable_v1">
+  <copyright>
+    Copyright © 2026 Blair contributors
+
+    SPDX-License-Identifier: Apache-2.0
+  </copyright>
+
+  <interface name="blair_blur_manager_v1" version="1">
+    <description summary="background blur manager">
+      A client marks a region of its surface as background blur instead of
+      compositing it itself: the compositor blurs whatever is behind that
+      region and draws the client's (typically translucent) content on top.
+      The compositor alone controls the blur's strength; the client only
+      supplies the region.
+    </description>
+
+    <request name="get_blur">
+      <description summary="request background blur for a surface"/>
+      <arg name="id" type="new_id" interface="blair_blur_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="unset">
+      <description summary="remove background blur from a surface"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager"/>
+    </request>
+  </interface>
+
+  <interface name="blair_blur_v1" version="1">
+    <description summary="a pending blur request for one surface"/>
+
+    <request name="set_region">
+      <description summary="restrict blur to this region of the surface; a null region blurs the whole surface"/>
+      <arg name="region" type="object" interface="wl_region" allow-null="true"/>
+    </request>
+
+    <request name="commit">
+      <description summary="apply the last set_region (or the whole surface, if none was ever set)"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy this object; does not itself clear the surface's blur, use blair_blur_manager_v1.unset for that"/>
+    </request>
+  </interface>
+</protocol>
