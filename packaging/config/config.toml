@@ -128,7 +128,7 @@ master_ratio = 0.5
 [decorations]
 # server | client | auto | none
 mode = "auto"
-titlebar_height = 28
+titlebar_height = 64
 # Titlebar background (case-insensitive):
 #   blend - sampled from the top of each window's content (default)
 #   theme - the CreamUI system surface color
@@ -146,20 +146,25 @@ inactive_border = "#313244"
 # Window corners follow the CreamUI appearance's `corners` preference
 # (square | soft | round). This radius is only used without a CreamUI theme,
 # along with the fallback colors below.
-corner_radius = 8
+corner_radius = 20
 active_titlebar = "#1e1e2e"
 inactive_titlebar = "#11111b"
 close_button = "#f38ba8"
 maximize_button = "#a6e3a1"
 minimize_button = "#f9e2af"
 title_centered = false
-show_icon = true
+show_icon = false
 # Pixels excluded from window dragging at each end of the titlebar.
 drag_margin = 0
 
 [decorations.buttons]
 layout = ["minimize", "maximize", "close"]
-side = "right"
+side = "left"
+# Logical pixels. Increase `size` for larger circular controls; use
+# `edge_padding` to move the outer control nearer/farther from the edge.
+size = 20
+gap = 6
+edge_padding = 12
 
 # Background blur behind a client's blair_blur_v1 region.
 [blur]

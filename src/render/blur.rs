@@ -78,7 +78,7 @@ pub(super) fn push_backdrop(
     output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &fontdue::Font,
+    font: &creamui_fonts::FontFace,
     windows_behind: &[Window],
     frame_rect: Rectangle<i32, Logical>,
     elements: &mut Vec<OutputRenderElement>,

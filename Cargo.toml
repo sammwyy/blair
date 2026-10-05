@@ -94,8 +94,8 @@ blair-blur-protocol = { workspace = true, features = ["server"] }
 xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"
-fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+swash = "0.2"
 creamui-theme = { version = "0.1.2", path = "../creamui/crates/theme" }
 creamui-theme-loader = { version = "0.1.1", path = "../creamui/crates/theme-loader" }
 creamui-fonts = { version = "0.1.1", path = "../creamui/crates/fonts" }

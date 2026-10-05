@@ -19,7 +19,7 @@ pub struct FrameGeometry {
 pub struct DecorationFrame;
 
 const ICON_PADDING: i32 = 6;
-const TITLE_PADDING: i32 = 8;
+const TITLE_PADDING: i32 = 12;
 
 impl DecorationFrame {
     /// Lays out the frame so the themed border traces the outer edge of the
@@ -34,8 +34,10 @@ impl DecorationFrame {
         } else {
             0
         };
-        // Small round buttons, vertically centered: 20px on a 32px bar.
-        let btn_size = (theme.titlebar_height * 5 / 8).max(0);
+        // Button dimensions deliberately come from the theme rather than
+        // being derived from the titlebar: compact and spacious bars can use
+        // the same control size when desired.
+        let btn_size = theme.button_size.clamp(0, th);
         let btn_top = client.y - th + (th - btn_size) / 2;
 
         let frame = Rect {
@@ -74,21 +76,22 @@ impl DecorationFrame {
         let mut close_btn = Rect::default();
         let mut maximize_btn = Rect::default();
         let mut minimize_btn = Rect::default();
-        let gap = 8;
+        let gap = theme.button_gap.max(0);
+        let edge_padding = theme.button_edge_padding.max(0);
         let count = theme.button_layout.len() as i32;
         let buttons_width = if count > 0 {
-            count * btn_size + (count - 1) * gap + TITLE_PADDING
+            count * btn_size + (count - 1) * gap + edge_padding
         } else {
             0
         };
-        let left_anchor = titlebar.x + icon_reserved;
+        let left_anchor = titlebar.x + icon_reserved.max(edge_padding);
         for (index, button) in theme.button_layout.iter().enumerate() {
             let index = index as i32;
             let x = match theme.button_side {
                 DecorationButtonSide::Left => left_anchor + index * (btn_size + gap),
                 DecorationButtonSide::Right => {
                     titlebar.x + titlebar.width
-                        - TITLE_PADDING
+                        - edge_padding
                         - (count - index) * btn_size
                         - (count - index - 1) * gap
                 }
@@ -189,6 +192,9 @@ mod tests {
                 DecorationButton::Close,
             ],
             button_side: DecorationButtonSide::Right,
+            button_size: 20,
+            button_gap: 6,
+            button_edge_padding: 12,
             title_centered: false,
             show_icon: true,
             drag_margin: 0,
@@ -232,8 +238,8 @@ mod tests {
         assert!(geom.close_btn.x + geom.close_btn.width <= titlebar_end);
         assert!(geom.minimize_btn.x < geom.maximize_btn.x);
         assert!(geom.maximize_btn.x < geom.close_btn.x);
-        // 30px bar -> 18px buttons, centered with 6px above.
-        assert_eq!(geom.close_btn.y, CLIENT.y - 30 + 6);
+        // Compact controls remain vertically centred even on a short bar.
+        assert_eq!(geom.close_btn.y, CLIENT.y - 30 + (30 - 20) / 2);
     }
 
     #[test]
@@ -272,13 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn hiding_the_icon_gives_its_space_to_the_title() {
+    fn hiding_the_icon_keeps_the_title_clear_of_the_window_corner() {
         let mut theme = theme(4);
         theme.show_icon = false;
         let geom = DecorationFrame::compute(CLIENT, &theme, true);
 
         assert_eq!(geom.icon, Rect::default());
-        assert!(geom.title.x < geom.titlebar.x + ICON_PADDING * 2);
+        assert_eq!(geom.title.x, geom.titlebar.x + 12);
     }
 
     #[test]

@@ -1,7 +1,6 @@
-use fontdue::layout::{
-    CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign,
-};
-use fontdue::Font;
+use creamui_fonts::{FontFace, HorizontalAlign, LayoutSettings};
+use swash::scale::{Render, ScaleContext, Source};
+use swash::zeno::Format;
 
 const ELLIPSIS: char = '…';
 
@@ -17,7 +16,7 @@ pub struct RasterizedGlyphs {
 /// ellipsis when it does not fit. Returns `None` when there is nothing to
 /// draw, so callers can skip the render element entirely.
 pub fn rasterize_title(
-    font: &Font,
+    font: &FontFace,
     text: &str,
     size: f32,
     color: [u8; 4],
@@ -32,30 +31,33 @@ pub fn rasterize_title(
     if fitted.is_empty() {
         return None;
     }
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings {
-        max_width: Some(max_width as f32),
-        max_height: Some(height as f32),
-        horizontal_align: if centered {
-            HorizontalAlign::Center
-        } else {
-            HorizontalAlign::Left
+    let layout = creamui_fonts::layout(
+        font,
+        &fitted,
+        size,
+        &LayoutSettings {
+            max_width: Some(max_width as f32),
+            max_height: Some(height as f32),
+            horizontal_align: if centered {
+                HorizontalAlign::Center
+            } else {
+                HorizontalAlign::Left
+            },
         },
-        vertical_align: VerticalAlign::Middle,
-        ..LayoutSettings::default()
-    });
-    layout.append(&[font], &TextStyle::new(&fitted, size, 0));
-    Some(paint_glyphs(font, &layout, max_width, height, color))
+    );
+    Some(paint_glyphs(font, &layout, size, max_width, height, color))
 }
 
 fn paint_glyphs(
-    font: &Font,
-    layout: &Layout,
+    font: &FontFace,
+    layout: &creamui_fonts::TextLayout,
+    size: f32,
     width: i32,
     height: i32,
     color: [u8; 4],
 ) -> RasterizedGlyphs {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    let mut scale_context = ScaleContext::new();
     // Blending happens in sRGB, which makes light-on-dark text look heavier
     // and dark-on-light text lighter than the font intends. Thin the
     // former and firm up the latter so both read at their real weight.
@@ -64,16 +66,29 @@ fn paint_glyphs(
     let weights: Vec<u16> = (0..=255u16)
         .map(|c| ((f32::from(c) / 255.0).powf(exponent) * 255.0).round() as u16)
         .collect();
-    for g in layout.glyphs() {
-        if g.width == 0 || g.height == 0 {
+    for glyph in &layout.glyphs {
+        let glyph_font = if glyph.face == 0 {
+            font
+        } else {
+            &layout.fallback_faces[glyph.face - 1]
+        };
+        let mut scaler = scale_context
+            .builder(glyph_font.font_ref())
+            .size(size)
+            .hint(false)
+            .build();
+        let Some(image) = Render::new(&[Source::Outline])
+            .format(Format::Alpha)
+            .render(&mut scaler, glyph.id)
+        else {
             continue;
-        }
-        let (_, coverage) = font.rasterize_config(g.key);
-        let gx = g.x.round() as i32;
-        let gy = g.y.round() as i32;
-        for row in 0..g.height {
-            for col in 0..g.width {
-                let coverage = weights[usize::from(coverage[row * g.width + col])];
+        };
+        let gx = glyph.x.round() as i32 + image.placement.left;
+        let gy = glyph.y.round() as i32 - image.placement.top;
+        for row in 0..image.placement.height as usize {
+            for col in 0..image.placement.width as usize {
+                let coverage =
+                    weights[usize::from(image.data[row * image.placement.width as usize + col])];
                 if coverage == 0 {
                     continue;
                 }
@@ -98,7 +113,7 @@ fn paint_glyphs(
     }
 }
 
-fn fit_within(font: &Font, text: &str, size: f32, max_width: f32) -> String {
+fn fit_within(font: &FontFace, text: &str, size: f32, max_width: f32) -> String {
     if measure(font, text, size) <= max_width {
         return text.to_owned();
     }
@@ -109,7 +124,7 @@ fn fit_within(font: &Font, text: &str, size: f32, max_width: f32) -> String {
     let mut result = String::new();
     let mut width = 0.0;
     for ch in text.chars() {
-        let advance = font.metrics(ch, size).advance_width;
+        let advance = measure(font, &ch.to_string(), size);
         if width + advance + ellipsis_width > max_width {
             break;
         }
@@ -123,22 +138,23 @@ fn fit_within(font: &Font, text: &str, size: f32, max_width: f32) -> String {
     result
 }
 
-fn measure(font: &Font, text: &str, size: f32) -> f32 {
-    text.chars()
-        .map(|ch| font.metrics(ch, size).advance_width)
-        .sum()
+fn measure(font: &FontFace, text: &str, size: f32) -> f32 {
+    creamui_fonts::layout(font, text, size, &LayoutSettings::default())
+        .lines
+        .iter()
+        .map(|line| line.width)
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn font() -> Font {
-        (*creamui_fonts::resolve(
+    fn font() -> std::rc::Rc<FontFace> {
+        creamui_fonts::resolve(
             creamui_fonts::DEFAULT_FAMILY,
             creamui_fonts::FontWeight::Regular,
-        ))
-        .clone()
+        )
     }
 
     #[test]

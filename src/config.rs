@@ -730,6 +730,12 @@ pub enum DecorationModeConfig {
 pub struct DecorationButtonsConfig {
     pub layout: Vec<DecorationButton>,
     pub side: DecorationButtonSide,
+    /// Diameter of each circular titlebar control, in logical pixels.
+    pub size: i32,
+    /// Space between adjacent titlebar controls, in logical pixels.
+    pub gap: i32,
+    /// Distance from the titlebar edge to the outermost control, in logical pixels.
+    pub edge_padding: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,7 +762,10 @@ impl Default for DecorationButtonsConfig {
                 DecorationButton::Maximize,
                 DecorationButton::Close,
             ],
-            side: DecorationButtonSide::Right,
+            side: DecorationButtonSide::Left,
+            size: 20,
+            gap: 6,
+            edge_padding: 12,
         }
     }
 }
@@ -809,12 +818,12 @@ impl Default for DecorationConfig {
     fn default() -> Self {
         Self {
             mode: DecorationModeConfig::Auto,
-            titlebar_height: 32,
+            titlebar_height: 64,
             titlebar_color: TitlebarColorMode::Blend,
             custom_titlebar_color: "#1e1e2e".to_string(),
             border: BorderColorMode::Theme,
             border_size: BorderSize::Normal,
-            corner_radius: 12,
+            corner_radius: 20,
             popup_corner_radius: 16,
             active_titlebar: "#1e1e2e".to_string(),
             inactive_titlebar: "#11111b".to_string(),
@@ -824,7 +833,7 @@ impl Default for DecorationConfig {
             maximize_button: "#a6e3a1".to_string(),
             minimize_button: "#f9e2af".to_string(),
             title_centered: false,
-            show_icon: true,
+            show_icon: false,
             drag_margin: 0,
             buttons: DecorationButtonsConfig::default(),
             follow_system_theme: None,
@@ -842,6 +851,9 @@ impl DecorationConfig {
             || !(0..=64).contains(&self.popup_corner_radius)
             || !(0..=96).contains(&self.titlebar_height)
             || !(0..=256).contains(&self.drag_margin)
+            || !(0..=96).contains(&self.buttons.size)
+            || !(0..=64).contains(&self.buttons.gap)
+            || !(0..=256).contains(&self.buttons.edge_padding)
         {
             anyhow::bail!("invalid decoration dimensions");
         }
@@ -921,6 +933,9 @@ impl DecorationConfig {
             minimize_button,
             button_layout: self.buttons.layout.clone(),
             button_side: self.buttons.side,
+            button_size: self.buttons.size,
+            button_gap: self.buttons.gap,
+            button_edge_padding: self.buttons.edge_padding,
             title_centered: self.title_centered,
             show_icon: self.show_icon,
             drag_margin: self.drag_margin,
@@ -1249,7 +1264,7 @@ mod tests {
     #[test]
     fn packaged_sample_config_parses_and_validates() {
         let text = fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/config/config.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/config/config.toml"),
         )
         .expect("read packaged sample config");
         let config: CompositorConfig = toml::from_str(&text).expect("parse packaged sample config");

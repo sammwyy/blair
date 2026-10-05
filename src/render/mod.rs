@@ -466,7 +466,7 @@ fn push_window_blur(
     output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &fontdue::Font,
+    font: &creamui_fonts::FontFace,
     windows_behind: &[Window],
     window: &Window,
     elements: &mut Vec<OutputRenderElement>,
@@ -508,7 +508,7 @@ fn window_elements(
     window: &Window,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &fontdue::Font,
+    font: &creamui_fonts::FontFace,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let (Some(frame), Some(surface), Some(id)) = (

@@ -235,7 +235,7 @@ impl WindowDecoration {
     #[allow(clippy::too_many_arguments)]
     pub fn update_title(
         &mut self,
-        font: &fontdue::Font,
+        font: &creamui_fonts::FontFace,
         text: &str,
         size: f32,
         color: [u8; 4],
@@ -565,10 +565,10 @@ fn rasterize_button(look: ButtonLook, size: i32) -> Vec<u8> {
     let mut pixels = vec![0u8; size as usize * size as usize * 4];
     let s = size as f32;
     let radius = s / 2.0;
-    // Glyphs span a bit over a third of the disc, with a hairline stroke
-    // that still survives at 1x.
-    let extent = s * 0.18;
-    let stroke = (s * 0.075).max(1.0);
+    // Delicate glyphs keep the otherwise quiet circular controls legible
+    // without turning them into visual anchors.
+    let extent = s * 0.17;
+    let stroke = (s * 0.055).max(1.0);
     for y in 0..size {
         for x in 0..size {
             let px = x as f32 + 0.5 - radius;
