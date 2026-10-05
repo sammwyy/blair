@@ -87,11 +87,16 @@ floating = true
 size = [700, 500]
 
 [decorations]
-mode = "auto" # server | client | auto | none
+mode = "auto" # server | hybrid | client | auto | none
 border_width = 2
 corner_radius = 8
 titlebar_height = 28
 ```
+
+`mode = "hybrid"` forces server-side decoration negotiation, but leaves the
+client at its original size and draws only the configured window controls over
+its top-right corner. It does not draw a titlebar, title text, icon, border, or
+draggable server region.
 
 Rules match `app_id`, `title`, or `regex` and can set layout, workspace, output,
 size, position, opacity, stacking, and decorations.

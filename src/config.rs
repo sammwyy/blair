@@ -719,6 +719,10 @@ impl BorderSize {
 #[serde(rename_all = "snake_case")]
 pub enum DecorationModeConfig {
     Server,
+    /// Server-side window controls rendered over the client's top-right
+    /// corner, without reserving an external titlebar or border.
+    #[serde(alias = "dynamic")]
+    Hybrid,
     Client,
     #[default]
     Auto,
@@ -1485,6 +1489,16 @@ mod tests {
         assert_eq!(config.decorations.border, BorderColorMode::None);
         assert_eq!(config.decorations.border_size, BorderSize::Bold);
         assert!(toml::from_str::<CompositorConfig>("[decorations]\nborder = \"thick\"\n").is_err());
+    }
+
+    #[test]
+    fn parses_hybrid_decoration_mode_and_dynamic_alias() {
+        let config: CompositorConfig =
+            toml::from_str("[decorations]\nmode = \"hybrid\"\n").unwrap();
+        assert_eq!(config.decorations.mode, DecorationModeConfig::Hybrid);
+        let legacy: CompositorConfig =
+            toml::from_str("[decorations]\nmode = \"dynamic\"\n").unwrap();
+        assert_eq!(legacy.decorations.mode, DecorationModeConfig::Hybrid);
     }
 
     #[test]

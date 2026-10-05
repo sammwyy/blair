@@ -126,7 +126,8 @@ gap = 8
 master_ratio = 0.5
 
 [decorations]
-# server | client | auto | none
+# server | hybrid | client | auto | none
+# hybrid keeps server buttons only, over the top-right of the client content.
 mode = "auto"
 titlebar_height = 64
 # Titlebar background (case-insensitive):

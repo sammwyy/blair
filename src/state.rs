@@ -89,6 +89,7 @@ use crate::{
     screencopy::{self, ScreencopyRequest},
     shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry},
     stats::RenderStats,
+    window_integration,
 };
 
 #[derive(Default)]
@@ -302,6 +303,7 @@ impl BlairState {
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
         screencopy::register::<Self>(dh);
         blur::register(dh);
+        window_integration::register(dh);
         let kde_decoration_state = KdeDecorationState::new::<Self>(
             dh,
             if config.window.server_side_decorations {
@@ -1346,7 +1348,7 @@ impl BlairState {
 
     /// Decoration insets as (horizontal, vertical, left, top).
     fn frame_insets(&self, window: &Window) -> (i32, i32, i32, i32) {
-        if !self.window_has_server_decoration(window) {
+        if !self.window_has_server_decoration(window) || self.window_has_overlay_controls(window) {
             return (0, 0, 0, 0);
         }
         let theme = &self.decoration_theme;
@@ -2261,7 +2263,9 @@ impl BlairState {
 
     pub fn preferred_decoration_mode(&self) -> DecorationMode {
         match self.config.decorations.mode {
-            DecorationModeConfig::Server => DecorationMode::ServerSide,
+            DecorationModeConfig::Server | DecorationModeConfig::Hybrid => {
+                DecorationMode::ServerSide
+            }
             DecorationModeConfig::Client | DecorationModeConfig::None => DecorationMode::ClientSide,
             DecorationModeConfig::Auto if self.config.window.server_side_decorations => {
                 DecorationMode::ServerSide
@@ -2283,6 +2287,9 @@ impl BlairState {
                 DecorationMode::ClientSide
             };
         }
+        if self.surface_allows_hybrid(surface) {
+            return DecorationMode::ServerSide;
+        }
         let preferred = self.preferred_decoration_mode();
         match self.config.decorations.mode {
             DecorationModeConfig::Auto if self.config.window.server_side_decorations => {
@@ -2302,11 +2309,31 @@ impl BlairState {
             // the compositor forces them; otherwise it draws its own.
             mode => window_negotiated_decoration(window)
                 .map(|negotiated| negotiated == DecorationMode::ServerSide)
-                .unwrap_or(mode == DecorationModeConfig::Server),
+                .unwrap_or(matches!(
+                    mode,
+                    DecorationModeConfig::Server | DecorationModeConfig::Hybrid
+                )),
         }
     }
 
-    fn refresh_decoration_modes(&mut self) {
+    /// Hybrid decorations keep server-side controls but paint them over the
+    /// client surface, so no frame pixels are reserved around the window.
+    pub fn window_has_overlay_controls(&self, window: &Window) -> bool {
+        (self.config.decorations.mode == DecorationModeConfig::Hybrid
+            || window_integration::hybrid_requested(
+                window.wl_surface().as_ref().map(|surface| &**surface),
+            ))
+            && self.window_has_server_decoration(window)
+    }
+
+    fn surface_allows_hybrid(&self, surface: &WlSurface) -> bool {
+        !matches!(
+            self.config.decorations.mode,
+            DecorationModeConfig::Client | DecorationModeConfig::None
+        ) && window_integration::hybrid_requested(Some(surface))
+    }
+
+    pub(crate) fn refresh_decoration_modes(&mut self) {
         for managed in self.windows.values() {
             let Some(toplevel) = managed.window.toplevel() else {
                 continue;

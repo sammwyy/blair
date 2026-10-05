@@ -159,6 +159,49 @@ impl DecorationFrame {
             drag,
         }
     }
+
+    /// Positions only the server controls inside the client's top-right
+    /// corner. This deliberately has no title, icon, drag region or frame:
+    /// the client keeps its exact configured geometry.
+    pub fn overlay_controls(client: Rect, theme: &DecorationTheme) -> FrameGeometry {
+        let btn_size = theme.button_size.clamp(0, client.height.max(0));
+        let gap = theme.button_gap.max(0);
+        let edge = theme.button_edge_padding.max(0);
+        let count = theme.button_layout.len() as i32;
+        let mut close_btn = Rect::default();
+        let mut maximize_btn = Rect::default();
+        let mut minimize_btn = Rect::default();
+
+        for (index, button) in theme.button_layout.iter().enumerate() {
+            let index = index as i32;
+            let rect = Rect {
+                x: client.x + client.width
+                    - edge
+                    - (count - index) * btn_size
+                    - (count - index - 1) * gap,
+                y: client.y + edge,
+                width: btn_size,
+                height: btn_size,
+            };
+            match button {
+                DecorationButton::Close => close_btn = rect,
+                DecorationButton::Maximize => maximize_btn = rect,
+                DecorationButton::Minimize => minimize_btn = rect,
+            }
+        }
+
+        FrameGeometry {
+            frame: client,
+            titlebar: Rect::default(),
+            client,
+            close_btn,
+            maximize_btn,
+            minimize_btn,
+            icon: Rect::default(),
+            title: Rect::default(),
+            drag: Rect::default(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +283,23 @@ mod tests {
         assert!(geom.maximize_btn.x < geom.close_btn.x);
         // Compact controls remain vertically centred even on a short bar.
         assert_eq!(geom.close_btn.y, CLIENT.y - 30 + (30 - 20) / 2);
+    }
+
+    #[test]
+    fn overlay_controls_stay_inside_the_client_top_right() {
+        let mut themed = theme(4);
+        themed.button_side = DecorationButtonSide::Left;
+        let geom = DecorationFrame::overlay_controls(CLIENT, &themed);
+
+        assert_eq!(geom.frame, CLIENT);
+        assert_eq!(geom.titlebar, Rect::default());
+        assert_eq!(geom.close_btn.y, CLIENT.y + themed.button_edge_padding);
+        assert_eq!(
+            geom.close_btn.x + geom.close_btn.width,
+            CLIENT.x + CLIENT.width - themed.button_edge_padding
+        );
+        assert!(geom.minimize_btn.x < geom.maximize_btn.x);
+        assert!(geom.maximize_btn.x < geom.close_btn.x);
     }
 
     #[test]

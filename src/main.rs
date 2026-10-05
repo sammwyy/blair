@@ -14,6 +14,7 @@ mod screencopy;
 mod shortcuts;
 mod state;
 mod stats;
+mod window_integration;
 
 use anyhow::{bail, Context, Result};
 

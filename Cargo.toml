@@ -14,6 +14,7 @@ repository.workspace = true
 members = [
   "crates/protocol",
   "crates/blur-protocol",
+  "crates/window-integration-protocol",
   "crates/integration",
   "integrations/blair-integration-dbus",
   "crates/client",
@@ -68,6 +69,7 @@ profiling = "1"
 
 blair-protocol = { version = "0.1.0", path = "crates/protocol" }
 blair-blur-protocol = { version = "0.1.0", path = "crates/blur-protocol" }
+blair-window-integration-protocol = { version = "0.1.0", path = "crates/window-integration-protocol" }
 blair-integration = { version = "0.1.0", path = "crates/integration" }
 blair-integration-dbus = { version = "0.1.0", path = "integrations/blair-integration-dbus" }
 blair-client = { version = "0.1.0", path = "crates/client" }
@@ -91,6 +93,7 @@ blair-integration-dbus.workspace = true
 smithay.workspace = true
 wayland-server.workspace = true
 blair-blur-protocol = { workspace = true, features = ["server"] }
+blair-window-integration-protocol = { workspace = true, features = ["server"] }
 xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"

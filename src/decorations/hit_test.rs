@@ -91,6 +91,24 @@ pub fn hit_test_frame(
     DecorationPart::None
 }
 
+/// Hit-tests the button-only controls painted over a hybrid decoration.
+pub fn hit_test_overlay_controls(
+    client: Rect,
+    point: Point,
+    theme: &DecorationTheme,
+) -> DecorationPart {
+    let geom = DecorationFrame::overlay_controls(client, theme);
+    if geom.close_btn.contains(point) {
+        DecorationPart::CloseButton
+    } else if geom.maximize_btn.contains(point) {
+        DecorationPart::MaximizeButton
+    } else if geom.minimize_btn.contains(point) {
+        DecorationPart::MinimizeButton
+    } else {
+        DecorationPart::None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +199,31 @@ mod tests {
         assert_eq!(
             hit_test_frame(CLIENT, center, &theme, true),
             DecorationPart::Titlebar
+        );
+    }
+
+    #[test]
+    fn overlay_only_intercepts_its_buttons() {
+        let theme = theme(0);
+        let controls = DecorationFrame::overlay_controls(CLIENT, &theme);
+        let close = Point {
+            x: f64::from(controls.close_btn.x + 1),
+            y: f64::from(controls.close_btn.y + 1),
+        };
+        assert_eq!(
+            hit_test_overlay_controls(CLIENT, close, &theme),
+            DecorationPart::CloseButton
+        );
+        assert_eq!(
+            hit_test_overlay_controls(
+                CLIENT,
+                Point {
+                    x: f64::from(CLIENT.x + 1),
+                    y: f64::from(CLIENT.y + 1),
+                },
+                &theme,
+            ),
+            DecorationPart::None
         );
     }
 }

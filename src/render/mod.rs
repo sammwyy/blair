@@ -55,8 +55,8 @@ pub use decoration::WindowDecoration;
 
 use clip::ClippedSurfaceElement;
 use decoration::{
-    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitlebarPixelSource,
-    TitlebarStrip,
+    contrasting, luminance, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams,
+    TitlebarPixelSource, TitlebarStrip,
 };
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
@@ -119,13 +119,20 @@ impl Shaders {
 pub struct WindowFrame {
     pub client: Rectangle<i32, Logical>,
     pub frame: Rectangle<i32, Logical>,
+    /// A server frame that expands beyond the client and exposes resize
+    /// handles/titlebar input.
     pub has_border: bool,
+    /// A border and rounded clip painted inside the client geometry. This is
+    /// used for client-side and hybrid windows so their geometry never grows.
+    pub has_content_outline: bool,
     pub has_titlebar: bool,
 }
 
 pub fn window_frame(state: &BlairState, window: &Window) -> Option<WindowFrame> {
     let client = state.space.element_geometry(window)?;
-    let has_border = state.window_has_server_decoration(window);
+    let overlay_controls = state.window_has_overlay_controls(window);
+    let has_border = state.window_has_server_decoration(window) && !overlay_controls;
+    let has_content_outline = !has_border && !state.window_is_fullscreen(window);
     let has_titlebar = has_border
         && state.config.window.layout != WindowLayout::Tiling
         && !state.window_is_fullscreen(window);
@@ -140,6 +147,7 @@ pub fn window_frame(state: &BlairState, window: &Window) -> Option<WindowFrame> 
         client,
         frame,
         has_border,
+        has_content_outline,
         has_titlebar,
     })
 }
@@ -522,6 +530,7 @@ fn window_elements(
     let scale = ctx.scale;
     let origin = ctx.output_geo.loc;
     let render_loc = frame.client.loc - window.geometry().loc - origin;
+    let overlay_controls = state.window_has_overlay_controls(window);
 
     for (popup, offset) in PopupManager::popups_for_surface(&surface) {
         let root = render_loc + window.geometry().loc + offset;
@@ -535,14 +544,15 @@ fn window_elements(
         .map(|managed| (managed.title.clone(), managed.app_id.clone()))
         .unwrap_or_default();
 
-    let decorated = frame.has_border && shaders.is_some();
-    // Sampled before drawing the titlebar contents: in blend mode their
-    // colors follow whatever the client paints at its top edge.
+    let decorated = (frame.has_border || frame.has_content_outline) && shaders.is_some();
+    // Sample before drawing controls. Titlebars use this in blend mode, and
+    // hybrid controls use the dominant top-edge color for readable glyphs.
     let titlebar_source = match shaders {
         Some(shaders)
-            if decorated
-                && frame.has_titlebar
-                && state.decoration_theme().titlebar_mode == TitlebarColorMode::Blend =>
+            if overlay_controls
+                || (decorated
+                    && frame.has_titlebar
+                    && state.decoration_theme().titlebar_mode == TitlebarColorMode::Blend) =>
         {
             let decoration = state.decorations.entry(id).or_default();
             titlebar_pixel_source(
@@ -668,6 +678,10 @@ fn window_elements(
         }
     }
 
+    // `OutputDamageTracker` consumes this list front to back. Remember where
+    // the client elements begin so the hybrid controls can be placed ahead of
+    // them after their buffers have been prepared below.
+    let content_start = elements.len();
     let clip = decorated.then(|| {
         let radius = state.corner_radius(frame.frame);
         let inner = (radius - state.decoration_theme().border_width).max(0) as f32 * scale as f32;
@@ -695,6 +709,109 @@ fn window_elements(
             }
             _ => elements.push(element.into()),
         }
+    }
+
+    // These controls occupy the client's top-right corner, but must precede
+    // client elements in the front-to-back render list to remain visible.
+    if overlay_controls {
+        let controls_start = elements.len();
+        let theme = state.decoration_theme().clone();
+        let geometry = DecorationFrame::overlay_controls(to_rect(frame.client), &theme);
+        let controls = [
+            geometry.close_btn,
+            geometry.maximize_btn,
+            geometry.minimize_btn,
+        ]
+        .into_iter()
+        .filter(|rect| rect.width > 0 && rect.height > 0)
+        .reduce(|a, b| Rect {
+            x: a.x.min(b.x),
+            y: a.y.min(b.y),
+            width: (a.x + a.width).max(b.x + b.width) - a.x.min(b.x),
+            height: (a.y + a.height).max(b.y + b.height) - a.y.min(b.y),
+        })
+        .map_or((0, 0, 0, 0), |rect| {
+            (
+                rect.x - frame.client.loc.x,
+                rect.y - frame.client.loc.y,
+                rect.width,
+                rect.height,
+            )
+        });
+        crate::window_integration::publish(&surface, true, controls);
+        let focused = state.focused_window == Some(id);
+        let foreground = titlebar_source
+            .as_ref()
+            .and_then(|source| source.average)
+            .map(contrasting)
+            // The shader path is normally available; retain a clear fallback
+            // for renderers where the top-edge sample cannot be created.
+            .unwrap_or([0xf5, 0xf5, 0xf7, 0xff]);
+        let foreground = if focused {
+            foreground
+        } else {
+            with_alpha(foreground, 0xa0)
+        };
+        let light_background = titlebar_source
+            .as_ref()
+            .and_then(|source| source.average)
+            .is_some_and(|color| luminance(color) > 0.179);
+        let buffer_scale = (scale.ceil() as i32).max(1);
+        let decoration = state.decorations.entry(id).or_default();
+        for (index, (button, rect, glyph)) in [
+            (
+                DecorationButton::Close,
+                geometry.close_btn,
+                ButtonGlyph::Close,
+            ),
+            (
+                DecorationButton::Maximize,
+                geometry.maximize_btn,
+                ButtonGlyph::Maximize,
+            ),
+            (
+                DecorationButton::Minimize,
+                geometry.minimize_btn,
+                ButtonGlyph::Minimize,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if rect.width <= 0 || rect.height <= 0 {
+                continue;
+            }
+            // Match the shell mock's quiet, neutral controls: white on dark
+            // and midnight surfaces, a very light grey on bright surfaces.
+            // Hovering only increases opacity; it does not turn controls
+            // into coloured traffic lights.
+            let hovered = state.hovered_button == Some((id, button));
+            let disc_alpha = if light_background {
+                if hovered {
+                    0x1f
+                } else {
+                    0x12
+                }
+            } else if hovered {
+                0x30
+            } else {
+                0x1c
+            };
+            let look = ButtonLook {
+                glyph,
+                disc: with_alpha(foreground, disc_alpha),
+                glyph_color: foreground,
+            };
+            decoration.update_button(index, look, rect.width, buffer_scale);
+            if let Some((buffer, size)) = decoration.button_buffer(index) {
+                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
+                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+            }
+        }
+        let control_count = elements.len() - controls_start;
+        elements[content_start..].rotate_right(control_count);
+    } else {
+        crate::window_integration::publish(&surface, false, (0, 0, 0, 0));
     }
 
     if let (true, Some(shaders)) = (decorated, shaders) {
@@ -729,6 +846,7 @@ fn window_elements(
         {
             decoration.damage_titlebar();
         }
+        let frame_start = elements.len();
         if let Some(element) = decoration.element(
             &shaders.frame,
             origin,
@@ -737,6 +855,13 @@ fn window_elements(
             titlebar_source.as_ref().map(|source| &source.pixels),
         ) {
             elements.push(element.into());
+        }
+        // Internal outlines overlap client pixels, unlike external server
+        // frames. Put them at the front of the front-to-back render list so
+        // the focused border remains visible.
+        if frame.has_content_outline {
+            let outline_count = elements.len() - frame_start;
+            elements[content_start..].rotate_right(outline_count);
         }
     }
 }

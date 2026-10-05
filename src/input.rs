@@ -30,7 +30,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::{
     config::{DecorationButton, WindowLayout},
-    decorations::{hit_test_frame, DecorationPart, RESIZE_OUTSET},
+    decorations::{hit_test_frame, hit_test_overlay_controls, DecorationPart, RESIZE_OUTSET},
     grabs::ResizeEdges,
     render::{to_rect, window_frame, z_ordered_windows},
     shortcuts::{physical_vt_from_keycode, update_physical_mods},
@@ -131,6 +131,20 @@ fn window_target(
     pos: Point<f64, Logical>,
 ) -> Option<PointerTarget> {
     let frame = window_frame(state, window)?;
+    if state.window_has_overlay_controls(window) {
+        let part = hit_test_overlay_controls(
+            to_rect(frame.client),
+            CorePoint { x: pos.x, y: pos.y },
+            state.decoration_theme(),
+        );
+        if part != DecorationPart::None {
+            return Some(PointerTarget::Window {
+                window: window.clone(),
+                surface: None,
+                part,
+            });
+        }
+    }
     let render_loc = frame.client.loc - window.geometry().loc;
     if let Some((surface, offset)) =
         window.surface_under(pos - render_loc.to_f64(), WindowSurfaceType::ALL)
