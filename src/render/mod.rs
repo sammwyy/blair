@@ -224,6 +224,17 @@ pub fn output_elements(
         &[Layer::Overlay],
         &mut elements,
     );
+    layer_blur_elements(
+        renderer,
+        state,
+        output,
+        &ctx,
+        shaders,
+        &font,
+        &windows,
+        Layer::Overlay,
+        &mut elements,
+    );
     if !fullscreen {
         layer_elements(
             renderer,
@@ -232,6 +243,17 @@ pub fn output_elements(
             &ctx,
             shaders,
             &[Layer::Top],
+            &mut elements,
+        );
+        layer_blur_elements(
+            renderer,
+            state,
+            output,
+            &ctx,
+            shaders,
+            &font,
+            &windows,
+            Layer::Top,
             &mut elements,
         );
     }
@@ -492,9 +514,9 @@ fn push_window_blur(
         return;
     };
     let content_origin = frame.client.loc - window.geometry().loc - ctx.output_geo.loc;
-    let frame_rect = match region.0 {
-        None => Rectangle::new(content_origin, frame.client.size),
-        Some(rect) => Rectangle::new(content_origin + rect.loc, rect.size),
+    let coverage = surface_blur_rects(region, content_origin, frame.client.size);
+    let Some(frame_rect) = coverage.iter().copied().reduce(|a, b| a.merge(b)) else {
+        return;
     };
     blur::push_backdrop(
         renderer,
@@ -505,8 +527,66 @@ fn push_window_blur(
         font,
         windows_behind,
         frame_rect,
+        &coverage,
         elements,
     );
+}
+
+fn surface_blur_rects(
+    region: crate::blur::Blur,
+    origin: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+) -> Vec<Rectangle<i32, Logical>> {
+    match region.0 {
+        None => vec![Rectangle::new(origin, size)],
+        Some(rects) => rects
+            .into_iter()
+            .filter_map(|rect| {
+                rect.intersection(Rectangle::from_size(size))
+                    .map(|rect| Rectangle::new(origin + rect.loc, rect.size))
+            })
+            .collect(),
+    }
+}
+
+/// Layer shells are above normal windows, so their backdrop must contain
+/// the window stack as well as wallpaper and bottom layers.
+#[allow(clippy::too_many_arguments)]
+fn layer_blur_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    font: &creamui_fonts::FontFace,
+    windows: &[Window],
+    layer: Layer,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    if !state.config.blur.enabled {
+        return;
+    }
+    let surfaces: Vec<_> = {
+        let map = layer_map_for_output(output);
+        map.layers_on(layer)
+            .rev()
+            .filter_map(|surface| {
+                Some((surface.wl_surface().clone(), map.layer_geometry(surface)?))
+            })
+            .collect()
+    };
+    for (surface, geometry) in surfaces {
+        let Some(region) = crate::blur::blur_of(&surface) else {
+            continue;
+        };
+        let coverage = surface_blur_rects(region, geometry.loc, geometry.size);
+        let Some(bounds) = coverage.iter().copied().reduce(|a, b| a.merge(b)) else {
+            continue;
+        };
+        blur::push_backdrop(
+            renderer, state, output, ctx, shaders, font, windows, bounds, &coverage, elements,
+        );
+    }
 }
 
 fn window_elements(

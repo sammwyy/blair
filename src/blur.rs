@@ -27,8 +27,8 @@ const VERSION: u32 = 1;
 /// The blur region a surface's `blair_blur_v1` object last committed.
 /// `Blur(None)` blurs the whole surface, matching `set_region(None)` in the
 /// protocol.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Blur(pub Option<Rectangle<i32, Logical>>);
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blur(pub Option<Vec<Rectangle<i32, Logical>>>);
 
 #[derive(Default)]
 struct SurfaceBlurState(Mutex<Option<Blur>>);
@@ -40,7 +40,7 @@ pub fn blur_of(surface: &WlSurface) -> Option<Blur> {
         states
             .data_map
             .get::<SurfaceBlurState>()
-            .and_then(|state| *state.0.lock().expect("blur state lock poisoned"))
+            .and_then(|state| state.0.lock().expect("blur state lock poisoned").clone())
     })
 }
 
@@ -121,10 +121,14 @@ impl Dispatch<BlairBlurV1, BlurObjectData> for BlairState {
         match request {
             blair_blur_v1::Request::SetRegion { region } => {
                 *data.pending.lock().expect("blur state lock poisoned") =
-                    Blur(region.as_ref().map(region_bounds));
+                    Blur(region.as_ref().map(region_rects));
             }
             blair_blur_v1::Request::Commit => {
-                let region = *data.pending.lock().expect("blur state lock poisoned");
+                let region = data
+                    .pending
+                    .lock()
+                    .expect("blur state lock poisoned")
+                    .clone();
                 set_blur(&data.surface, Some(region));
             }
             _ => {}
@@ -132,13 +136,50 @@ impl Dispatch<BlairBlurV1, BlurObjectData> for BlairState {
     }
 }
 
-/// The bounding box of `region`'s added rectangles, ignoring subtractions —
-/// blair's blur only needs an outer bound, not exact coverage.
-fn region_bounds(region: &WlRegion) -> Rectangle<i32, Logical> {
-    get_region_attributes(region)
-        .rects
-        .into_iter()
-        .filter_map(|(kind, rect)| matches!(kind, RectangleKind::Add).then_some(rect))
-        .reduce(|a, b| a.merge(b))
-        .unwrap_or_default()
+/// Preserve union/subtraction and disjoint shapes instead of expanding them
+/// into one bounding box (which blurs gaps and transparent rounded corners).
+fn region_rects(region: &WlRegion) -> Vec<Rectangle<i32, Logical>> {
+    normalize_region(get_region_attributes(region).rects)
+}
+
+fn normalize_region(
+    ops: Vec<(RectangleKind, Rectangle<i32, Logical>)>,
+) -> Vec<Rectangle<i32, Logical>> {
+    let mut result = Vec::new();
+    for (kind, rect) in ops {
+        if rect.is_empty() {
+            continue;
+        }
+        match kind {
+            RectangleKind::Add => result.extend(rect.subtract_rects(result.clone())),
+            RectangleKind::Subtract => {
+                result = Rectangle::subtract_rects_many_in_place(result, [rect])
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn regions_preserve_gaps_holes_and_do_not_overlap() {
+        let rect = |x, y, w, h| Rectangle::new((x, y).into(), (w, h).into());
+        let regions = normalize_region(vec![
+            (RectangleKind::Add, rect(0, 0, 20, 20)),
+            (RectangleKind::Add, rect(10, 0, 20, 20)),
+            (RectangleKind::Add, rect(40, 0, 10, 10)),
+            (RectangleKind::Subtract, rect(5, 5, 10, 10)),
+        ]);
+        let contains = |x, y| regions.iter().any(|r| r.contains((x, y)));
+        assert!(contains(0, 0));
+        assert!(contains(25, 10));
+        assert!(contains(45, 5));
+        assert!(!contains(7, 7));
+        assert!(!contains(35, 5));
+        for (i, a) in regions.iter().enumerate() {
+            assert!(regions[i + 1..].iter().all(|b| !a.overlaps(*b)));
+        }
+    }
 }

@@ -81,6 +81,7 @@ pub(super) fn push_backdrop(
     font: &creamui_fonts::FontFace,
     windows_behind: &[Window],
     frame_rect: Rectangle<i32, Logical>,
+    coverage: &[Rectangle<i32, Logical>],
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let Some(shaders) = shaders else { return };
@@ -165,7 +166,17 @@ pub(super) fn push_backdrop(
         None,
         Kind::Unspecified,
     );
-    elements.push(BlurredBackdropElement::new(inner, shaders.blur.clone(), texel, radius).into());
+    let coverage = coverage
+        .iter()
+        .filter_map(|rect| {
+            rect.to_physical_precise_round(ctx.scale)
+                .intersection(frame_rect_physical)
+                .map(|rect| Rectangle::new(rect.loc - frame_rect_physical.loc, rect.size))
+        })
+        .collect();
+    elements.push(
+        BlurredBackdropElement::new(inner, shaders.blur.clone(), texel, radius, coverage).into(),
+    );
 }
 
 pub struct BlurredBackdropElement {
@@ -173,6 +184,7 @@ pub struct BlurredBackdropElement {
     program: GlesTexProgram,
     texel: (f32, f32),
     spread: f32,
+    coverage: Vec<Rectangle<i32, Physical>>,
 }
 
 impl BlurredBackdropElement {
@@ -181,12 +193,14 @@ impl BlurredBackdropElement {
         program: GlesTexProgram,
         texel: (f32, f32),
         spread: f32,
+        coverage: Vec<Rectangle<i32, Physical>>,
     ) -> Self {
         Self {
             inner,
             program,
             texel,
             spread,
+            coverage,
         }
     }
 }
@@ -246,6 +260,17 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
+        let damage: Vec<_> = damage
+            .iter()
+            .flat_map(|damage| {
+                self.coverage
+                    .iter()
+                    .filter_map(move |region| damage.intersection(*region))
+            })
+            .collect();
+        if damage.is_empty() {
+            return Ok(());
+        }
         let uniforms = vec![
             Uniform::new("texel", self.texel),
             Uniform::new("spread", self.spread),
@@ -256,7 +281,7 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
             frame,
             src,
             dst,
-            damage,
+            &damage,
             opaque_regions,
         );
         frame.clear_tex_program_override();

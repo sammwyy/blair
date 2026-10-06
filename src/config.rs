@@ -766,7 +766,7 @@ impl Default for DecorationButtonsConfig {
                 DecorationButton::Maximize,
                 DecorationButton::Close,
             ],
-            side: DecorationButtonSide::Left,
+            side: DecorationButtonSide::Right,
             size: 20,
             gap: 6,
             edge_padding: 12,
