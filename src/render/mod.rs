@@ -43,7 +43,7 @@ use smithay::{
 use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::{
-    config::{DecorationButton, TitlebarColorMode, WindowLayout},
+    config::{DecorationButton, DecorationButtonStyle, TitlebarColorMode, WindowLayout},
     decorations::DecorationFrame,
     state::BlairState,
 };
@@ -55,8 +55,8 @@ pub use decoration::WindowDecoration;
 
 use clip::ClippedSurfaceElement;
 use decoration::{
-    contrasting, luminance, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams,
-    TitlebarPixelSource, TitlebarStrip,
+    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitlebarPixelSource,
+    TitlebarStrip,
 };
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
@@ -88,6 +88,7 @@ pub struct Shaders {
     clip: GlesTexProgram,
     frame: GlesPixelProgram,
     titlebar_blend: GlesTexProgram,
+    titlebar_gradient: GlesTexProgram,
     blur: GlesTexProgram,
 }
 
@@ -98,14 +99,16 @@ impl Shaders {
                 clip,
                 decoration::compile(renderer)?,
                 decoration::compile_titlebar_blend(renderer)?,
+                decoration::compile_titlebar_gradient(renderer)?,
                 blur::compile(renderer)?,
             ))
         });
         match shaders {
-            Ok((clip, frame, titlebar_blend, blur)) => Some(Self {
+            Ok((clip, frame, titlebar_blend, titlebar_gradient, blur)) => Some(Self {
                 clip,
                 frame,
                 titlebar_blend,
+                titlebar_gradient,
                 blur,
             }),
             Err(error) => {
@@ -275,6 +278,17 @@ pub fn output_elements(
             &font,
             &mut elements,
         );
+        push_theme_titlebar_blur(
+            renderer,
+            state,
+            output,
+            &ctx,
+            shaders,
+            &font,
+            &windows[..index],
+            window,
+            &mut elements,
+        );
         push_window_blur(
             renderer,
             state,
@@ -301,6 +315,50 @@ pub fn output_elements(
         &mut elements,
     );
     elements
+}
+
+/// Theme titlebars are translucent surfaces. Blur the scene directly behind
+/// their interior so the theme color has the same depth as other shell
+/// surfaces, without requiring every client to request a blur region.
+#[allow(clippy::too_many_arguments)]
+fn push_theme_titlebar_blur(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    font: &creamui_fonts::FontFace,
+    windows_behind: &[Window],
+    window: &Window,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    if state.decoration_theme().titlebar_mode != TitlebarColorMode::Theme {
+        return;
+    }
+    let Some(frame) = window_frame(state, window) else {
+        return;
+    };
+    if !frame.has_titlebar {
+        return;
+    }
+    let theme = state.decoration_theme();
+    let coverage = Rectangle::new(
+        frame.client.loc - Point::from((0, theme.titlebar_height)) - ctx.output_geo.loc,
+        (frame.client.size.w, theme.titlebar_height).into(),
+    );
+    blur::push_backdrop(
+        renderer,
+        state,
+        output,
+        ctx,
+        shaders,
+        font,
+        windows_behind,
+        coverage,
+        &[coverage],
+        None,
+        elements,
+    );
 }
 
 struct FrameContext {
@@ -661,15 +719,21 @@ fn window_elements(
         .unwrap_or_default();
 
     let decorated = (frame.has_border || frame.has_content_outline) && shaders.is_some();
-    // Sample before drawing controls. Titlebars use this in blend mode, and
+    // Sample before drawing controls. Dynamic titlebar modes use this, and
     // hybrid controls use the dominant top-edge color for readable glyphs.
     let titlebar_source = match shaders {
         Some(shaders)
             if overlay_controls
                 || (decorated
                     && frame.has_titlebar
-                    && state.decoration_theme().titlebar_mode == TitlebarColorMode::Blend) =>
+                    && matches!(
+                        state.decoration_theme().titlebar_mode,
+                        TitlebarColorMode::Blend
+                            | TitlebarColorMode::Auto
+                            | TitlebarColorMode::Gradient
+                    )) =>
         {
+            let mode = state.decoration_theme().titlebar_mode;
             let decoration = state.decorations.entry(id).or_default();
             titlebar_pixel_source(
                 renderer,
@@ -679,6 +743,7 @@ fn window_elements(
                 frame.client.size,
                 scale,
                 shaders,
+                mode,
             )
         }
         _ => {
@@ -688,20 +753,30 @@ fn window_elements(
             None
         }
     };
-
-    if decorated && frame.has_titlebar {
-        let theme = state.decoration_theme().clone();
-        let buffer_scale = (scale.ceil() as i32).max(1);
-        let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
+    let titlebar_background = {
+        let theme = state.decoration_theme();
         let fill = if focused {
             theme.active_titlebar
         } else {
             theme.inactive_titlebar
         };
-        let background = titlebar_source
+        titlebar_source
             .as_ref()
-            .and_then(|source| source.average)
-            .map_or(fill, |average| over(average, fill));
+            .and_then(|source| {
+                if theme.titlebar_mode == TitlebarColorMode::Auto {
+                    source.dominant
+                } else {
+                    source.average
+                }
+            })
+            .map_or(fill, |average| over(average, fill))
+    };
+
+    if decorated && frame.has_titlebar {
+        let theme = state.decoration_theme().clone();
+        let buffer_scale = (scale.ceil() as i32).max(1);
+        let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
+        let background = titlebar_background;
         let foreground = contrasting(background);
         // Unfocused windows fade their text and glyphs toward the
         // background instead of switching to a separate palette.
@@ -737,19 +812,14 @@ fn window_elements(
             if rect.width <= 0 || rect.height <= 0 {
                 continue;
             }
-            let look = if state.hovered_button == Some((id, button)) {
-                ButtonLook {
-                    glyph,
-                    disc: semantic,
-                    glyph_color: contrasting(semantic),
-                }
-            } else {
-                ButtonLook {
-                    glyph,
-                    disc: with_alpha(foreground, if focused { 0x1c } else { 0x10 }),
-                    glyph_color: with_alpha(muted, 0xd8),
-                }
-            };
+            let look = decoration_button_look(
+                theme.button_style,
+                glyph,
+                semantic,
+                foreground,
+                focused,
+                state.hovered_button == Some((id, button)),
+            );
             decoration.update_button(index, look, rect.width, buffer_scale);
             if let Some((buffer, size)) = decoration.button_buffer(index) {
                 let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
@@ -868,10 +938,6 @@ fn window_elements(
         } else {
             with_alpha(foreground, 0xa0)
         };
-        let light_background = titlebar_source
-            .as_ref()
-            .and_then(|source| source.average)
-            .is_some_and(|color| luminance(color) > 0.179);
         let buffer_scale = (scale.ceil() as i32).max(1);
         let decoration = state.decorations.entry(id).or_default();
         for (index, (button, rect, glyph)) in [
@@ -897,27 +963,19 @@ fn window_elements(
             if rect.width <= 0 || rect.height <= 0 {
                 continue;
             }
-            // Match the shell mock's quiet, neutral controls: white on dark
-            // and midnight surfaces, a very light grey on bright surfaces.
-            // Hovering only increases opacity; it does not turn controls
-            // into coloured traffic lights.
             let hovered = state.hovered_button == Some((id, button));
-            let disc_alpha = if light_background {
-                if hovered {
-                    0x1f
-                } else {
-                    0x12
-                }
-            } else if hovered {
-                0x30
-            } else {
-                0x1c
-            };
-            let look = ButtonLook {
+            let look = decoration_button_look(
+                theme.button_style,
                 glyph,
-                disc: with_alpha(foreground, disc_alpha),
-                glyph_color: foreground,
-            };
+                match button {
+                    DecorationButton::Close => theme.close_button,
+                    DecorationButton::Maximize => theme.maximize_button,
+                    DecorationButton::Minimize => theme.minimize_button,
+                },
+                foreground,
+                true,
+                hovered,
+            );
             decoration.update_button(index, look, rect.width, buffer_scale);
             if let Some((buffer, size)) = decoration.button_buffer(index) {
                 let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
@@ -931,7 +989,7 @@ fn window_elements(
     }
 
     if let (true, Some(shaders)) = (decorated, shaders) {
-        let theme = state.decoration_theme();
+        let theme = state.decoration_theme().clone();
         let params = FrameParams {
             radius: state.corner_radius(frame.frame) as f32,
             border_width: theme.border_width as f32,
@@ -948,10 +1006,26 @@ fn window_elements(
             // Stays painted under the sampled strip so a translucent first
             // row blends onto the theme color, not onto whatever is behind
             // the window.
-            titlebar_color: rgba(if focused {
-                theme.active_titlebar
-            } else {
-                theme.inactive_titlebar
+            titlebar_color: rgba(match theme.titlebar_mode {
+                // Auto condenses the sampled edge into one stable color.
+                TitlebarColorMode::Auto => titlebar_background,
+                // Theme is a translucent surface over the compositor-provided
+                // backdrop blur, so the underlying scene still reads through.
+                TitlebarColorMode::Theme => with_alpha(
+                    if focused {
+                        theme.active_titlebar
+                    } else {
+                        theme.inactive_titlebar
+                    },
+                    0xd8,
+                ),
+                _ => {
+                    if focused {
+                        theme.active_titlebar
+                    } else {
+                        theme.inactive_titlebar
+                    }
+                }
             }),
         };
         let decoration = state.decorations.entry(id).or_default();
@@ -968,7 +1042,13 @@ fn window_elements(
             origin,
             scale,
             alpha,
-            titlebar_source.as_ref().map(|source| &source.pixels),
+            titlebar_source.as_ref().and_then(|source| {
+                matches!(
+                    theme.titlebar_mode,
+                    TitlebarColorMode::Blend | TitlebarColorMode::Gradient
+                )
+                .then_some(&source.pixels)
+            }),
         ) {
             elements.push(element.into());
         }
@@ -994,6 +1074,8 @@ struct SampledTitlebar {
     /// The strip's average color, premultiplied, for picking contrasting
     /// text and button colors.
     average: Option<[u8; 4]>,
+    /// The most frequent exact pixel color, used by Auto mode.
+    dominant: Option<[u8; 4]>,
 }
 
 /// Refreshes the window's cached titlebar strip and returns it.
@@ -1005,6 +1087,7 @@ fn titlebar_pixel_source(
     size: smithay::utils::Size<i32, Logical>,
     scale: f64,
     shaders: &Shaders,
+    mode: TitlebarColorMode,
 ) -> Option<SampledTitlebar> {
     let size = size.to_physical_precise_round(scale);
     if size.is_empty() {
@@ -1034,6 +1117,7 @@ fn titlebar_pixel_source(
             scale,
             rendered: false,
             average: None,
+            dominant: None,
         });
     }
     let strip = decoration.strip.as_mut()?;
@@ -1069,10 +1153,14 @@ fn titlebar_pixel_source(
             .map_err(|error| tracing::warn!(%error, "failed to render titlebar pixel source"))
             .ok()?;
         let changed = result.damage.is_some_and(|damage| !damage.is_empty());
-        if changed || strip.average.is_none() {
+        if changed || strip.average.is_none() || strip.dominant.is_none() {
             // A single row is tiny; reading it back only when the client
             // repaints that row keeps the stall off the steady state.
-            strip.average = average_row(renderer, &framebuffer, strip_size.w);
+            if let Some((average, dominant)) = row_statistics(renderer, &framebuffer, strip_size.w)
+            {
+                strip.average = Some(average);
+                strip.dominant = Some(dominant);
+            }
         }
         changed
     };
@@ -1082,18 +1170,22 @@ fn titlebar_pixel_source(
             texture: strip.texture.clone(),
             row: Rectangle::new((0.0, 0.0).into(), (strip_size.w as f64, 1.0).into()),
             transform: Transform::Normal,
-            program: shaders.titlebar_blend.clone(),
+            program: match mode {
+                TitlebarColorMode::Gradient => shaders.titlebar_gradient.clone(),
+                _ => shaders.titlebar_blend.clone(),
+            },
         },
         changed,
         average: strip.average,
+        dominant: strip.dominant,
     })
 }
 
-fn average_row(
+fn row_statistics(
     renderer: &mut GlesRenderer,
     framebuffer: &GlesTarget<'_>,
     width: i32,
-) -> Option<[u8; 4]> {
+) -> Option<([u8; 4], [u8; 4])> {
     let mapping = renderer
         .copy_framebuffer(
             framebuffer,
@@ -1105,12 +1197,19 @@ fn average_row(
     let pixels = renderer.map_texture(&mapping).ok()?;
     let count = (pixels.len() / 4).max(1) as u64;
     let mut sum = [0u64; 4];
+    let mut frequencies = std::collections::BTreeMap::<[u8; 4], usize>::new();
     for px in pixels.chunks_exact(4) {
+        let color = [px[0], px[1], px[2], px[3]];
+        *frequencies.entry(color).or_default() += 1;
         for (total, channel) in sum.iter_mut().zip(px) {
             *total += u64::from(*channel);
         }
     }
-    Some(sum.map(|total| (total / count) as u8))
+    let dominant = frequencies
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(color, _)| color)?;
+    Some((sum.map(|total| (total / count) as u8), dominant))
 }
 
 /// Composites a premultiplied `top` over an opaque straight `base`.
@@ -1128,6 +1227,52 @@ fn over(top: [u8; 4], base: [u8; 4]) -> [u8; 4] {
 
 fn with_alpha(color: [u8; 4], alpha: u8) -> [u8; 4] {
     [color[0], color[1], color[2], alpha]
+}
+
+/// Uses one control language in both server and hybrid decorations.
+fn decoration_button_look(
+    style: DecorationButtonStyle,
+    glyph: ButtonGlyph,
+    semantic: [u8; 4],
+    foreground: [u8; 4],
+    focused: bool,
+    hovered: bool,
+) -> ButtonLook {
+    match style {
+        DecorationButtonStyle::Normal => ButtonLook {
+            glyph,
+            glyph_visible: true,
+            disc: with_alpha(
+                foreground,
+                if hovered {
+                    if focused {
+                        0x30
+                    } else {
+                        0x24
+                    }
+                } else if focused {
+                    0x1c
+                } else {
+                    0x10
+                },
+            ),
+            glyph_color: foreground,
+        },
+        DecorationButtonStyle::TrafficLights => ButtonLook {
+            glyph,
+            glyph_visible: false,
+            // A lighter hover, rather than a glyph, is the interaction cue.
+            disc: with_alpha(
+                mix(
+                    semantic,
+                    [0xff, 0xff, 0xff, 0xff],
+                    if hovered { 0.22 } else { 0.06 },
+                ),
+                if focused { 0xff } else { 0xb8 },
+            ),
+            glyph_color: [0; 4],
+        },
+    }
 }
 
 fn push_memory_element(

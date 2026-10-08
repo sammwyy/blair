@@ -96,6 +96,62 @@ void main() {
 }
 "#;
 
+// Six evenly-spaced averaged samples retain the character of an application's
+// header without making an isolated edge pixel into a visible color stop.
+const TITLEBAR_GRADIENT_SHADER: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision highp float;
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+uniform mat3 titlebar_from_ndc;
+uniform vec2 viewport;
+uniform vec2 titlebar_size;
+uniform float radius;
+varying vec2 v_coords;
+
+float top_corner_coverage(vec2 pos) {
+    float r = min(max(radius, 0.0), titlebar_size.x * 0.5);
+    if (r == 0.0 || pos.y >= r || (pos.x >= r && pos.x <= titlebar_size.x - r)) return 1.0;
+    vec2 center = pos.x < r ? vec2(r, r) : vec2(titlebar_size.x - r, r);
+    return clamp(0.5 - (length(pos - center) - r), 0.0, 1.0);
+}
+
+vec4 averaged_sample(float x) {
+    // Each stop averages a 4%-wide horizontal neighbourhood. This smooths
+    // anti-aliased edges and abrupt layout boundaries before interpolation.
+    vec4 color = vec4(0.0);
+    for (int i = -3; i <= 3; i++) {
+        float offset = float(i) * (0.04 / 6.0);
+        color += texture2D(tex, vec2(clamp(x + offset, 0.0, 1.0), 0.5));
+    }
+    return color / 7.0;
+}
+
+vec4 sample_gradient(float x) {
+    float segment = x * 5.0;
+    float left = floor(segment) / 5.0;
+    float right = min(left + 0.2, 1.0);
+    return mix(averaged_sample(left), averaged_sample(right), fract(segment));
+}
+
+void main() {
+    vec2 ndc = gl_FragCoord.xy / viewport * 2.0 - 1.0;
+    vec2 pos = (titlebar_from_ndc * vec3(ndc, 1.0)).xy;
+    gl_FragColor = sample_gradient(v_coords.x) * alpha * top_corner_coverage(pos);
+}
+"#;
+
 pub fn compile(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
     renderer.compile_custom_pixel_shader(
         FRAME_SHADER,
@@ -112,6 +168,18 @@ pub fn compile(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesErro
 pub fn compile_titlebar_blend(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     renderer.compile_custom_texture_shader(
         TITLEBAR_BLEND_SHADER,
+        &[
+            UniformName::new("titlebar_from_ndc", UniformType::Matrix3x3),
+            UniformName::new("viewport", UniformType::_2f),
+            UniformName::new("titlebar_size", UniformType::_2f),
+            UniformName::new("radius", UniformType::_1f),
+        ],
+    )
+}
+
+pub fn compile_titlebar_gradient(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        TITLEBAR_GRADIENT_SHADER,
         &[
             UniformName::new("titlebar_from_ndc", UniformType::Matrix3x3),
             UniformName::new("viewport", UniformType::_2f),
@@ -152,6 +220,8 @@ pub struct TitlebarStrip {
     pub rendered: bool,
     /// Average premultiplied color of the strip, read back when it changes.
     pub average: Option<[u8; 4]>,
+    /// Most frequent premultiplied color in the strip, for Auto titlebars.
+    pub dominant: Option<[u8; 4]>,
 }
 
 impl std::fmt::Debug for TitlebarStrip {
@@ -555,6 +625,7 @@ pub enum ButtonGlyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ButtonLook {
     pub glyph: ButtonGlyph,
+    pub glyph_visible: bool,
     pub disc: [u8; 4],
     pub glyph_color: [u8; 4],
 }
@@ -586,7 +657,11 @@ fn rasterize_button(look: ButtonLook, size: i32) -> Vec<u8> {
                     (px.abs().max(py.abs()) - side).abs()
                 }
             };
-            let glyph = (stroke / 2.0 + 0.5 - distance).clamp(0.0, 1.0) * disc;
+            let glyph = if look.glyph_visible {
+                (stroke / 2.0 + 0.5 - distance).clamp(0.0, 1.0) * disc
+            } else {
+                0.0
+            };
 
             let offset = (y as usize * size as usize + x as usize) * 4;
             let base_alpha = f32::from(look.disc[3]) / 255.0 * disc;
@@ -658,6 +733,7 @@ mod tests {
         let size = 20;
         let look = ButtonLook {
             glyph: ButtonGlyph::Close,
+            glyph_visible: true,
             disc: [0, 0, 0, 0],
             glyph_color: [255, 255, 255, 255],
         };

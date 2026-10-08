@@ -132,7 +132,9 @@ mode = "auto"
 titlebar_height = 64
 # Titlebar background (case-insensitive):
 #   blend - sampled from the top of each window's content (default)
-#   theme - the CreamUI system surface color
+#   auto - the most frequent color on that edge
+#   gradient - a smooth gradient from six averaged zones across that edge
+#   theme - a blurred CreamUI system surface
 #   color - custom_titlebar_color below
 # Title text and buttons pick a contrasting color automatically.
 titlebar_color = "blend"
@@ -161,6 +163,8 @@ drag_margin = 0
 [decorations.buttons]
 layout = ["minimize", "maximize", "close"]
 side = "left"
+# normal: neutral controls with glyphs | traffic_lights: colored macOS-style dots
+style = "normal"
 # Logical pixels. Increase `size` for larger circular controls; use
 # `edge_padding` to move the outer control nearer/farther from the edge.
 size = 20

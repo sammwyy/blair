@@ -1,4 +1,6 @@
-use crate::config::{DecorationButton, DecorationButtonSide, TitlebarColorMode};
+use crate::config::{
+    DecorationButton, DecorationButtonSide, DecorationButtonStyle, TitlebarColorMode,
+};
 
 /// Decoration settings resolved against the system theme: every color here
 /// is final, and `border_width` is already 0 when the border is hidden.
@@ -19,6 +21,7 @@ pub struct DecorationTheme {
     pub minimize_button: [u8; 4],
     pub button_layout: Vec<DecorationButton>,
     pub button_side: DecorationButtonSide,
+    pub button_style: DecorationButtonStyle,
     pub button_size: i32,
     pub button_gap: i32,
     pub button_edge_padding: i32,

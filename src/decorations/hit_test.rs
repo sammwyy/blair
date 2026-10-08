@@ -137,6 +137,7 @@ mod tests {
             minimize_button: [0; 4],
             button_layout: vec![DecorationButton::Close],
             button_side: DecorationButtonSide::Right,
+            button_style: crate::config::DecorationButtonStyle::Normal,
             button_size: 20,
             button_gap: 6,
             button_edge_padding: 12,

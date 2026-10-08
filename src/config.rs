@@ -668,10 +668,24 @@ config_enum!(
         /// Sampled from the top of the window's own content.
         #[default]
         Blend => "blend",
+        /// A single color averaged from the top of the window's content.
+        Auto => "auto",
+        /// A smooth gradient interpolated from samples across the content's top edge.
+        Gradient => "gradient",
         /// The system theme's surface color.
         Theme => "theme",
         /// `custom_titlebar_color`.
         Color => "color",
+    }
+);
+
+config_enum!(
+    DecorationButtonStyle {
+        /// Quiet neutral discs with contrast-aware glyphs.
+        #[default]
+        Normal => "normal",
+        /// macOS-inspired colored discs without center glyphs.
+        TrafficLights => "traffic_lights",
     }
 );
 
@@ -734,6 +748,8 @@ pub enum DecorationModeConfig {
 pub struct DecorationButtonsConfig {
     pub layout: Vec<DecorationButton>,
     pub side: DecorationButtonSide,
+    /// Visual treatment for server and hybrid window controls.
+    pub style: DecorationButtonStyle,
     /// Diameter of each circular titlebar control, in logical pixels.
     pub size: i32,
     /// Space between adjacent titlebar controls, in logical pixels.
@@ -767,6 +783,7 @@ impl Default for DecorationButtonsConfig {
                 DecorationButton::Close,
             ],
             side: DecorationButtonSide::Right,
+            style: DecorationButtonStyle::Normal,
             size: 20,
             gap: 6,
             edge_padding: 12,
@@ -937,6 +954,7 @@ impl DecorationConfig {
             minimize_button,
             button_layout: self.buttons.layout.clone(),
             button_side: self.buttons.side,
+            button_style: self.buttons.style,
             button_size: self.buttons.size,
             button_gap: self.buttons.gap,
             button_edge_padding: self.buttons.edge_padding,
@@ -1498,6 +1516,29 @@ mod tests {
         assert_eq!(config.decorations.border, BorderColorMode::None);
         assert_eq!(config.decorations.border_size, BorderSize::Bold);
         assert!(toml::from_str::<CompositorConfig>("[decorations]\nborder = \"thick\"\n").is_err());
+    }
+
+    #[test]
+    fn parses_auto_and_gradient_titlebar_colors() {
+        let auto: CompositorConfig =
+            toml::from_str("[decorations]\ntitlebar_color = \"AUTO\"\n").unwrap();
+        let gradient: CompositorConfig =
+            toml::from_str("[decorations]\ntitlebar_color = \"gradient\"\n").unwrap();
+        assert_eq!(auto.decorations.titlebar_color, TitlebarColorMode::Auto);
+        assert_eq!(
+            gradient.decorations.titlebar_color,
+            TitlebarColorMode::Gradient
+        );
+    }
+
+    #[test]
+    fn parses_traffic_light_button_style() {
+        let config: CompositorConfig =
+            toml::from_str("[decorations.buttons]\nstyle = \"traffic_lights\"\n").unwrap();
+        assert_eq!(
+            config.decorations.buttons.style,
+            DecorationButtonStyle::TrafficLights
+        );
     }
 
     #[test]
