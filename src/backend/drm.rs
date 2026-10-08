@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use smithay::reexports::input::{AccelProfile, Device as LibinputDevice, Libinput};
+use smithay::reexports::input::{AccelProfile, Device as LibinputDevice, Libinput, ScrollMethod};
 use smithay::{
     backend::{
         allocator::{
@@ -653,14 +653,30 @@ fn configure_input_device(device: &mut LibinputDevice, config: &InputConfig) {
     if let Err(error) = device.config_tap_set_enabled(config.touchpad.tap) {
         tracing::debug!(?error, device = %device.name(), "tap-to-click unsupported");
     }
-    if let Err(error) =
-        device.config_scroll_set_natural_scroll_enabled(config.touchpad.natural_scroll)
-    {
+    let natural_scroll = natural_scroll_for_device(
+        device.config_tap_finger_count(),
+        device.config_scroll_default_method(),
+        config,
+    );
+    if let Err(error) = device.config_scroll_set_natural_scroll_enabled(natural_scroll) {
         tracing::debug!(?error, device = %device.name(), "natural scrolling unsupported");
     }
     if let Err(error) = device.config_dwt_set_enabled(config.touchpad.disable_while_typing) {
         tracing::debug!(?error, device = %device.name(), "disable-while-typing unsupported");
     }
+}
+
+fn natural_scroll_for_device(
+    tap_fingers: u32,
+    scroll_method: Option<ScrollMethod>,
+    config: &InputConfig,
+) -> bool {
+    let touchpad = tap_fingers > 0
+        || matches!(
+            scroll_method,
+            Some(ScrollMethod::TwoFinger | ScrollMethod::Edge)
+        );
+    touchpad && config.touchpad.natural_scroll
 }
 
 fn log_input_device(message: &'static str, device: &impl InputDevice) {
@@ -1162,4 +1178,37 @@ fn current_master_diagnostic(card: &std::path::Path, holders: &[(u32, String)]) 
         holders,
         hint
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_scrolling_is_not_inverted_by_touchpad_preferences() {
+        let mut config = InputConfig::default();
+        config.touchpad.natural_scroll = true;
+        for method in [
+            None,
+            Some(ScrollMethod::NoScroll),
+            Some(ScrollMethod::OnButtonDown),
+        ] {
+            assert!(!natural_scroll_for_device(0, method, &config));
+        }
+    }
+
+    #[test]
+    fn touchpads_honor_natural_scrolling_even_without_tap_support() {
+        let mut config = InputConfig::default();
+        for (tap_fingers, method) in [
+            (3, Some(ScrollMethod::NoScroll)),
+            (0, Some(ScrollMethod::TwoFinger)),
+            (0, Some(ScrollMethod::Edge)),
+        ] {
+            config.touchpad.natural_scroll = true;
+            assert!(natural_scroll_for_device(tap_fingers, method, &config));
+            config.touchpad.natural_scroll = false;
+            assert!(!natural_scroll_for_device(tap_fingers, method, &config));
+        }
+    }
 }

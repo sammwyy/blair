@@ -38,6 +38,10 @@ enum ShortcutKey {
     Space,
     Escape,
     F(u8),
+    VolumeUp,
+    VolumeDown,
+    BrightnessUp,
+    BrightnessDown,
 }
 
 const MAX_BINDINGS_PER_CLIENT: usize = 256;
@@ -152,7 +156,18 @@ impl ShortcutKey {
             ShortcutKey::F(n) => {
                 physical_f_keycode(*n).is_some_and(|keycode| pressed_keys.contains(&keycode))
             }
+            ShortcutKey::VolumeUp => pressed_keys.contains(&evdev_to_smithay(115)),
+            ShortcutKey::VolumeDown => pressed_keys.contains(&evdev_to_smithay(114)),
+            ShortcutKey::BrightnessUp => pressed_keys.contains(&evdev_to_smithay(225)),
+            ShortcutKey::BrightnessDown => pressed_keys.contains(&evdev_to_smithay(224)),
         }
+    }
+
+    fn is_media_key(&self) -> bool {
+        matches!(
+            self,
+            Self::VolumeUp | Self::VolumeDown | Self::BrightnessUp | Self::BrightnessDown
+        )
     }
 }
 
@@ -184,7 +199,12 @@ fn parse_binding(client: &str, id: &str, accelerator: &str) -> Result<ShortcutBi
         }
     }
 
-    if !mods.ctrl && !mods.alt && !mods.shift && !mods.logo {
+    if !mods.ctrl
+        && !mods.alt
+        && !mods.shift
+        && !mods.logo
+        && !(keys.len() == 1 && keys[0].is_media_key())
+    {
         return Err("shortcut has no modifier key".to_string());
     }
     Ok(ShortcutBinding {
@@ -223,6 +243,10 @@ fn key_aliases() -> HashMap<&'static str, ShortcutKey> {
         ("space", ShortcutKey::Space),
         ("esc", ShortcutKey::Escape),
         ("escape", ShortcutKey::Escape),
+        ("xf86audioraisevolume", ShortcutKey::VolumeUp),
+        ("xf86audiolowervolume", ShortcutKey::VolumeDown),
+        ("xf86monbrightnessup", ShortcutKey::BrightnessUp),
+        ("xf86monbrightnessdown", ShortcutKey::BrightnessDown),
     ])
 }
 
@@ -355,7 +379,62 @@ mod tests {
     fn rejects_accelerators_without_modifiers() {
         let mut registry = ShortcutRegistry::default();
         assert!(!registry.bind(":1.4", "broken", "T"));
+        assert!(!registry.bind(":1.4", "empty", ""));
+        assert!(!registry.bind(":1.4", "chord", "XF86AudioRaiseVolume+T"));
         assert_eq!(registry.bindings.len(), 0);
+    }
+
+    #[test]
+    fn media_keys_activate_without_modifiers_and_rearm_on_release() {
+        for (accelerator, code) in [
+            ("XF86AudioRaiseVolume", 115),
+            ("XF86AudioLowerVolume", 114),
+            ("XF86MonBrightnessUp", 225),
+            ("XF86MonBrightnessDown", 224),
+        ] {
+            let mut registry = ShortcutRegistry::default();
+            assert!(registry.bind(":1.4", "media", accelerator));
+            registry.update_key(evdev_to_smithay(code), true);
+            let expected = vec![ActivatedShortcut {
+                client: ":1.4".to_string(),
+                id: "media".to_string(),
+            }];
+            assert_eq!(
+                registry.maybe_activate_physical(PhysicalMods::default()),
+                expected
+            );
+            assert!(registry
+                .maybe_activate_physical(PhysicalMods::default())
+                .is_empty());
+            registry.update_key(evdev_to_smithay(code), false);
+            assert!(registry
+                .maybe_activate_physical(PhysicalMods::default())
+                .is_empty());
+            registry.update_key(evdev_to_smithay(code), true);
+            assert_eq!(
+                registry.maybe_activate_physical(PhysicalMods::default()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn media_shortcuts_require_their_configured_modifiers() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind(":1.4", "media", "Ctrl+xf86audioraisevolume"));
+        registry.update_key(evdev_to_smithay(115), true);
+        assert!(registry
+            .maybe_activate_physical(PhysicalMods::default())
+            .is_empty());
+        assert_eq!(
+            registry
+                .maybe_activate_physical(PhysicalMods {
+                    ctrl: true,
+                    ..Default::default()
+                })
+                .len(),
+            1
+        );
     }
 
     #[test]

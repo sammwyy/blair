@@ -329,7 +329,7 @@ impl Default for TouchpadConfig {
     fn default() -> Self {
         Self {
             tap: true,
-            natural_scroll: true,
+            natural_scroll: false,
             disable_while_typing: true,
         }
     }
@@ -1263,6 +1263,15 @@ mod tests {
         let restored: CompositorConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.window.default_width, config.window.default_width);
         assert!(restored.integrations.dbus);
+    }
+
+    #[test]
+    fn touchpad_scrolling_is_conventional_unless_natural_is_requested() {
+        let default: TouchpadConfig = toml::from_str("").expect("touchpad defaults");
+        assert!(!default.natural_scroll);
+        let natural: TouchpadConfig =
+            toml::from_str("natural_scroll = true").expect("explicit natural scrolling");
+        assert!(natural.natural_scroll);
     }
 
     #[test]

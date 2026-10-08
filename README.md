@@ -113,7 +113,7 @@ vrr = true
 
 [input.touchpad]
 tap = true
-natural_scroll = true
+natural_scroll = false
 disable_while_typing = true
 
 [animations]
