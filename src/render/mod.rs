@@ -214,6 +214,11 @@ pub fn output_elements(
     let fullscreen = windows
         .last()
         .is_some_and(|window| state.window_is_fullscreen(window));
+    let popup_backdrop = PopupBackdrop {
+        output,
+        font: &font,
+        windows: &windows,
+    };
 
     layer_elements(
         renderer,
@@ -222,6 +227,7 @@ pub fn output_elements(
         &ctx,
         shaders,
         &[Layer::Overlay],
+        Some(&popup_backdrop),
         &mut elements,
     );
     layer_blur_elements(
@@ -243,6 +249,7 @@ pub fn output_elements(
             &ctx,
             shaders,
             &[Layer::Top],
+            Some(&popup_backdrop),
             &mut elements,
         );
         layer_blur_elements(
@@ -290,6 +297,7 @@ pub fn output_elements(
         &ctx,
         shaders,
         &[Layer::Bottom, Layer::Background],
+        None,
         &mut elements,
     );
     elements
@@ -387,42 +395,68 @@ pub fn cursor_is_animated(state: &BlairState, output: &Output) -> bool {
     }
 }
 
+struct PopupBackdrop<'a> {
+    output: &'a Output,
+    font: &'a creamui_fonts::FontFace,
+    windows: &'a [Window],
+}
+
 /// Renders each layer's own content plus its popups, popups clipped
 /// separately (not via `LayerSurface::render_elements`, which bundles them
 /// unclipped) so a dock-anchored panel gets the same corner clip as a
 /// toplevel-anchored one.
+#[allow(clippy::too_many_arguments)]
 fn layer_elements(
     renderer: &mut GlesRenderer,
-    state: &BlairState,
+    state: &mut BlairState,
     output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
     layers: &[Layer],
+    backdrop: Option<&PopupBackdrop<'_>>,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let scale = ctx.scale;
-    let map = layer_map_for_output(output);
     for &layer in layers {
-        for surface in map.layers_on(layer).rev() {
-            let Some(geometry) = map.layer_geometry(surface) else {
-                continue;
-            };
-            let wl_surface = surface.wl_surface();
-            for (popup, popup_offset) in PopupManager::popups_for_surface(wl_surface) {
-                push_popup_elements(
-                    renderer,
-                    state,
-                    ctx,
-                    shaders,
-                    &popup,
-                    geometry.loc + popup_offset,
-                    1.0,
-                    elements,
-                );
+        let surfaces: Vec<_> = {
+            let map = layer_map_for_output(output);
+            map.layers_on(layer)
+                .rev()
+                .filter_map(|surface| {
+                    Some((surface.wl_surface().clone(), map.layer_geometry(surface)?))
+                })
+                .collect()
+        };
+        for (wl_surface, geometry) in surfaces {
+            for (popup, popup_offset) in PopupManager::popups_for_surface(&wl_surface) {
+                let root = geometry.loc + popup_offset;
+                let clip =
+                    push_popup_elements(renderer, state, ctx, shaders, &popup, root, 1.0, elements);
+                if let (Some(backdrop), Some(clip)) = (backdrop, clip) {
+                    if state.config.blur.enabled {
+                        if let Some(region) = crate::blur::blur_of(popup.wl_surface()) {
+                            let bounds = clip.rect.to_f64().to_logical(scale).to_i32_round();
+                            let coverage = surface_blur_rects(region, root, bounds.size);
+                            blur::push_backdrop(
+                                renderer,
+                                state,
+                                backdrop.output,
+                                ctx,
+                                shaders,
+                                backdrop.font,
+                                backdrop.windows,
+                                bounds,
+                                &coverage,
+                                Some(clip),
+                                elements,
+                            );
+                        }
+                    }
+                }
             }
             elements.extend(surface_tree_elements(
                 renderer,
-                wl_surface,
+                &wl_surface,
                 geometry.loc.to_physical_precise_round(scale),
                 scale,
                 1.0,
@@ -444,7 +478,7 @@ fn push_popup_elements(
     root: Point<i32, Logical>,
     alpha: f32,
     elements: &mut Vec<OutputRenderElement>,
-) {
+) -> Option<RoundedClip> {
     let scale = ctx.scale;
     let content_location = root.to_physical_precise_round(scale);
     let content: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
@@ -484,6 +518,7 @@ fn push_popup_elements(
             _ => elements.push(element.into()),
         }
     }
+    clip
 }
 
 /// Pushes a blurred backdrop for `window`, if it has an active
@@ -528,6 +563,7 @@ fn push_window_blur(
         windows_behind,
         frame_rect,
         &coverage,
+        None,
         elements,
     );
 }
@@ -584,7 +620,7 @@ fn layer_blur_elements(
             continue;
         };
         blur::push_backdrop(
-            renderer, state, output, ctx, shaders, font, windows, bounds, &coverage, elements,
+            renderer, state, output, ctx, shaders, font, windows, bounds, &coverage, None, elements,
         );
     }
 }
@@ -614,7 +650,7 @@ fn window_elements(
 
     for (popup, offset) in PopupManager::popups_for_surface(&surface) {
         let root = render_loc + window.geometry().loc + offset;
-        push_popup_elements(renderer, state, ctx, shaders, &popup, root, alpha, elements);
+        let _ = push_popup_elements(renderer, state, ctx, shaders, &popup, root, alpha, elements);
     }
 
     let focused = state.focused_window == Some(id);

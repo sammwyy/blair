@@ -13,7 +13,7 @@ use smithay::{
             },
             gles::{
                 GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
-                UniformName, UniformType,
+                UniformName, UniformType, UniformValue,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions},
             Bind, Offscreen, Renderer,
@@ -26,7 +26,8 @@ use smithay::{
 };
 
 use super::{
-    layer_elements, window_elements, FrameContext, OutputRenderElement, Shaders, CLEAR_COLOR,
+    clip::local_from_ndc, layer_elements, window_elements, FrameContext, OutputRenderElement,
+    RoundedClip, Shaders, CLEAR_COLOR,
 };
 use crate::state::BlairState;
 
@@ -39,6 +40,21 @@ varying vec2 v_coords;
 
 uniform vec2 texel;
 uniform float spread;
+uniform mat3 clip_from_ndc;
+uniform vec2 viewport;
+uniform vec2 clip_size;
+uniform vec4 clip_radii;
+
+float coverage(vec2 p) {
+    vec2 half_size = clip_size * 0.5;
+    vec2 c = p - half_size;
+    float r = c.x < 0.0
+        ? (c.y < 0.0 ? clip_radii.x : clip_radii.w)
+        : (c.y < 0.0 ? clip_radii.y : clip_radii.z);
+    vec2 q = abs(c) - half_size + vec2(r);
+    float d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    return clamp(0.5 - d, 0.0, 1.0);
+}
 
 void main() {
     vec4 sum = vec4(0.0);
@@ -52,7 +68,9 @@ void main() {
             total += weight;
         }
     }
-    gl_FragColor = (sum / total) * alpha;
+    vec2 ndc = gl_FragCoord.xy / viewport * 2.0 - 1.0;
+    gl_FragColor = (sum / total) * alpha
+        * coverage((clip_from_ndc * vec3(ndc, 1.0)).xy);
 }
 "#;
 
@@ -62,6 +80,10 @@ pub fn compile(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError>
         &[
             UniformName::new("texel", UniformType::_2f),
             UniformName::new("spread", UniformType::_1f),
+            UniformName::new("clip_from_ndc", UniformType::Matrix3x3),
+            UniformName::new("viewport", UniformType::_2f),
+            UniformName::new("clip_size", UniformType::_2f),
+            UniformName::new("clip_radii", UniformType::_4f),
         ],
     )
 }
@@ -82,6 +104,7 @@ pub(super) fn push_backdrop(
     windows_behind: &[Window],
     frame_rect: Rectangle<i32, Logical>,
     coverage: &[Rectangle<i32, Logical>],
+    clip: Option<RoundedClip>,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let Some(shaders) = shaders else { return };
@@ -119,6 +142,7 @@ pub(super) fn push_backdrop(
         ctx,
         Some(shaders),
         &[Layer::Bottom, Layer::Background],
+        None,
         &mut backdrop,
     );
 
@@ -174,8 +198,14 @@ pub(super) fn push_backdrop(
                 .map(|rect| Rectangle::new(rect.loc - frame_rect_physical.loc, rect.size))
         })
         .collect();
+    let clip = clip.unwrap_or(RoundedClip {
+        rect: Rectangle::from_size(ctx.viewport),
+        radii: [0.0; 4],
+        viewport: ctx.viewport,
+    });
     elements.push(
-        BlurredBackdropElement::new(inner, shaders.blur.clone(), texel, radius, coverage).into(),
+        BlurredBackdropElement::new(inner, shaders.blur.clone(), texel, radius, coverage, clip)
+            .into(),
     );
 }
 
@@ -185,6 +215,7 @@ pub struct BlurredBackdropElement {
     texel: (f32, f32),
     spread: f32,
     coverage: Vec<Rectangle<i32, Physical>>,
+    clip: RoundedClip,
 }
 
 impl BlurredBackdropElement {
@@ -194,6 +225,7 @@ impl BlurredBackdropElement {
         texel: (f32, f32),
         spread: f32,
         coverage: Vec<Rectangle<i32, Physical>>,
+        clip: RoundedClip,
     ) -> Self {
         Self {
             inner,
@@ -201,6 +233,7 @@ impl BlurredBackdropElement {
             texel,
             spread,
             coverage,
+            clip,
         }
     }
 }
@@ -271,9 +304,26 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
         if damage.is_empty() {
             return Ok(());
         }
+        let [tl, tr, br, bl] = self.clip.radii;
         let uniforms = vec![
             Uniform::new("texel", self.texel),
             Uniform::new("spread", self.spread),
+            Uniform::new(
+                "clip_from_ndc",
+                UniformValue::Matrix3x3 {
+                    matrices: vec![local_from_ndc(self.clip.rect, frame.projection())],
+                    transpose: false,
+                },
+            ),
+            Uniform::new(
+                "viewport",
+                (self.clip.viewport.w as f32, self.clip.viewport.h as f32),
+            ),
+            Uniform::new(
+                "clip_size",
+                (self.clip.rect.size.w as f32, self.clip.rect.size.h as f32),
+            ),
+            Uniform::new("clip_radii", (tl, tr, br, bl)),
         ];
         frame.override_default_tex_program(self.program.clone(), uniforms);
         let result = RenderElement::<GlesRenderer>::draw(
@@ -290,5 +340,92 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::backend::{
+        egl::{EGLContext, EGLDevice, EGLDisplay},
+        renderer::{Color32F, ExportMem, ImportMem},
+    };
+
+    #[test]
+    #[ignore = "requires an EGL device with OpenGL ES support"]
+    fn popup_blur_softens_the_backdrop_and_preserves_rounded_corners() {
+        let device = EGLDevice::enumerate().unwrap().next().unwrap();
+        let display = unsafe { EGLDisplay::new(device).unwrap() };
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let program = compile(&mut renderer).unwrap();
+        let viewport: smithay::utils::Size<i32, Physical> = (64, 64).into();
+        let mut pixels = Vec::new();
+        for _y in 0..64 {
+            for x in 0..64 {
+                let value = if x < 32 { 0 } else { 255 };
+                pixels.extend([value, value, value, 255]);
+            }
+        }
+        let texture = renderer
+            .import_memory(&pixels, Fourcc::Abgr8888, (64, 64).into(), false)
+            .unwrap();
+        let inner = TextureRenderElement::from_static_texture(
+            Id::new(),
+            renderer.context_id(),
+            (0.0, 0.0),
+            texture,
+            1,
+            Transform::Normal,
+            Some(1.0),
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+        let clip = RoundedClip {
+            rect: Rectangle::new((8, 8).into(), (48, 48).into()),
+            radii: [12.0; 4],
+            viewport,
+        };
+        let element = BlurredBackdropElement::new(
+            inner,
+            program,
+            (1.0 / 64.0, 1.0 / 64.0),
+            2.0,
+            vec![Rectangle::from_size(viewport)],
+            clip,
+        );
+        let mut target = Offscreen::<GlesTexture>::create_buffer(
+            &mut renderer,
+            Fourcc::Abgr8888,
+            (64, 64).into(),
+        )
+        .unwrap();
+        let mut framebuffer = renderer.bind(&mut target).unwrap();
+        OutputDamageTracker::new(viewport, 1.0, Transform::Normal)
+            .render_output(
+                &mut renderer,
+                &mut framebuffer,
+                0,
+                &[element],
+                Color32F::new(0.0, 0.0, 0.0, 0.0),
+            )
+            .unwrap();
+        let mapping = renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::from_size((64, 64).into()),
+                Fourcc::Abgr8888,
+            )
+            .unwrap();
+        let result = renderer.map_texture(&mapping).unwrap();
+        let pixel = |x: usize, y: usize| &result[(y * 64 + x) * 4..(y * 64 + x + 1) * 4];
+        for (x, y) in [(0, 0), (8, 8), (55, 8), (8, 55), (55, 55)] {
+            assert_eq!(pixel(x, y)[3], 0, "blur outside rounded popup at {x},{y}");
+        }
+        assert_eq!(pixel(32, 32)[3], 255);
+        assert!(pixel(31, 32)[0] > 30, "dark side of edge stays sharp");
+        assert!(pixel(32, 32)[0] < 225, "light side of edge stays sharp");
     }
 }
