@@ -72,6 +72,35 @@ impl BlairClient {
         self.proxy.outputs().await
     }
 
+    pub async fn display_info(&self) -> zbus::Result<Vec<blair_protocol::DisplayInfo>> {
+        Ok(self
+            .proxy
+            .display_info()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub async fn apply_display_mode(
+        &self,
+        output: &str,
+        mode: blair_protocol::DisplayMode,
+    ) -> zbus::Result<()> {
+        Ok(self
+            .proxy
+            .apply_display_mode(output, mode.width, mode.height, mode.refresh_millihz)
+            .await?)
+    }
+
+    pub async fn confirm_display_mode(&self, output: &str) -> zbus::Result<()> {
+        Ok(self.proxy.confirm_display_mode(output).await?)
+    }
+
+    pub async fn revert_display_mode(&self, output: &str) -> zbus::Result<()> {
+        Ok(self.proxy.revert_display_mode(output).await?)
+    }
+
     pub async fn workspaces(&self) -> zbus::Result<Vec<WorkspaceInfo>> {
         Ok(self
             .proxy

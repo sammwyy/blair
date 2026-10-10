@@ -114,6 +114,28 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
             Command::Outputs(reply) => {
                 let _ = reply.send(backend.outputs());
             }
+            Command::DisplayInfo(reply) => {
+                let _ = reply.send(backend.display_info().into_iter().map(Into::into).collect());
+            }
+            Command::ApplyDisplayMode(output, mode, reply) => backend.apply_display_mode(
+                &output,
+                mode,
+                Box::new(move |result| {
+                    let _ = reply.send(result);
+                }),
+            ),
+            Command::ConfirmDisplayMode(output, reply) => backend.confirm_display_mode(
+                &output,
+                Box::new(move |result| {
+                    let _ = reply.send(result);
+                }),
+            ),
+            Command::RevertDisplayMode(output, reply) => backend.revert_display_mode(
+                &output,
+                Box::new(move |result| {
+                    let _ = reply.send(result);
+                }),
+            ),
             Command::RenderStats(reply) => {
                 let _ = reply.send(backend.render_stats());
             }

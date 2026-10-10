@@ -99,7 +99,7 @@ profiling.workspace = true
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 swash = "0.2"
-creamui-theme = { version = "0.1.2", path = "../creamui/crates/theme" }
-creamui-theme-loader = { version = "0.1.1", path = "../creamui/crates/theme-loader" }
-creamui-fonts = { version = "0.1.1", path = "../creamui/crates/fonts" }
+creamui-theme = { version = "0.2.0", path = "../creamui/crates/theme" }
+creamui-theme-loader = { version = "0.2.0", path = "../creamui/crates/theme-loader" }
+creamui-fonts = { version = "0.2.0", path = "../creamui/crates/fonts" }
 tracy-client = { version = "0.18", optional = true }

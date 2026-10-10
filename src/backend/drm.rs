@@ -86,7 +86,16 @@ struct DrmBackend {
     timer: FrameTimer,
     frames: Arc<AtomicU64>,
     active: bool,
+    modes: Vec<drm::control::Mode>,
+    preview: Option<ModePreview>,
 }
+
+struct ModePreview {
+    previous: drm::control::Mode,
+    deadline: Instant,
+}
+
+const MODE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct DrmHooks {
     session: LibSeatSession,
@@ -101,6 +110,135 @@ impl InputHooks for DrmHooks {
 }
 
 impl DrmBackend {
+    fn switch_mode(
+        &mut self,
+        state: &mut BlairState,
+        mode: drm::control::Mode,
+    ) -> std::result::Result<(), String> {
+        self.compositor
+            .use_mode(mode)
+            .map_err(|error| format!("Could not set display mode: {error}"))?;
+        self.compositor.reset_buffers();
+        let mode = OutputMode::from(mode);
+        self.output
+            .change_current_state(Some(mode), None, None, None);
+        self.refresh_interval = refresh_interval(mode.refresh);
+        self.pacer = super::FramePacer::new(self.refresh_interval);
+        self.timer.reset_presentation();
+        state.output_changed(&self.output);
+        tracing::info!(output = %self.output.name(), width = mode.size.w, height = mode.size.h, refresh = mode.refresh, "display mode changed");
+        Ok(())
+    }
+
+    fn revert_mode(&mut self, state: &mut BlairState) -> std::result::Result<(), String> {
+        let Some(preview) = self.preview.as_ref() else {
+            return Err("No display change is awaiting confirmation".into());
+        };
+        let previous = preview.previous;
+        self.switch_mode(state, previous)?;
+        self.preview = None;
+        state.display_confirmations.remove(&self.output.name());
+        Ok(())
+    }
+
+    fn process_display_requests(&mut self, state: &mut BlairState) {
+        use crate::outputs::DisplayAction;
+        if self.active
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| Instant::now() >= preview.deadline)
+        {
+            if let Err(error) = self.revert_mode(state) {
+                tracing::error!(%error, "failed to revert expired display preview; will retry");
+            }
+        }
+        for request in std::mem::take(&mut state.pending_display_requests) {
+            let result = if request.output != self.output.name() {
+                Err("Display is not active on this backend".into())
+            } else if !self.active {
+                Err("The display session is inactive".into())
+            } else {
+                match request.action {
+                    DisplayAction::Apply(requested) => self.preview_mode(state, requested),
+                    DisplayAction::Revert => self.revert_mode(state),
+                    DisplayAction::Confirm => self.confirm_mode(state),
+                }
+            };
+            (request.reply)(result);
+        }
+    }
+
+    fn preview_mode(
+        &mut self,
+        state: &mut BlairState,
+        requested: blair_protocol::DisplayMode,
+    ) -> std::result::Result<(), String> {
+        if self.preview.is_some() {
+            return Err("Confirm or revert the pending display change first".into());
+        }
+        let mode = self
+            .modes
+            .iter()
+            .copied()
+            .find(|mode| {
+                let mode = OutputMode::from(*mode);
+                mode.size.w == requested.width
+                    && mode.size.h == requested.height
+                    && mode.refresh == requested.refresh_millihz
+            })
+            .ok_or("The display does not support this mode")?;
+        let previous = self.compositor.pending_mode();
+        if previous == mode {
+            return Ok(());
+        }
+        state
+            .loop_handle
+            .insert_source(
+                smithay::reexports::calloop::timer::Timer::from_duration(MODE_CONFIRM_TIMEOUT),
+                |_, _, state: &mut BlairState| {
+                    state.request_redraw();
+                    smithay::reexports::calloop::timer::TimeoutAction::Drop
+                },
+            )
+            .map_err(|error| format!("Could not schedule automatic display revert: {error}"))?;
+        self.switch_mode(state, mode)?;
+        let deadline = Instant::now() + MODE_CONFIRM_TIMEOUT;
+        self.preview = Some(ModePreview { previous, deadline });
+        state
+            .display_confirmations
+            .insert(self.output.name(), deadline);
+        Ok(())
+    }
+
+    fn confirm_mode(&mut self, state: &mut BlairState) -> std::result::Result<(), String> {
+        if self.preview.is_none() {
+            return Err("No display change is awaiting confirmation".into());
+        }
+        let mode = self
+            .output
+            .current_mode()
+            .ok_or("Display has no active mode")?;
+        let mut next = state.config.clone();
+        next.outputs.entry(self.output.name()).or_default().mode = Some(
+            blair_protocol::DisplayMode {
+                width: mode.size.w,
+                height: mode.size.h,
+                refresh_millihz: mode.refresh,
+            }
+            .config_value(),
+        );
+        crate::config::save(&next)
+            .map_err(|error| format!("Could not save display mode: {error}"))?;
+        state.config.outputs = next.outputs;
+        self.preview = None;
+        state.display_confirmations.remove(&self.output.name());
+        state
+            .events
+            .publish(blair_protocol::CompositorEvent::ConfigurationChanged);
+        Ok(())
+    }
+
     /// Renders when a repaint is due and the previous frame was presented.
     fn dispatch_redraw(&mut self, state: &mut BlairState) {
         if !self.active {
@@ -391,6 +529,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         let Some(backend) = backend.as_mut() else {
             return;
         };
+        backend.process_display_requests(state);
         super::import_pending_dmabufs(state, &mut backend.renderer);
         super::process_screenshots(
             state,
@@ -486,9 +625,14 @@ fn init_drm(
     let resources = device_fd
         .resource_handles()
         .context("failed to get the DRM resource handles")?;
-    let (connector, drm_mode, crtc, output_name) =
-        find_output(&device_fd, &resources, drm.crtcs(), &state.config.outputs)
-            .context("no connected display found")?;
+    let (connector, drm_mode, crtc, output_name) = find_output(
+        &device_fd,
+        &resources,
+        drm.crtcs(),
+        &state.config.outputs,
+        state.config.general.initial_output_size,
+    )
+    .context("no connected display found")?;
     let connector_info = device_fd
         .get_connector(connector, false)
         .context("failed to read the connector info")?;
@@ -554,8 +698,12 @@ fn init_drm(
         Some((location[0], location[1]).into()),
     );
     output.set_preferred(mode);
+    for mode in connector_info.modes() {
+        output.add_mode(OutputMode::from(*mode));
+    }
     let _global = output.create_global::<BlairState>(display_handle);
     state.add_output(&output, (location[0], location[1]).into());
+    state.mutable_displays.insert(output.name());
 
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -602,6 +750,8 @@ fn init_drm(
         timer: FrameTimer::new(output_name),
         frames: Arc::new(AtomicU64::new(0)),
         active: true,
+        modes: connector_info.modes().to_vec(),
+        preview: None,
     })
 }
 
@@ -802,6 +952,7 @@ fn find_output(
     resources: &smithay::reexports::drm::control::ResourceHandles,
     crtcs: &[crtc::Handle],
     outputs: &std::collections::BTreeMap<String, OutputConfig>,
+    initial_size: Option<[i32; 2]>,
 ) -> Option<(
     connector::Handle,
     smithay::reexports::drm::control::Mode,
@@ -827,13 +978,37 @@ fn find_output(
             let requested = config.and_then(|config| config.parsed_mode().ok().flatten());
             let mode = requested
                 .and_then(|requested| {
-                    connector.modes().iter().find(|mode| {
-                        let size = mode.size();
-                        i32::from(size.0) == requested.width
-                            && i32::from(size.1) == requested.height
-                            && (OutputMode::from(**mode).refresh - requested.refresh_millihz).abs()
-                                <= 1_000
-                    })
+                    connector
+                        .modes()
+                        .iter()
+                        .filter(|mode| {
+                            let size = mode.size();
+                            i32::from(size.0) == requested.width
+                                && i32::from(size.1) == requested.height
+                                && (OutputMode::from(**mode).refresh - requested.refresh_millihz)
+                                    .abs()
+                                    <= 1_000
+                        })
+                        .min_by_key(|mode| {
+                            (OutputMode::from(**mode).refresh - requested.refresh_millihz).abs()
+                        })
+                })
+                .or_else(|| {
+                    if requested.is_none() {
+                        initial_size.and_then(|[width, height]| {
+                            // Virtual GPUs can round a timing's width to a multiple of eight.
+                            connector
+                                .modes()
+                                .iter()
+                                .filter(|mode| {
+                                    let (w, h) = mode.size();
+                                    (i32::from(w) - width).abs() <= 8 && i32::from(h) == height
+                                })
+                                .min_by_key(|mode| (i32::from(mode.size().0) - width).abs())
+                        })
+                    } else {
+                        None
+                    }
                 })
                 .or_else(|| {
                     connector

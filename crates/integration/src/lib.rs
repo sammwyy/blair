@@ -31,6 +31,24 @@ impl EventChannel for EventFanout {
 
 /// Request surface offered by the compositor to every integration.
 pub trait CompositorApi {
+    fn display_info(&self) -> Vec<blair_protocol::DisplayInfo>;
+    /// Preview a supported mode. It is reverted unless confirmed within 15s.
+    fn apply_display_mode(
+        &mut self,
+        output: &str,
+        mode: blair_protocol::DisplayMode,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
+    fn confirm_display_mode(
+        &mut self,
+        output: &str,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
+    fn revert_display_mode(
+        &mut self,
+        output: &str,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
     fn list_windows(&self) -> Vec<WindowInfo>;
     fn list_workspaces(&self) -> Vec<WorkspaceInfo>;
     fn create_workspace(&mut self, name: String) -> u64;

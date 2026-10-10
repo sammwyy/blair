@@ -93,6 +93,8 @@ impl BlurConfig {
 pub struct GeneralConfig {
     pub backend: String,
     pub hot_reload: bool,
+    /// Startup fallback; a saved per-output mode takes precedence.
+    pub initial_output_size: Option<[i32; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -796,6 +798,7 @@ impl Default for GeneralConfig {
         Self {
             backend: "auto".to_string(),
             hot_reload: true,
+            initial_output_size: None,
         }
     }
 }
@@ -1081,6 +1084,15 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
 /// Validate a configuration received through an integration before it is
 /// persisted or applied to the running compositor.
 pub fn validate(config: &CompositorConfig) -> Result<()> {
+    if config
+        .general
+        .initial_output_size
+        .is_some_and(|size| size.iter().any(|value| *value <= 0 || *value > 65535))
+    {
+        anyhow::bail!(
+            "general.initial_output_size must contain two positive dimensions no larger than 65535"
+        );
+    }
     for (index, binding) in config.bindings.iter().enumerate() {
         binding.validate(index + 1)?;
     }
@@ -1273,6 +1285,18 @@ pub fn save(config: &CompositorConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_output_size_is_optional_and_validated() {
+        let mut config = CompositorConfig::default();
+        assert_eq!(config.general.initial_output_size, None);
+        config.general.initial_output_size = Some([1366, 768]);
+        assert!(validate(&config).is_ok());
+        for size in [[0, 768], [1366, -1], [65536, 768]] {
+            config.general.initial_output_size = Some(size);
+            assert!(validate(&config).is_err());
+        }
+    }
 
     #[test]
     fn default_config_round_trips() {

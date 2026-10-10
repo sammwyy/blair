@@ -27,6 +27,14 @@ impl CommandSender {
 }
 
 pub enum Command {
+    DisplayInfo(oneshot::Sender<Vec<crate::wire::DbusDisplay>>),
+    ApplyDisplayMode(
+        String,
+        blair_protocol::DisplayMode,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    ConfirmDisplayMode(String, oneshot::Sender<Result<(), String>>),
+    RevertDisplayMode(String, oneshot::Sender<Result<(), String>>),
     ListWindows(oneshot::Sender<Vec<DbusWindow>>),
     ListWorkspaces(oneshot::Sender<Vec<DbusWorkspace>>),
     CreateWorkspace(String, oneshot::Sender<u64>),

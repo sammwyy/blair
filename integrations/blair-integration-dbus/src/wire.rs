@@ -4,6 +4,64 @@ use zbus::zvariant::Type;
 use blair_protocol::{Rect, WindowId, WindowInfo, WorkspaceInfo};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct DbusDisplay {
+    pub name: String,
+    pub width: i32,
+    pub height: i32,
+    pub refresh_millihz: i32,
+    pub modes: Vec<(i32, i32, i32)>,
+    pub can_change_mode: bool,
+    pub pending_confirmation: bool,
+    pub confirmation_seconds: u32,
+}
+
+impl From<blair_protocol::DisplayInfo> for DbusDisplay {
+    fn from(info: blair_protocol::DisplayInfo) -> Self {
+        Self {
+            name: info.name,
+            width: info.current.width,
+            height: info.current.height,
+            refresh_millihz: info.current.refresh_millihz,
+            modes: info
+                .modes
+                .into_iter()
+                .map(|mode| (mode.width, mode.height, mode.refresh_millihz))
+                .collect(),
+            can_change_mode: info.can_change_mode,
+            pending_confirmation: info.pending_confirmation,
+            confirmation_seconds: info.confirmation_seconds,
+        }
+    }
+}
+
+impl From<DbusDisplay> for blair_protocol::DisplayInfo {
+    fn from(info: DbusDisplay) -> Self {
+        Self {
+            name: info.name,
+            current: blair_protocol::DisplayMode {
+                width: info.width,
+                height: info.height,
+                refresh_millihz: info.refresh_millihz,
+            },
+            modes: info
+                .modes
+                .into_iter()
+                .map(
+                    |(width, height, refresh_millihz)| blair_protocol::DisplayMode {
+                        width,
+                        height,
+                        refresh_millihz,
+                    },
+                )
+                .collect(),
+            can_change_mode: info.can_change_mode,
+            pending_confirmation: info.pending_confirmation,
+            confirmation_seconds: info.confirmation_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct DbusWindow {
     pub id: u64,
     pub title: String,
@@ -89,6 +147,32 @@ impl From<&WindowInfo> for DbusWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_signature_and_round_trip_preserve_physical_modes_and_preview() {
+        assert_eq!(
+            <DbusDisplay as Type>::SIGNATURE.to_string(),
+            "(siiia(iii)bbu)"
+        );
+        let current = blair_protocol::DisplayMode {
+            width: 1920,
+            height: 1080,
+            refresh_millihz: 59940,
+        };
+        let info = blair_protocol::DisplayInfo {
+            name: "Virtual-1".into(),
+            current,
+            modes: vec![current],
+            can_change_mode: true,
+            pending_confirmation: true,
+            confirmation_seconds: 15,
+        };
+        assert_eq!(
+            blair_protocol::DisplayInfo::from(DbusDisplay::from(info.clone())),
+            info
+        );
+        assert_eq!(current.config_value(), "1920x1080@59.940");
+    }
 
     #[test]
     fn signature_is_a_flat_ten_field_struct() {

@@ -8,6 +8,7 @@ mod handlers;
 mod input;
 mod integrations;
 mod logging;
+mod outputs;
 mod render;
 mod rules;
 mod screencopy;

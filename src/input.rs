@@ -527,6 +527,15 @@ fn clamp_to_outputs(state: &BlairState, pos: Point<f64, Logical>) -> Point<f64, 
         .into()
 }
 
+pub(crate) fn clamp_pointer_after_output_change(state: &mut BlairState) {
+    let current = state.pointer_location();
+    let position = clamp_to_outputs(state, current);
+    if position != current {
+        let under = surface_under(state, position);
+        move_pointer(state, position, under, state.clock_now().as_millis() as u32);
+    }
+}
+
 fn pointer_motion_relative(
     state: &mut BlairState,
     delta: Point<f64, Logical>,

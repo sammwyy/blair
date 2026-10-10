@@ -45,6 +45,82 @@ impl Integrations {
 }
 
 impl CompositorApi for BlairState {
+    fn display_info(&self) -> Vec<blair_protocol::DisplayInfo> {
+        fn mode(mode: smithay::output::Mode) -> blair_protocol::DisplayMode {
+            blair_protocol::DisplayMode {
+                width: mode.size.w,
+                height: mode.size.h,
+                refresh_millihz: mode.refresh,
+            }
+        }
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                let current = output.current_mode()?;
+                let name = output.name();
+                let deadline = self.display_confirmations.get(&name);
+                Some(blair_protocol::DisplayInfo {
+                    current: mode(current),
+                    modes: output.modes().into_iter().map(mode).collect(),
+                    can_change_mode: self.mutable_displays.contains(&name),
+                    pending_confirmation: deadline.is_some(),
+                    confirmation_seconds: deadline
+                        .map(|deadline| {
+                            deadline
+                                .saturating_duration_since(std::time::Instant::now())
+                                .as_secs() as u32
+                                + 1
+                        })
+                        .unwrap_or(0),
+                    name,
+                })
+            })
+            .collect()
+    }
+
+    fn apply_display_mode(
+        &mut self,
+        output: &str,
+        mode: blair_protocol::DisplayMode,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
+        self.pending_display_requests
+            .push(crate::outputs::DisplayRequest {
+                output: output.into(),
+                action: crate::outputs::DisplayAction::Apply(mode),
+                reply,
+            });
+        self.request_redraw();
+    }
+
+    fn confirm_display_mode(
+        &mut self,
+        output: &str,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
+        self.pending_display_requests
+            .push(crate::outputs::DisplayRequest {
+                output: output.into(),
+                action: crate::outputs::DisplayAction::Confirm,
+                reply,
+            });
+        self.request_redraw();
+    }
+
+    fn revert_display_mode(
+        &mut self,
+        output: &str,
+        reply: Box<dyn FnOnce(Result<(), String>) + Send>,
+    ) {
+        self.pending_display_requests
+            .push(crate::outputs::DisplayRequest {
+                output: output.into(),
+                action: crate::outputs::DisplayAction::Revert,
+                reply,
+            });
+        self.request_redraw();
+    }
+
     fn list_windows(&self) -> Vec<WindowInfo> {
         BlairState::list_windows(self)
     }

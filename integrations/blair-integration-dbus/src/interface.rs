@@ -103,6 +103,47 @@ impl CompositorInterface {
         self.call(Command::Outputs).await.unwrap_or_default()
     }
 
+    async fn display_info(&self) -> Vec<crate::wire::DbusDisplay> {
+        self.call(Command::DisplayInfo).await.unwrap_or_default()
+    }
+
+    async fn apply_display_mode(
+        &self,
+        output: &str,
+        width: i32,
+        height: i32,
+        refresh_millihz: i32,
+    ) -> zbus::fdo::Result<()> {
+        self.call(|reply| {
+            Command::ApplyDisplayMode(
+                output.into(),
+                blair_protocol::DisplayMode {
+                    width,
+                    height,
+                    refresh_millihz,
+                },
+                reply,
+            )
+        })
+        .await
+        .unwrap_or_else(|| Err("Compositor unavailable".into()))
+        .map_err(zbus::fdo::Error::Failed)
+    }
+
+    async fn confirm_display_mode(&self, output: &str) -> zbus::fdo::Result<()> {
+        self.call(|reply| Command::ConfirmDisplayMode(output.into(), reply))
+            .await
+            .unwrap_or_else(|| Err("Compositor unavailable".into()))
+            .map_err(zbus::fdo::Error::Failed)
+    }
+
+    async fn revert_display_mode(&self, output: &str) -> zbus::fdo::Result<()> {
+        self.call(|reply| Command::RevertDisplayMode(output.into(), reply))
+            .await
+            .unwrap_or_else(|| Err("Compositor unavailable".into()))
+            .map_err(zbus::fdo::Error::Failed)
+    }
+
     /// Writes a PNG screenshot of `output` (empty selects the focused one)
     /// to the absolute `path`.
     async fn screenshot(&self, output: &str, path: &str) -> bool {

@@ -274,6 +274,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
     tracing::info!("entering the nested event loop");
 
     event_loop.run(None, &mut state, move |state| {
+        for request in std::mem::take(&mut state.pending_display_requests) {
+            (request.reply)(Err("The nested backend uses its host window size; display modes cannot be changed here".into()));
+        }
         let mut data = data.borrow_mut();
         let WinitData {
             backend,

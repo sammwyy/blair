@@ -124,6 +124,15 @@ Without explicit output entries, Blair uses a safe automatic profile. Cursor
 settings fall back to `XCURSOR_THEME` and `XCURSOR_SIZE` and are passed to
 applications Blair starts.
 
+`general.initial_output_size = [1366, 768]` selects a startup size from the
+display's supported modes when no per-output mode has been saved. Physical
+outputs advertise all their supported modes through Wayland and `DisplayInfo`
+on D-Bus. `ApplyDisplayMode` previews a supported size and refresh rate for 15
+seconds; `ConfirmDisplayMode` saves it in the user configuration, while
+`RevertDisplayMode` or the timeout restores the previous mode. Nested outputs
+report their host window size and do not offer physical mode changes. The DRM
+backend currently activates one connector; these controls apply to that output.
+
 ## Development
 
 [DEVELOPMENT.md](DEVELOPMENT.md) covers the required checkout layout, native

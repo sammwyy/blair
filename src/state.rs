@@ -226,6 +226,9 @@ pub struct BlairState {
     pub pending_screenshots: Vec<ScreenshotRequest>,
     pub pending_captures: Vec<ScreencopyRequest>,
     pub input_config_changed: bool,
+    pub pending_display_requests: Vec<crate::outputs::DisplayRequest>,
+    pub mutable_displays: HashSet<String>,
+    pub display_confirmations: HashMap<String, Instant>,
     pointer_focus_dirty: bool,
 
     autostart_processes: Vec<AutostartProcess>,
@@ -391,6 +394,9 @@ impl BlairState {
             pending_screenshots: Vec::new(),
             pending_captures: Vec::new(),
             input_config_changed: false,
+            pending_display_requests: Vec::new(),
+            mutable_displays: HashSet::new(),
+            display_confirmations: HashMap::new(),
             pointer_focus_dirty: false,
             autostart_processes: Vec::new(),
             spawned_children: Vec::new(),
@@ -771,6 +777,7 @@ impl BlairState {
             self.emit_work_area_changed(output);
         }
         self.relayout_all();
+        crate::input::clamp_pointer_after_output_change(self);
         self.request_redraw();
         self.mark_pointer_focus_dirty();
     }
@@ -799,6 +806,34 @@ impl BlairState {
                 self.apply_fullscreen_geometry(&window);
             } else if window_is_maximized(&window) {
                 self.apply_maximized_geometry(&window);
+            } else if self.window_floats(&window) {
+                // Keep the settings confirmation window reachable after shrinking a display.
+                let Some(output) = self.output_for_window(&window) else {
+                    continue;
+                };
+                let Some(geometry) = self.space.element_geometry(&window) else {
+                    continue;
+                };
+                let area = self.work_area_rect(&output);
+                let (horizontal, vertical, left, top) = self.frame_insets(&window);
+                let size = Size::from((
+                    geometry.size.w.min((area.size.w - horizontal).max(1)),
+                    geometry.size.h.min((area.size.h - vertical).max(1)),
+                ));
+                let location = Point::from((
+                    geometry.loc.x.clamp(
+                        area.loc.x + left,
+                        (area.loc.x + area.size.w - size.w - horizontal + left)
+                            .max(area.loc.x + left),
+                    ),
+                    geometry.loc.y.clamp(
+                        area.loc.y + top,
+                        (area.loc.y + area.size.h - size.h - vertical + top).max(area.loc.y + top),
+                    ),
+                ));
+                if size != geometry.size || location != geometry.loc {
+                    self.configure_and_place(&window, size, location);
+                }
             }
         }
     }
