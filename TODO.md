@@ -181,12 +181,16 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   writable kernel backlight is available.
   Sources: `src/idle_dim.rs`, `src/state.rs` (`note_input_activity`),
   `../coconut/integrations/system/src/blair.rs`.
-- [ ] Connect "Location services" (`location`) to the session's location
-  provider/permission policy. The current adapter only supports GNOME's
-  preference. This is desktop/service integration work, rather than a
-  missing window-compositing feature.
-  Sources: `../coconut/apps/settings/src/views/privacy/mod.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [x] Connect "Location services" (`location`) to the session's location
+  provider/permission policy. Coconut exports a standard per-session
+  GeoClue agent; every authorization consults the persisted `[location]`
+  policy at request time and denies requests while the setting is off.
+  Settings writes that native policy under Blair, rather than GNOME's
+  preference, and only enables the control when the administrator has
+  explicitly whitelisted `org.coconut.LocationAgent` in GeoClue.
+  Sources: `../coconut/apps/shell/src/location.rs`,
+  `../coconut/crates/core/src/lib.rs`,
+  `../coconut/integrations/system/src/blair.rs`.
 - [x] Complete Coconut's shortcut editor. Native capture records Tab,
   function/media keys, and modifier-only chords while temporarily inhibiting
   compositor shortcuts. Escape, focus loss, and navigation cancel capture.
