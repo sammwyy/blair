@@ -40,3 +40,162 @@
   separable Gaussian. Blurred windows also don't recursively blur each
   other's backdrop — a blurred window's backdrop capture renders windows
   behind it without their own blur applied.
+
+## Coconut Settings compatibility
+
+Source review: 2026-10-15. Settings lives in `../coconut/apps/settings`,
+with system adapters in `../coconut/integrations/system`. Findings below
+come from code inspection, without a running desktop session.
+
+### Missing or incomplete Blair behavior
+
+- [x] Implement focus-follows-mouse and expose its policy to Settings.
+  `focus.policy = "sloppy"` focuses hovered windows without interrupting
+  pointer or keyboard grabs. Coconut exposes the live policy switch.
+  Sources: `src/config.rs` (`FocusPolicy`), `src/input.rs` (`move_pointer`),
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
+- [ ] Implement configurable hot corners and an API Coconut can use for
+  corner actions. Settings explicitly says Blair exposes no hot-corner
+  service. Source: `../coconut/apps/settings/src/views/desktop/hot_corners.rs`.
+- [ ] Implement desktop magnification and expose a native `zoom` setting.
+  "Screen zoom" currently depends on GNOME's screen-magnifier preference;
+  Blair has no equivalent configuration or rendering path.
+  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
+  `src/config.rs`, `src/render/mod.rs`.
+- [ ] Implement sticky modifier keys and expose `sticky-keys` to Settings.
+  The current adapter only uses GNOME's accessibility preference; Blair's
+  keyboard handling has no sticky-key state.
+  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`), `src/input.rs`.
+- [ ] Implement visual bell feedback and expose `visual-alerts` to Settings.
+  "Visual alerts" currently maps only to GNOME's `visual-bell`; Blair has
+  no bell handler or screen-flash effect.
+  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
+  `src/handlers.rs`, `src/render/mod.rs`.
+- [x] Apply workspace configuration changes at runtime. Count, dynamic
+  creation, wrapping, names, and output assignments now update live.
+  Reducing a fixed workspace set migrates its windows and active outputs
+  into the remaining set, preserves reachable focus, and emits workspace
+  events. Configuration readback now contains the applied workspace values.
+  Sources: `src/state.rs` (`apply_config`), `src/integrations.rs`
+  (`configuration`, `set_configuration`),
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_working_area`,
+  `Writer::save`).
+- [ ] Support the shortcut keys Coconut ships and can record. `Alt+Tab`
+  and `Alt+Shift+Tab` are Coconut defaults, but Blair rejects `Tab` because
+  it is missing from `key_aliases`. Single characters outside ASCII
+  letters, digits, and space can pass parsing but never activate because
+  `physical_letter_keycode` has no mapping for them. Add matching support
+  or reject unsupported keys during validation, and surface registration
+  failures in Settings instead of only shell stderr.
+  Sources: `src/shortcuts.rs`, `../coconut/crates/core/src/shortcuts.rs`,
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`ShortcutRecorder`),
+  `../coconut/apps/shell/src/shortcuts.rs` (`ShortcutListener::start`).
+- [x] Make enabling `general.hot_reload` effective after startup with it
+  disabled. The watcher stays installed while reload is disabled and tracks
+  ancestor directory creation so newly created config roots are watched.
+  Debounced callbacks recheck the flag before applying a queued reload.
+  Sources: `src/config.rs` (`watch`), `src/state.rs` (`apply_config`),
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_general`).
+- [ ] Expose input-device and backend capabilities to Settings. Its mouse
+  sensitivity and touchpad switches can be saved in a nested Winit session,
+  but libinput configuration is only applied by the DRM backend. On DRM,
+  unsupported device setters only log debug messages. Advertise which
+  controls can take effect and report failures to the settings client.
+  Sources: `src/backend/drm.rs` (`configure_input_device`, `apply_input_config`),
+  `src/backend/winit.rs`,
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_mouse`,
+  `build_touchpad`).
+
+The close/minimize animation stubs, missing session-lock protocol, and
+X11-only rule selectors are already tracked above. Settings exposes
+`animations.window_close.duration` and `animations.minimize.duration`,
+although only opening and workspace animations run (`src/state.rs`:
+`window_opacity`, `animations_active`, `minimize_window`). Its raw rules
+editor also accepts the nonfunctional `class`, `role`, and `type` selectors
+(`src/rules.rs`: `CompiledRule::matches`).
+
+### Settings and desktop integration work
+
+- [x] Correct "Center new floating windows" in Coconut. The control now
+  edits Blair's live `window.center_new_windows` preference (default true).
+  Explicit rule positions still take precedence; disabling centering uses
+  the work area's padded upper-left corner.
+  Sources: `src/state.rs` (`map_window`),
+  `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
+- [ ] Connect the cursor-theme picker to Blair's existing `[cursor].theme`
+  configuration. It currently only saves `appearance.cursor_theme` in
+  Coconut's shell configuration; Blair reads its own setting or
+  `XCURSOR_THEME`. Blair already supports live cursor reconfiguration.
+  Sources: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`
+  (`cursor_themes`), `src/cursor.rs` (`resolve_theme`, `reconfigure`),
+  `src/state.rs` (`apply_config`).
+- [ ] Synchronize the selected icon theme with Blair's titlebar icons and
+  invalidate their cache when it changes. Coconut's picker updates its
+  shell icon resolvers, while Blair's `IconCache` initializes from
+  `delib::icons::system_icon_theme` (KDE/GTK settings, then `hicolor`).
+  Sources: `src/decorations/icons.rs`, `../delib/src/icons.rs`,
+  `../coconut/apps/settings/src/views/personalization/asset_packs.rs`,
+  `../coconut/apps/shell/src/lib.rs` (`RuntimeEvent::ShellConfig`).
+- [ ] Provide shared accessibility preferences for high contrast (`contrast`)
+  and interface text scaling (`text-scale`), consumed by Coconut/CreamUI
+  and Blair decorations where applicable. Settings currently only connects
+  these controls to GNOME and explicitly marks them unsupported on Blair.
+  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
+  `../coconut/apps/settings/src/views/personalization/fonts.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`discover_preferences`).
+- [ ] Connect "Require password after sleep" (`lock-after-sleep`) to a
+  session locker and suspend policy once Blair supports session locking.
+  The adapter currently only writes GNOME screensaver settings; it also
+  discovers `lock-delay`, but Settings has no control for that delay.
+  Sources: `../coconut/apps/settings/src/views/privacy/mod.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [ ] Provide an idle-dimming service and native `idle-dim` preference.
+  Settings currently only uses GNOME's power-plugin setting. Blair already
+  exposes idle notifications and inhibitors, so the remaining work includes
+  wiring an idle policy to backlight control and restoring brightness on
+  activity. Sources: `src/handlers.rs` (`IdleNotifierHandler`,
+  `IdleInhibitHandler`), `src/state.rs` (`idle_inhibitors`),
+  `../coconut/apps/settings/src/views/hardware/mod.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [ ] Connect "Location services" (`location`) to the session's location
+  provider/permission policy. The current adapter only supports GNOME's
+  preference. This is desktop/service integration work, rather than a
+  missing window-compositing feature.
+  Sources: `../coconut/apps/settings/src/views/privacy/mod.rs`,
+  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [ ] Complete Coconut's shortcut editor: record Tab, function/media keys,
+  and modifier-only shortcuts, validate bindings against Blair, and apply
+  edits without restarting Coconut. The recorder currently only accepts
+  characters, Enter, and Escape with modifiers, even though the defaults
+  include bare Super and media keys. It saves `coconut/shortcuts.toml`;
+  it does not edit Blair's persistent `[[bindings]]` or use the existing
+  `ConfiguredShortcuts`/`SetConfiguredShortcuts` API.
+  Sources: `../coconut/apps/settings/src/views/windows/mod.rs`
+  (`ShortcutRecorder`, `ShortcutState::save`), `src/integrations.rs`
+  (`configured_shortcuts`, `set_configured_shortcuts`).
+
+### Coconut-only gaps and confirmed working paths
+
+- [ ] Implement dock auto-hide in Coconut; Settings explicitly disables it.
+  Source: `../coconut/apps/settings/src/views/desktop/mod.rs`.
+- [ ] Connect Coconut's sound-theme picker to desktop sound playback. It
+  currently only saves `appearance.sound_theme`, with no consumer in the
+  Coconut shell/plugins. Blair does not need a sound-theme renderer.
+  Source: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`.
+
+Do not list resolution/refresh changes as missing: the DRM backend already
+implements mode preview, 15-second automatic rollback, confirmation, and
+persistence, and Coconut uses that API. Winit intentionally follows the
+host window size. Multi-monitor/hotplug limitations remain tracked above.
+
+"Reduce motion" already maps to Blair's `animations.enabled` when its
+configuration API is available. Layout/gaps, floating default size, focus
+toggles, decorations, keyboard layout/repeat, and DRM mouse/touchpad
+configuration also have implementations; they are not generic stubs.
+"Usage analytics" is disabled because Coconut has no telemetry service;
+it is not a missing Blair capability. Audio, backlight, networking,
+Bluetooth, printers, users, and system time use their own system services;
+a missing dependency there does not establish a compositor limitation.

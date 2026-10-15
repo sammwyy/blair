@@ -624,15 +624,14 @@ impl BlairState {
             tracing::warn!("output changes require a compositor restart");
             next.outputs = self.config.outputs.clone();
         }
-        if self.config.workspaces != next.workspaces {
-            tracing::warn!("workspace topology changes require a compositor restart");
-            next.workspaces = self.config.workspaces.clone();
-        }
         if self.config.autostart != next.autostart {
             tracing::info!("autostart changes will be used on the next compositor start");
         }
 
         let previous = std::mem::replace(&mut self.config, next);
+        if previous.workspaces != self.config.workspaces {
+            self.apply_workspace_config();
+        }
         if previous.bindings != self.config.bindings {
             self.replace_static_bindings(&self.config.bindings.clone());
         }
@@ -683,6 +682,124 @@ impl BlairState {
         }
         keyboard.change_repeat_info(config.repeat_rate, config.repeat_delay);
         tracing::info!(layout = %config.layout, variant = %config.variant, "keyboard configuration applied");
+    }
+
+    fn apply_workspace_config(&mut self) {
+        let config = &self.config.workspaces;
+        let count = config.count;
+        let dynamic = config.dynamic;
+        for id in 1..=count {
+            let definition = config.definitions.get(&id.to_string());
+            let name = definition
+                .and_then(|definition| definition.name.clone())
+                .unwrap_or_else(|| id.to_string());
+            let output = definition.and_then(|definition| definition.output.clone());
+            if let Some(workspace) = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == id)
+            {
+                workspace.name = name;
+                workspace.output = output;
+            } else {
+                self.workspaces.push(Workspace::new(id, name, output));
+            }
+        }
+        if !dynamic {
+            self.workspaces.retain(|workspace| workspace.id <= count);
+            for managed in self
+                .windows
+                .values_mut()
+                .filter(|managed| managed.workspace > count)
+            {
+                managed.workspace = count;
+            }
+            for workspace in self.output_workspaces.values_mut() {
+                if *workspace > count {
+                    *workspace = count;
+                }
+            }
+        }
+        self.workspaces.sort_by_key(|workspace| workspace.id);
+        self.next_workspace_id = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        for workspace in &mut self.workspaces {
+            workspace.focus_history.retain(|id| {
+                self.windows
+                    .get(id)
+                    .is_some_and(|managed| managed.workspace == workspace.id)
+            });
+            if workspace
+                .focused_window
+                .is_some_and(|id| !workspace.focus_history.contains(&id))
+            {
+                workspace.focused_window = None;
+            }
+        }
+        let assignments: Vec<_> = self
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                workspace
+                    .output
+                    .as_ref()
+                    .filter(|name| self.output_by_name(name).is_some())
+                    .map(|name| (name.clone(), workspace.id))
+            })
+            .collect();
+        for (output, workspace) in assignments {
+            self.output_workspaces.insert(output, workspace);
+        }
+        let mut assignments: Vec<_> = self.output_workspaces.keys().cloned().collect();
+        assignments.sort();
+        let mut assigned = HashSet::new();
+        for output in assignments {
+            let current = self.output_workspaces[&output];
+            if assigned.insert(current) {
+                continue;
+            }
+            let replacement = self
+                .workspaces
+                .iter()
+                .find(|workspace| !assigned.contains(&workspace.id))
+                .map(|workspace| workspace.id);
+            if let Some(replacement) = replacement {
+                self.output_workspaces.insert(output, replacement);
+                assigned.insert(replacement);
+            }
+        }
+        for (output, id) in &self.output_workspaces {
+            self.emit(CompositorEvent::WorkspaceActivated {
+                output: output.clone(),
+                id: *id,
+            });
+        }
+        self.relayout_all();
+        let focused_is_visible = self
+            .focused_window
+            .and_then(|id| self.windows.get(&id))
+            .is_some_and(|managed| {
+                managed.mapped
+                    && managed.minimized.is_none()
+                    && managed.workspace == self.focused_workspace_id()
+            });
+        if !focused_is_visible {
+            let target = self.topmost_window_on(self.focused_workspace_id());
+            match target {
+                Some(id) => {
+                    self.focus_window_by_id(id);
+                }
+                None => self.set_keyboard_focus(None),
+            }
+        }
+        self.mark_pointer_focus_dirty();
+        self.emit(CompositorEvent::WorkspacesChanged);
+        tracing::info!(count, dynamic, "workspace configuration applied");
     }
 
     pub fn spawn_autostarts(&mut self) {
@@ -2079,6 +2196,12 @@ impl BlairState {
             .position
             .map(|[x, y]| Point::from((x, y)))
             .unwrap_or_else(|| {
+                if !self.config.window.center_new_windows {
+                    return Point::from((
+                        area.loc.x + self.config.window.work_area_padding,
+                        area.loc.y + top + self.config.window.work_area_padding,
+                    ));
+                }
                 Point::from((
                     area.loc.x + (area.size.w - size.w) / 2,
                     area.loc.y + ((area.size.h - size.h + top) / 2).max(top),
@@ -2536,6 +2659,82 @@ fn client_decoration_request(surface: &WlSurface) -> Option<DecorationMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestEvents(std::sync::Mutex<Vec<CompositorEvent>>);
+
+    impl EventChannel for TestEvents {
+        fn publish(&self, event: CompositorEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[test]
+    fn workspace_changes_apply_without_restart_and_keep_the_output_reachable() {
+        let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
+        let event_loop = smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
+        let events = Arc::new(TestEvents(std::sync::Mutex::new(Vec::new())));
+        let mut state = BlairState::new(
+            display.handle(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            CompositorConfig::default(),
+            events.clone(),
+        );
+        let output = Output::new(
+            "test-0".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "Test".into(),
+                model: "Test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (1280, 720).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        state.add_output(&output, (0, 0).into());
+        assert!(state.switch_workspace(10));
+        let mut config = state.config.clone();
+        config.workspaces.count = 2;
+        config.workspaces.wrap = false;
+        config.workspaces.definitions.insert(
+            "2".into(),
+            crate::config::WorkspaceDefinition {
+                name: Some("dev".into()),
+                output: Some("test-0".into()),
+            },
+        );
+        state.apply_config(config);
+        assert_eq!(state.config.workspaces.count, 2);
+        assert_eq!(state.list_workspaces().len(), 2);
+        assert_eq!(state.focused_workspace_id(), 2);
+        assert_eq!(state.list_workspaces()[1].name, "dev");
+        assert!(!state.switch_workspace(3));
+        assert!(events
+            .0
+            .lock()
+            .unwrap()
+            .contains(&CompositorEvent::WorkspacesChanged));
+        let mut config = state.config.clone();
+        config.workspaces.dynamic = true;
+        state.apply_config(config);
+        assert_eq!(state.create_workspace("extra".into()), 3);
+        assert!(state.switch_workspace(3));
+        let mut config = state.config.clone();
+        config.workspaces.dynamic = false;
+        config.workspaces.count = 4;
+        config.workspaces.wrap = true;
+        state.apply_config(config);
+        assert_eq!(state.list_workspaces().len(), 4);
+        assert!(state.switch_workspace(5));
+        assert_eq!(state.focused_workspace_id(), 1);
+    }
 
     fn area() -> Rectangle<i32, Logical> {
         Rectangle::new((10, 20).into(), (1000, 600).into())

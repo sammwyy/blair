@@ -1,6 +1,6 @@
 [general]
 backend = "auto"
-# Watches existing configuration files and directories after startup.
+# Watches configuration files, including directories created after startup.
 hot_reload = true
 
 [[autostart]]
@@ -118,6 +118,7 @@ scale = 1.0
 [window]
 default_width = 900
 default_height = 600
+center_new_windows = true
 layout = "floating"
 # Margin around the tiled area, spacing between tiles, and the share of the
 # width taken by the master window.

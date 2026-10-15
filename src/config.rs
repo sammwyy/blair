@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -120,6 +120,7 @@ pub struct FocusConfig {
 pub enum FocusPolicy {
     #[default]
     Click,
+    Sloppy,
 }
 
 impl Default for FocusConfig {
@@ -556,6 +557,7 @@ impl WindowRuleConfig {
 pub struct WindowConfig {
     pub default_width: i32,
     pub default_height: i32,
+    pub center_new_windows: bool,
     pub server_side_decorations: bool,
     pub layout: WindowLayout,
     /// Margin kept between the tiled area and the work area.
@@ -814,6 +816,7 @@ impl Default for WindowConfig {
         Self {
             default_width: 900,
             default_height: 600,
+            center_new_windows: true,
             server_side_decorations: true,
             layout: WindowLayout::Floating,
             work_area_padding: 16,
@@ -1117,13 +1120,7 @@ const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// Watches the configuration roots and reloads once changes settle.
 ///
-/// Only existing roots are observed: creating a new configuration root still
-/// requires a restart, while edits to an active configuration apply live.
-pub fn watch(handle: &LoopHandle<'static, BlairState>, config: &CompositorConfig) -> Result<()> {
-    if !config.general.hot_reload {
-        tracing::info!("configuration hot reload disabled");
-        return Ok(());
-    }
+pub fn watch(handle: &LoopHandle<'static, BlairState>, _config: &CompositorConfig) -> Result<()> {
     let paths = ConfigPaths::default();
     let (sender, channel) = calloop::channel::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -1131,45 +1128,32 @@ pub fn watch(handle: &LoopHandle<'static, BlairState>, config: &CompositorConfig
     })
     .context("failed to initialize configuration watcher")?;
 
-    let mut watched = 0;
-    for directory in [&paths.system_dir, &paths.user_dir] {
-        if !directory.is_dir() {
-            continue;
-        }
-        match watcher.watch(directory, RecursiveMode::Recursive) {
-            Ok(()) => {
-                watched += 1;
-                tracing::debug!(path = %directory.display(), "watching config directory");
-            }
-            Err(error) => {
-                tracing::warn!(%error, path = %directory.display(), "failed to watch config directory")
-            }
-        }
-    }
-    if watched == 0 {
-        tracing::info!("no configuration directory to watch");
-        return Ok(());
-    }
+    let roots = [paths.system_dir, paths.user_dir];
+    let mut watched = HashSet::new();
+    refresh_watches(&mut watcher, &roots, &mut watched);
 
     let mut pending: Option<RegistrationToken> = None;
     let timer_handle = handle.clone();
     handle
         .insert_source(channel, move |event, _, state: &mut BlairState| {
-            // Keeps the watcher alive for as long as the source is registered.
-            let _ = &watcher;
             let calloop::channel::Event::Msg(event) = event else {
                 return;
             };
-            match event {
+            let relevant = match event {
                 Ok(event) => {
-                    tracing::trace!(?event.kind, paths = ?event.paths, "config filesystem event")
+                    refresh_watches(&mut watcher, &roots, &mut watched);
+                    event.paths.iter().any(|path| {
+                        roots
+                            .iter()
+                            .any(|root| path.starts_with(root) || root.starts_with(path))
+                    })
                 }
                 Err(error) => {
                     tracing::warn!(%error, "config watcher error");
                     return;
                 }
-            }
-            if !state.config.general.hot_reload {
+            };
+            if !relevant || !state.config.general.hot_reload {
                 return;
             }
             if let Some(token) = pending.take() {
@@ -1179,7 +1163,9 @@ pub fn watch(handle: &LoopHandle<'static, BlairState>, config: &CompositorConfig
                 .insert_source(
                     Timer::from_duration(RELOAD_DEBOUNCE),
                     |_, _, state: &mut BlairState| {
-                        reload(state);
+                        if state.config.general.hot_reload {
+                            reload(state);
+                        }
                         TimeoutAction::Drop
                     },
                 )
@@ -1187,6 +1173,42 @@ pub fn watch(handle: &LoopHandle<'static, BlairState>, config: &CompositorConfig
         })
         .map_err(|error| anyhow::anyhow!("config watcher source: {error}"))?;
     Ok(())
+}
+
+fn refresh_watches(
+    watcher: &mut impl Watcher,
+    roots: &[PathBuf],
+    watched: &mut HashSet<(PathBuf, bool)>,
+) {
+    watched.retain(|(path, _)| path.is_dir());
+    for root in roots {
+        let ancestor = root
+            .parent()
+            .and_then(|parent| parent.ancestors().find(|path| path.is_dir()));
+        for (path, recursive) in ancestor
+            .map(|path| (path, false))
+            .into_iter()
+            .chain(root.is_dir().then_some((root.as_path(), true)))
+        {
+            let key = (path.to_path_buf(), recursive);
+            if watched.contains(&key) {
+                continue;
+            }
+            let mode = if recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            match watcher.watch(path, mode) {
+                Ok(()) => {
+                    watched.insert(key);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "failed to watch configuration path")
+                }
+            }
+        }
+    }
 }
 
 fn reload(state: &mut BlairState) {
@@ -1282,6 +1304,60 @@ pub fn save(config: &CompositorConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn watcher_discovers_configuration_directories_created_after_startup() {
+        let root = std::env::temp_dir().join(format!("blair-watch-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let config_root = root.join("config").join("blair");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event| {
+            sender.send(event).unwrap();
+        })
+        .unwrap();
+        let mut watched = HashSet::new();
+        refresh_watches(
+            &mut watcher,
+            std::slice::from_ref(&config_root),
+            &mut watched,
+        );
+        fs::create_dir(root.join("config")).unwrap();
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        refresh_watches(
+            &mut watcher,
+            std::slice::from_ref(&config_root),
+            &mut watched,
+        );
+        fs::create_dir(&config_root).unwrap();
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        refresh_watches(
+            &mut watcher,
+            std::slice::from_ref(&config_root),
+            &mut watched,
+        );
+        assert!(watched.contains(&(config_root.clone(), true)));
+        while receiver.try_recv().is_ok() {}
+        fs::write(
+            config_root.join("config.toml"),
+            "[general]\nhot_reload = true\n",
+        )
+        .unwrap();
+        let event = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(event
+            .paths
+            .iter()
+            .any(|path| path.starts_with(&config_root)));
+        drop(watcher);
+        fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
 
     #[test]

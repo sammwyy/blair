@@ -29,7 +29,7 @@ use smithay::{
 use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::{
-    config::{DecorationButton, WindowLayout},
+    config::{DecorationButton, FocusPolicy, WindowLayout},
     decorations::{hit_test_frame, hit_test_overlay_controls, DecorationPart, RESIZE_OUTSET},
     grabs::ResizeEdges,
     render::{to_rect, window_frame, z_ordered_windows},
@@ -637,6 +637,19 @@ fn move_pointer(
     };
     state.set_focused_output_at(location);
     update_hovered_button(state, location);
+    if state.config.focus.policy == FocusPolicy::Sloppy
+        && !pointer.is_grabbed()
+        && !state
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
+    {
+        if let Some(PointerTarget::Window { window, .. }) = pointer_target(state, location) {
+            if state.window_id(&window) != state.focused_window {
+                state.focus_window(&window);
+            }
+        }
+    }
     pointer.motion(
         state,
         under,
