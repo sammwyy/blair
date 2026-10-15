@@ -192,8 +192,13 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
 
 ### Coconut-only gaps and confirmed working paths
 
-- [ ] Implement dock auto-hide in Coconut; Settings explicitly disables it.
-  Source: `../coconut/apps/settings/src/views/desktop/mod.rs`.
+- [x] Implement dock auto-hide in Coconut. A two-pixel edge strip reveals
+  the dock; leaving schedules a cancellable 350 ms hide timer. Open/pending
+  popups keep it visible. CreamUI reports native pointer presence and
+  updates layer-shell size/exclusive zones when panels resize.
+  Sources: `../coconut/apps/shell/src/auto_hide.rs`,
+  `../coconut/apps/settings/src/views/desktop/mod.rs`,
+  `../creamui/crates/platform/src/wayland/runtime.rs`.
 - [x] Connect Coconut's sound-theme picker to desktop sound playback.
   The shell resolves notification and volume events using the current
   theme, inheritance, and `.disabled` masks, then plays them off the UI
