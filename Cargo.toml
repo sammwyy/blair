@@ -103,3 +103,4 @@ creamui-theme = { version = "0.2.0", path = "../creamui/crates/theme" }
 creamui-theme-loader = { version = "0.2.0", path = "../creamui/crates/theme-loader" }
 creamui-fonts = { version = "0.2.0", path = "../creamui/crates/fonts" }
 tracy-client = { version = "0.18", optional = true }
+delib = { version = "0.1.0", path = "../delib" }

@@ -1030,9 +1030,7 @@ impl Default for ConfigPaths {
     fn default() -> Self {
         Self {
             system_dir: PathBuf::from("/etc/blair"),
-            user_dir: dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from(".config"))
-                .join("blair"),
+            user_dir: delib::xdg::XdgPaths::default().user_config_dir("blair"),
         }
     }
 }
