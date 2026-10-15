@@ -123,6 +123,7 @@ mod tests {
 
     fn theme(drag_margin: i32) -> DecorationTheme {
         DecorationTheme {
+            text_scale: 1.0,
             titlebar_height: 30,
             border_width: 4,
             corner_radius: 0,

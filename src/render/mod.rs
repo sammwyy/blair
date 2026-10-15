@@ -880,7 +880,8 @@ fn window_elements(
             }
         }
 
-        let title_size = (theme.titlebar_height as f32 * 0.41).clamp(10.0, 18.0);
+        let title_size = (theme.titlebar_height as f32 / theme.text_scale * 0.41).clamp(10.0, 18.0)
+            * theme.text_scale;
         decoration.update_title(
             font,
             &title_text,

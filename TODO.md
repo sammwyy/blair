@@ -150,10 +150,12 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   Sources: `src/decorations/icons.rs`, `../delib/src/icons.rs`,
   `../coconut/apps/settings/src/views/personalization/asset_packs.rs`,
   `../coconut/apps/shell/src/lib.rs` (`RuntimeEvent::ShellConfig`).
-- [ ] Provide shared accessibility preferences for high contrast (`contrast`)
-  and interface text scaling (`text-scale`), consumed by Coconut/CreamUI
-  and Blair decorations where applicable. Settings currently only connects
-  these controls to GNOME and explicitly marks them unsupported on Blair.
+- [x] Provide shared accessibility preferences for high contrast (`contrast`)
+  and interface text scaling (`text-scale`). CreamUI persists them in
+  `cream/accessibility.toml` and applies an opaque contrast palette and
+  scaled typography when loading any selected theme. Coconut preserves
+  those tokens, updates Settings live, and publishes theme reloads for
+  the shell and Blair. Decoration text and titlebar geometry scale too.
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/apps/settings/src/views/personalization/fonts.rs`,
   `../coconut/integrations/system/src/lib.rs` (`discover_preferences`).

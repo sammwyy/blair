@@ -452,6 +452,7 @@ impl BlairState {
     pub fn reload_system_theme(&mut self) {
         self.system_accent = load_system_accent();
         self.decoration_theme = self.config.decorations.to_theme(self.system_accent);
+        self.relayout_all();
         tracing::info!("reloaded decoration colors from the CreamUI system theme");
         self.request_redraw();
     }

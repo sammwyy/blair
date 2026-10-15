@@ -6,6 +6,7 @@ use crate::config::{
 /// is final, and `border_width` is already 0 when the border is hidden.
 #[derive(Debug, Clone)]
 pub struct DecorationTheme {
+    pub text_scale: f32,
     pub titlebar_height: i32,
     pub border_width: i32,
     pub corner_radius: i32,

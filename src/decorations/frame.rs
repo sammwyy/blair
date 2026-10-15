@@ -217,6 +217,7 @@ mod tests {
 
     fn theme(border_width: i32) -> DecorationTheme {
         DecorationTheme {
+            text_scale: 1.0,
             titlebar_height: 30,
             border_width,
             corner_radius: 0,

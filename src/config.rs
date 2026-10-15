@@ -909,6 +909,7 @@ impl DecorationConfig {
     /// (`system`), falling back to the literal colors above without one.
     pub fn to_theme(&self, system: Option<SystemAccent>) -> DecorationTheme {
         let titlebar = match (self.titlebar_color, system) {
+            (_, Some(system)) if system.high_contrast => (system.surface, system.surface),
             (TitlebarColorMode::Color, _) => {
                 let color = parse_color(&self.custom_titlebar_color);
                 (color, color)
@@ -947,7 +948,10 @@ impl DecorationConfig {
             ),
         };
         DecorationTheme {
-            titlebar_height: self.titlebar_height,
+            titlebar_height: (self.titlebar_height as f32
+                * system.map_or(1.0, |system| system.text_scale))
+            .round() as i32,
+            text_scale: system.map_or(1.0, |system| system.text_scale),
             border_width: if border.is_some() {
                 self.border_size.width()
             } else {
@@ -959,7 +963,11 @@ impl DecorationConfig {
             popup_corner_radius: system
                 .map(|system| system.corners.popup_radius())
                 .unwrap_or(self.popup_corner_radius),
-            titlebar_mode: self.titlebar_color,
+            titlebar_mode: if system.is_some_and(|system| system.high_contrast) {
+                TitlebarColorMode::Color
+            } else {
+                self.titlebar_color
+            },
             active_titlebar: titlebar.0,
             inactive_titlebar: titlebar.1,
             active_border: border.map_or([0; 4], |border| border.0),
@@ -984,6 +992,8 @@ impl DecorationConfig {
 /// server-side decorations in sync with the desktop's active appearance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SystemAccent {
+    pub text_scale: f32,
+    pub high_contrast: bool,
     pub accent: [u8; 4],
     pub surface: [u8; 4],
     pub surface_elevated: [u8; 4],
@@ -1000,7 +1010,9 @@ impl From<creamui_theme::ResolvedAppearance> for SystemAccent {
     fn from(resolved: creamui_theme::ResolvedAppearance) -> Self {
         let to_bytes = |color: creamui_theme::Color| [color.r, color.g, color.b, color.a];
         Self {
-            accent: to_bytes(resolved.accent),
+            text_scale: resolved.theme.text_scale,
+            high_contrast: resolved.theme.high_contrast,
+            accent: to_bytes(resolved.theme.colors.accent),
             surface: to_bytes(resolved.theme.colors.surface),
             surface_elevated: to_bytes(resolved.theme.colors.surface_elevated),
             border: to_bytes(resolved.theme.colors.border),
