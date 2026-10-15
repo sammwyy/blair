@@ -83,13 +83,13 @@ come from code inspection, without a running desktop session.
   (`configuration`, `set_configuration`),
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build_working_area`,
   `Writer::save`).
-- [ ] Support the shortcut keys Coconut ships and can record. `Alt+Tab`
-  and `Alt+Shift+Tab` are Coconut defaults, but Blair rejects `Tab` because
-  it is missing from `key_aliases`. Single characters outside ASCII
-  letters, digits, and space can pass parsing but never activate because
-  `physical_letter_keycode` has no mapping for them. Add matching support
-  or reject unsupported keys during validation, and surface registration
-  failures in Settings instead of only shell stderr.
+- [ ] Complete shortcut registration feedback in Settings. The shared
+  `blair_protocol::ShortcutAccelerator` parser now maps Tab, navigation,
+  punctuation, function/media keys, and rejects unmapped characters before
+  registration. Settings validates with the same parser before saving.
+  Bare modifiers activate on release and do not fire during a chord.
+  Unexpected runtime registration failures still need visible feedback
+  when Coconut reloads its bindings live.
   Sources: `src/shortcuts.rs`, `../coconut/crates/core/src/shortcuts.rs`,
   `../coconut/apps/settings/src/views/windows/mod.rs` (`ShortcutRecorder`),
   `../coconut/apps/shell/src/shortcuts.rs` (`ShortcutListener::start`).

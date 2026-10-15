@@ -1,3 +1,4 @@
+mod accelerator;
 mod event;
 mod geometry;
 mod output;
@@ -6,6 +7,9 @@ mod stats;
 mod window;
 mod workspace;
 
+pub use accelerator::{
+    is_modifier_keycode, shortcut_keycode, ShortcutAccelerator, ShortcutModifiers,
+};
 pub use event::CompositorEvent;
 pub use geometry::{Point, Rect};
 pub use output::{DisplayInfo, DisplayMode};

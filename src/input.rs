@@ -431,6 +431,11 @@ fn keyboard_key<B: InputBackend>(
     update_physical_mods(&mut state.physical_mods, raw, pressed);
     state.shortcuts.update_key(raw, pressed);
     let activated = state.shortcuts.maybe_activate_physical(state.physical_mods);
+    let released_shortcuts = if !pressed && !shortcuts_inhibited(state) {
+        activated.clone()
+    } else {
+        Vec::new()
+    };
 
     let action = keyboard.input(
         state,
@@ -490,6 +495,9 @@ fn keyboard_key<B: InputBackend>(
             state.request_exit();
         }
         Some(KeyAction::Suppress) | None => {}
+    }
+    if !released_shortcuts.is_empty() {
+        state.activate_shortcuts(released_shortcuts);
     }
 }
 

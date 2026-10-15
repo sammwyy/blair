@@ -1,10 +1,15 @@
-use std::collections::{HashMap, HashSet};
+pub use blair_protocol::ShortcutModifiers as ShortcutMods;
+use blair_protocol::{is_modifier_keycode, ShortcutAccelerator};
+use std::collections::HashSet;
 
 #[derive(Debug, Default)]
 pub struct ShortcutRegistry {
     bindings: Vec<ShortcutBinding>,
     pressed_keys: HashSet<u32>,
     active_bindings: HashSet<(String, String)>,
+    pending_modifiers: Option<PhysicalMods>,
+    modifier_chord_used: bool,
+    last_key_released: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -12,7 +17,7 @@ struct ShortcutBinding {
     client: String,
     id: String,
     mods: ShortcutMods,
-    keys: Vec<ShortcutKey>,
+    keys: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,27 +27,6 @@ pub struct ActivatedShortcut {
 }
 
 pub type PhysicalMods = ShortcutMods;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ShortcutMods {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub logo: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ShortcutKey {
-    Char(char),
-    Return,
-    Space,
-    Escape,
-    F(u8),
-    VolumeUp,
-    VolumeDown,
-    BrightnessUp,
-    BrightnessDown,
-}
 
 const MAX_BINDINGS_PER_CLIENT: usize = 256;
 
@@ -101,9 +85,12 @@ impl ShortcutRegistry {
     pub fn clear_pressed(&mut self) {
         self.pressed_keys.clear();
         self.active_bindings.clear();
+        self.pending_modifiers = None;
+        self.modifier_chord_used = false;
     }
 
     pub fn update_key(&mut self, keycode: u32, pressed: bool) {
+        self.last_key_released = !pressed;
         if pressed {
             self.pressed_keys.insert(keycode);
         } else {
@@ -112,20 +99,61 @@ impl ShortcutRegistry {
     }
 
     pub fn maybe_activate_physical(&mut self, mods: PhysicalMods) -> Vec<ActivatedShortcut> {
+        if self
+            .pressed_keys
+            .iter()
+            .any(|code| !is_modifier_keycode(code.saturating_sub(8)))
+        {
+            self.modifier_chord_used = true;
+        }
+        let released = if mods == PhysicalMods::default() {
+            let pending = self
+                .pending_modifiers
+                .take()
+                .filter(|_| !self.modifier_chord_used);
+            self.modifier_chord_used = false;
+            pending
+        } else {
+            if self.pending_modifiers.is_none() {
+                self.pending_modifiers = Some(mods);
+            } else if modifier_count(mods) > modifier_count(self.pending_modifiers.unwrap()) {
+                self.pending_modifiers = Some(mods);
+            }
+            None
+        };
+        let mut activated: Vec<_> = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.keys.is_empty() && released == Some(binding.mods))
+            .map(|binding| ActivatedShortcut {
+                client: binding.client.clone(),
+                id: binding.id.clone(),
+            })
+            .collect();
         let matching: HashSet<_> = self
             .bindings
             .iter()
-            .filter(|binding| binding.matches_physical(mods, &self.pressed_keys))
+            .filter(|binding| {
+                !binding.keys.is_empty() && binding.matches_physical(mods, &self.pressed_keys)
+            })
             .map(|binding| (binding.client.clone(), binding.id.clone()))
             .collect();
         self.active_bindings
             .retain(|binding| matching.contains(binding));
-        matching
-            .into_iter()
-            .filter(|binding| self.active_bindings.insert(binding.clone()))
-            .map(|(client, id)| ActivatedShortcut { client, id })
-            .collect()
+        if !self.last_key_released {
+            activated.extend(
+                matching
+                    .into_iter()
+                    .filter(|binding| self.active_bindings.insert(binding.clone()))
+                    .map(|(client, id)| ActivatedShortcut { client, id }),
+            );
+        }
+        activated
     }
+}
+
+fn modifier_count(mods: PhysicalMods) -> u8 {
+    u8::from(mods.ctrl) + u8::from(mods.alt) + u8::from(mods.shift) + u8::from(mods.logo)
 }
 
 pub fn validate_accelerator(accelerator: &str) -> Result<(), String> {
@@ -138,116 +166,18 @@ impl ShortcutBinding {
             && self
                 .keys
                 .iter()
-                .all(|key| key.matches_physical(pressed_keys))
-    }
-}
-
-impl ShortcutKey {
-    fn matches_physical(&self, pressed_keys: &HashSet<u32>) -> bool {
-        match self {
-            ShortcutKey::Char(' ') | ShortcutKey::Space => {
-                pressed_keys.contains(&evdev_to_smithay(57))
-            }
-            ShortcutKey::Char(ch) => {
-                physical_letter_keycode(*ch).is_some_and(|keycode| pressed_keys.contains(&keycode))
-            }
-            ShortcutKey::Return => pressed_keys.contains(&evdev_to_smithay(28)),
-            ShortcutKey::Escape => pressed_keys.contains(&evdev_to_smithay(1)),
-            ShortcutKey::F(n) => {
-                physical_f_keycode(*n).is_some_and(|keycode| pressed_keys.contains(&keycode))
-            }
-            ShortcutKey::VolumeUp => pressed_keys.contains(&evdev_to_smithay(115)),
-            ShortcutKey::VolumeDown => pressed_keys.contains(&evdev_to_smithay(114)),
-            ShortcutKey::BrightnessUp => pressed_keys.contains(&evdev_to_smithay(225)),
-            ShortcutKey::BrightnessDown => pressed_keys.contains(&evdev_to_smithay(224)),
-        }
-    }
-
-    fn is_media_key(&self) -> bool {
-        matches!(
-            self,
-            Self::VolumeUp | Self::VolumeDown | Self::BrightnessUp | Self::BrightnessDown
-        )
+                .all(|key| pressed_keys.contains(&evdev_to_smithay(*key)))
     }
 }
 
 fn parse_binding(client: &str, id: &str, accelerator: &str) -> Result<ShortcutBinding, String> {
-    let mut mods = ShortcutMods::default();
-    let mut keys = Vec::new();
-    let aliases = key_aliases();
-
-    for token in accelerator.replace(',', "+").split('+') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        match token.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => mods.ctrl = true,
-            "alt" | "mod1" => mods.alt = true,
-            "shift" => mods.shift = true,
-            "super" | "logo" | "meta" | "mod4" | "win" => mods.logo = true,
-            value => {
-                if keys.len() == 3 {
-                    return Err("shortcut has more than three non-modifier keys".to_string());
-                }
-                let key = parse_key(value, &aliases)?;
-                if keys.contains(&key) {
-                    return Err("shortcut repeats a non-modifier key".to_string());
-                }
-                keys.push(key);
-            }
-        }
-    }
-
-    if !mods.ctrl
-        && !mods.alt
-        && !mods.shift
-        && !mods.logo
-        && !(keys.len() == 1 && keys[0].is_media_key())
-    {
-        return Err("shortcut has no modifier key".to_string());
-    }
+    let accelerator = ShortcutAccelerator::parse(accelerator)?;
     Ok(ShortcutBinding {
-        client: client.to_string(),
-        id: id.to_string(),
-        mods,
-        keys,
+        client: client.into(),
+        id: id.into(),
+        mods: accelerator.modifiers,
+        keys: accelerator.keys,
     })
-}
-
-fn parse_key(
-    value: &str,
-    aliases: &HashMap<&'static str, ShortcutKey>,
-) -> Result<ShortcutKey, String> {
-    if let Some(key) = aliases.get(value) {
-        return Ok(key.clone());
-    }
-    if let Some(rest) = value.strip_prefix('f') {
-        if let Ok(n) = rest.parse::<u8>() {
-            if (1..=12).contains(&n) {
-                return Ok(ShortcutKey::F(n));
-            }
-        }
-    }
-    let mut chars = value.chars();
-    if let (Some(ch), None) = (chars.next(), chars.next()) {
-        return Ok(ShortcutKey::Char(ch));
-    }
-    Err(format!("unsupported key `{value}`"))
-}
-
-fn key_aliases() -> HashMap<&'static str, ShortcutKey> {
-    HashMap::from([
-        ("return", ShortcutKey::Return),
-        ("enter", ShortcutKey::Return),
-        ("space", ShortcutKey::Space),
-        ("esc", ShortcutKey::Escape),
-        ("escape", ShortcutKey::Escape),
-        ("xf86audioraisevolume", ShortcutKey::VolumeUp),
-        ("xf86audiolowervolume", ShortcutKey::VolumeDown),
-        ("xf86monbrightnessup", ShortcutKey::BrightnessUp),
-        ("xf86monbrightnessdown", ShortcutKey::BrightnessDown),
-    ])
 }
 
 pub fn update_physical_mods(mods: &mut PhysicalMods, keycode: u32, pressed: bool) {
@@ -280,58 +210,6 @@ pub fn physical_vt_from_keycode(keycode: u32) -> Option<i32> {
 
 fn evdev_to_smithay(code: u32) -> u32 {
     code + 8
-}
-
-fn physical_f_keycode(n: u8) -> Option<u32> {
-    match n {
-        1..=10 => Some(evdev_to_smithay(58 + u32::from(n))),
-        11 => Some(evdev_to_smithay(87)),
-        12 => Some(evdev_to_smithay(88)),
-        _ => None,
-    }
-}
-
-fn physical_letter_keycode(ch: char) -> Option<u32> {
-    let evdev = match ch.to_ascii_lowercase() {
-        '1' => 2,
-        '2' => 3,
-        '3' => 4,
-        '4' => 5,
-        '5' => 6,
-        '6' => 7,
-        '7' => 8,
-        '8' => 9,
-        '9' => 10,
-        '0' => 11,
-        'q' => 16,
-        'w' => 17,
-        'e' => 18,
-        'r' => 19,
-        't' => 20,
-        'y' => 21,
-        'u' => 22,
-        'i' => 23,
-        'o' => 24,
-        'p' => 25,
-        'a' => 30,
-        's' => 31,
-        'd' => 32,
-        'f' => 33,
-        'g' => 34,
-        'h' => 35,
-        'j' => 36,
-        'k' => 37,
-        'l' => 38,
-        'z' => 44,
-        'x' => 45,
-        'c' => 46,
-        'v' => 47,
-        'b' => 48,
-        'n' => 49,
-        'm' => 50,
-        _ => return None,
-    };
-    Some(evdev_to_smithay(evdev))
 }
 
 #[cfg(test)]
@@ -442,15 +320,55 @@ mod tests {
         let mut registry = ShortcutRegistry::default();
         assert!(registry.bind(":1.4", "overview", "Super"));
         assert!(registry.bind(":1.4", "chord", "Ctrl+Alt+Q+W+E"));
+        assert!(registry
+            .maybe_activate_physical(PhysicalMods {
+                logo: true,
+                ..Default::default()
+            })
+            .is_empty());
         assert_eq!(
             registry
-                .maybe_activate_physical(PhysicalMods {
-                    logo: true,
-                    ..Default::default()
-                })
+                .maybe_activate_physical(PhysicalMods::default())
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn modifier_only_shortcuts_do_not_fire_when_used_in_a_chord() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind("shell", "launcher", "Super"));
+        let super_mods = PhysicalMods {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(registry.maybe_activate_physical(super_mods).is_empty());
+        registry.update_key(evdev_to_smithay(32), true);
+        assert!(registry.maybe_activate_physical(super_mods).is_empty());
+        registry.update_key(evdev_to_smithay(32), false);
+        assert!(registry.maybe_activate_physical(super_mods).is_empty());
+        assert!(registry
+            .maybe_activate_physical(PhysicalMods::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn tab_shortcuts_activate_and_rearm_after_release() {
+        let mut registry = ShortcutRegistry::default();
+        assert!(registry.bind("shell", "next", "Alt+Tab"));
+        assert!(registry.bind("shell", "previous", "Alt+Shift+Tab"));
+        let mut mods = PhysicalMods {
+            alt: true,
+            ..Default::default()
+        };
+        registry.update_key(evdev_to_smithay(15), true);
+        assert_eq!(registry.maybe_activate_physical(mods)[0].id, "next");
+        assert!(registry.maybe_activate_physical(mods).is_empty());
+        registry.update_key(evdev_to_smithay(15), false);
+        assert!(registry.maybe_activate_physical(mods).is_empty());
+        mods.shift = true;
+        registry.update_key(evdev_to_smithay(15), true);
+        assert_eq!(registry.maybe_activate_physical(mods)[0].id, "previous");
     }
 
     #[test]
