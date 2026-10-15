@@ -44,6 +44,10 @@ size = 24
 [appearance]
 icon_theme = "hicolor"
 
+[accessibility]
+sticky_keys = false
+visual_alerts = false
+
 [hot_corners]
 enabled = true
 dwell_ms = 350

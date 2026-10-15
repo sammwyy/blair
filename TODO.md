@@ -67,17 +67,20 @@ come from code inspection, without a running desktop session.
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
   `src/config.rs`, `src/render/mod.rs`.
-- [ ] Implement sticky modifier keys and expose `sticky-keys` to Settings.
-  The current adapter only uses GNOME's accessibility preference; Blair's
-  keyboard handling has no sticky-key state.
+- [x] Implement sticky modifier keys and expose `sticky-keys` to Settings.
+  Modifier taps latch for one chord; double taps lock until a third tap.
+  Ordinary held chords retain their behavior. Disabling the preference or
+  resetting input releases virtual modifiers. Tests exercise XKB state,
+  shortcut modifiers, latching, locking, and configuration changes.
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`), `src/input.rs`.
-- [ ] Implement visual bell feedback and expose `visual-alerts` to Settings.
-  "Visual alerts" currently maps only to GNOME's `visual-bell`; Blair has
-  no bell handler or screen-flash effect.
+- [x] Implement visual bell feedback and expose `visual-alerts` to Settings.
+  Blair advertises `xdg-system-bell-v1` and flashes a translucent overlay
+  for 160 ms when enabled. Requests are rate-limited during an active flash;
+  cleanup uses the event loop. Coconut reads/writes the native preference.
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
-  `src/handlers.rs`, `src/render/mod.rs`.
+  `src/accessibility.rs`, `src/render/mod.rs`.
 - [x] Apply workspace configuration changes at runtime. Count, dynamic
   creation, wrapping, names, and output assignments now update live.
   Reducing a fixed workspace set migrates its windows and active outputs

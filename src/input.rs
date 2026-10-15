@@ -33,7 +33,7 @@ use crate::{
     decorations::{hit_test_frame, hit_test_overlay_controls, DecorationPart, RESIZE_OUTSET},
     grabs::ResizeEdges,
     render::{to_rect, window_frame, z_ordered_windows},
-    shortcuts::{physical_vt_from_keycode, update_physical_mods},
+    shortcuts::physical_vt_from_keycode,
     state::BlairState,
 };
 
@@ -421,15 +421,42 @@ fn keyboard_key<B: InputBackend>(
     event: B::KeyboardKeyEvent,
     hooks: &mut dyn InputHooks,
 ) {
+    let code = u32::from(event.key_code());
+    let pressed = event.state() == KeyState::Pressed;
+    let transitions = if state.config.accessibility.sticky_keys {
+        state.sticky_keys.transform(code, pressed)
+    } else {
+        vec![crate::accessibility::KeyTransition { code, pressed }]
+    };
+    for transition in transitions {
+        keyboard_transition(
+            state,
+            transition.code,
+            transition.pressed,
+            event.time_msec(),
+            hooks,
+        );
+    }
+}
+
+pub(crate) fn keyboard_transition(
+    state: &mut BlairState,
+    raw: u32,
+    pressed: bool,
+    time: u32,
+    hooks: &mut dyn InputHooks,
+) {
     let Some(keyboard) = state.seat.get_keyboard() else {
         return;
     };
-    let keycode = event.key_code();
-    let raw = u32::from(keycode);
-    let key_state = event.state();
-    let pressed = key_state == KeyState::Pressed;
-    update_physical_mods(&mut state.physical_mods, raw, pressed);
+    let keycode = smithay::input::keyboard::Keycode::new(raw);
+    let key_state = if pressed {
+        KeyState::Pressed
+    } else {
+        KeyState::Released
+    };
     state.shortcuts.update_key(raw, pressed);
+    state.physical_mods = state.shortcuts.modifiers();
     let activated = state.shortcuts.maybe_activate_physical(state.physical_mods);
     let released_shortcuts = if !pressed && !shortcuts_inhibited(state) {
         activated.clone()
@@ -442,7 +469,7 @@ fn keyboard_key<B: InputBackend>(
         keycode,
         key_state,
         SERIAL_COUNTER.next_serial(),
-        event.time_msec(),
+        time,
         |state, _mods, keysym| {
             if !pressed {
                 return if state.suppressed_keys.remove(&raw) {
@@ -509,10 +536,29 @@ fn shortcuts_inhibited(state: &BlairState) -> bool {
 }
 
 pub fn reset_keyboard_state(state: &mut BlairState) {
+    release_sticky_keys(state);
     state.hot_corners.cancel();
     state.physical_mods = Default::default();
     state.shortcuts.clear_pressed();
     state.suppressed_keys.clear();
+}
+
+pub fn release_sticky_keys(state: &mut BlairState) {
+    let releases = state.sticky_keys.release_virtual();
+    if let Some(keyboard) = state.seat.get_keyboard() {
+        for code in releases {
+            keyboard.input::<(), _>(
+                state,
+                smithay::input::keyboard::Keycode::new(code),
+                KeyState::Released,
+                SERIAL_COUNTER.next_serial(),
+                state.clock_now().as_millis() as u32,
+                |_, _, _| FilterResult::Forward,
+            );
+            state.shortcuts.update_key(code, false);
+        }
+        state.physical_mods = state.shortcuts.modifiers();
+    }
 }
 
 fn clamp_to_outputs(state: &BlairState, pos: Point<f64, Logical>) -> Point<f64, Logical> {

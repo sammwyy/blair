@@ -11,6 +11,7 @@ use smithay::{
             default_primary_scanout_output_compare,
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             render_elements,
+            solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             Element, Kind, RenderElementStates,
         },
@@ -81,6 +82,7 @@ render_elements! {
     Frame=FrameElement,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
     Blur=blur::BlurredBackdropElement,
+    Solid=SolidColorRenderElement,
 }
 
 #[derive(Clone)]
@@ -200,6 +202,23 @@ pub fn output_elements(
     );
 
     let mut elements = Vec::new();
+    if state.config.accessibility.visual_alerts
+        && state
+            .visual_bell_until
+            .is_some_and(|deadline| deadline > std::time::Instant::now())
+    {
+        state.visual_bell_buffer.resize(output_geo.size);
+        elements.push(
+            SolidColorRenderElement::from_buffer(
+                &state.visual_bell_buffer,
+                (0, 0),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into(),
+        );
+    }
     cursor_elements(renderer, state, output, &ctx, cursor_mode, &mut elements);
     if let Some(icon) = state.dnd_icon.as_ref().filter(|icon| icon.alive()) {
         let location = state.pointer_location().to_i32_round::<i32>() - output_geo.loc;

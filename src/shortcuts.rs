@@ -98,6 +98,14 @@ impl ShortcutRegistry {
         }
     }
 
+    pub fn modifiers(&self) -> PhysicalMods {
+        let mut modifiers = PhysicalMods::default();
+        for code in &self.pressed_keys {
+            update_physical_mods(&mut modifiers, *code, true);
+        }
+        modifiers
+    }
+
     pub fn maybe_activate_physical(&mut self, mods: PhysicalMods) -> Vec<ActivatedShortcut> {
         if self
             .pressed_keys

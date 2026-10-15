@@ -36,6 +36,7 @@ pub struct CompositorConfig {
     pub cursor: CursorConfig,
     pub appearance: AppearanceConfig,
     pub hot_corners: crate::hot_corners::HotCornersConfig,
+    pub accessibility: crate::accessibility::AccessibilityConfig,
     pub blur: BlurConfig,
 }
 

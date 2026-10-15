@@ -214,6 +214,9 @@ pub struct BlairState {
     pub focused_window: Option<WindowId>,
     pub hovered_button: Option<(WindowId, crate::config::DecorationButton)>,
     pub hot_corners: crate::hot_corners::HotCornerState,
+    pub sticky_keys: crate::accessibility::StickyKeys,
+    pub visual_bell_until: Option<Instant>,
+    pub visual_bell_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer,
     /// The cursor last requested by the focused client.
     pub client_cursor: CursorImageStatus,
     /// A cursor the compositor shows instead of the client's, over its own
@@ -283,6 +286,7 @@ impl BlairState {
         let dh = &display_handle;
         let compositor_state = CompositorState::new_v6::<Self>(dh);
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
+        smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<Self>(dh);
         XdgDecorationState::new::<Self>(dh);
         OutputManagerState::new_with_xdg_output::<Self>(dh);
         let shm_state = ShmState::new::<Self>(dh, vec![]);
@@ -386,6 +390,12 @@ impl BlairState {
             focused_window: None,
             hovered_button: None,
             hot_corners: crate::hot_corners::HotCornerState::default(),
+            sticky_keys: crate::accessibility::StickyKeys::default(),
+            visual_bell_until: None,
+            visual_bell_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                (1, 1),
+                smithay::backend::renderer::Color32F::new(0.18, 0.18, 0.18, 0.18),
+            ),
             client_cursor: CursorImageStatus::default_named(),
             compositor_cursor: None,
             cursor,
@@ -631,6 +641,11 @@ impl BlairState {
         }
 
         let previous = std::mem::replace(&mut self.config, next);
+        if (previous.accessibility.sticky_keys && !self.config.accessibility.sticky_keys)
+            || previous.input.keyboard != self.config.input.keyboard
+        {
+            crate::input::release_sticky_keys(self);
+        }
         if previous.hot_corners != self.config.hot_corners {
             self.hot_corners.cancel();
         }
@@ -2672,6 +2687,71 @@ mod tests {
     use super::*;
 
     struct TestEvents(std::sync::Mutex<Vec<CompositorEvent>>);
+
+    fn fixture() -> (
+        smithay::reexports::wayland_server::Display<BlairState>,
+        smithay::reexports::calloop::EventLoop<'static, BlairState>,
+        BlairState,
+    ) {
+        let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
+        let event_loop = smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
+        let state = BlairState::new(
+            display.handle(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            CompositorConfig::default(),
+            Arc::new(TestEvents(std::sync::Mutex::new(Vec::new()))),
+        );
+        (display, event_loop, state)
+    }
+
+    #[test]
+    fn sticky_modifiers_reach_xkb_and_clear_after_a_key_or_disabling_the_preference() {
+        struct Hooks;
+        impl crate::input::InputHooks for Hooks {}
+        fn feed(state: &mut BlairState, code: u32, pressed: bool) {
+            for event in state.sticky_keys.transform(code, pressed) {
+                crate::input::keyboard_transition(state, event.code, event.pressed, 0, &mut Hooks);
+            }
+        }
+        let (_display, _event_loop, mut state) = fixture();
+        state.config.accessibility.sticky_keys = true;
+        let keyboard = state.seat.get_keyboard().unwrap();
+        feed(&mut state, 50, true);
+        feed(&mut state, 50, false);
+        assert!(keyboard.modifier_state().shift);
+        feed(&mut state, 38, true);
+        assert!(state.physical_mods.shift);
+        feed(&mut state, 38, false);
+        assert!(!keyboard.modifier_state().shift);
+        feed(&mut state, 50, true);
+        feed(&mut state, 50, false);
+        feed(&mut state, 50, true);
+        feed(&mut state, 50, false);
+        feed(&mut state, 38, true);
+        feed(&mut state, 38, false);
+        assert!(keyboard.modifier_state().shift);
+        let mut config = state.config.clone();
+        config.accessibility.sticky_keys = false;
+        state.apply_config(config);
+        assert!(!keyboard.modifier_state().shift);
+        assert!(!state.physical_mods.shift);
+    }
+
+    #[test]
+    fn visual_bells_respect_the_preference_and_expire_through_the_event_loop() {
+        use smithay::wayland::xdg_system_bell::XdgSystemBellHandler;
+        let (_display, mut event_loop, mut state) = fixture();
+        state.ring(None);
+        assert!(state.visual_bell_until.is_none());
+        state.config.accessibility.visual_alerts = true;
+        state.ring(None);
+        assert!(state.visual_bell_until.is_some());
+        event_loop
+            .dispatch(Duration::from_millis(200), &mut state)
+            .unwrap();
+        assert!(state.visual_bell_until.is_none());
+    }
 
     impl EventChannel for TestEvents {
         fn publish(&self, event: CompositorEvent) {
