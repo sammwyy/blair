@@ -194,9 +194,11 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
 
 - [ ] Implement dock auto-hide in Coconut; Settings explicitly disables it.
   Source: `../coconut/apps/settings/src/views/desktop/mod.rs`.
-- [ ] Connect Coconut's sound-theme picker to desktop sound playback. It
-  currently only saves `appearance.sound_theme`, with no consumer in the
-  Coconut shell/plugins. Blair does not need a sound-theme renderer.
+- [x] Connect Coconut's sound-theme picker to desktop sound playback.
+  The shell resolves notification and volume events using the current
+  theme, inheritance, and `.disabled` masks, then plays them off the UI
+  thread with `pw-play`/`paplay`. Notification sound names and suppression
+  hints are honored; tests record requests without producing real audio.
   Source: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`.
 
 Do not list resolution/refresh changes as missing: the DRM backend already
