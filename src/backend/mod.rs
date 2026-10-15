@@ -254,9 +254,10 @@ fn setup(
     let handle = event_loop.handle();
     let socket = init_wayland(&handle, display)?;
     let environment = if session {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "Blair".to_owned());
         vec![
             ("WAYLAND_DISPLAY".to_owned(), socket.clone()),
-            ("XDG_CURRENT_DESKTOP".to_owned(), "Blair".to_owned()),
+            ("XDG_CURRENT_DESKTOP".to_owned(), desktop),
             ("XDG_SESSION_TYPE".to_owned(), "wayland".to_owned()),
         ]
     } else {

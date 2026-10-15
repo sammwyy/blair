@@ -1,6 +1,6 @@
 #!/bin/sh
-export XDG_CURRENT_DESKTOP=Blair
-export XDG_SESSION_DESKTOP=Blair
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-Blair}"
+export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-Blair}"
 export XDG_SESSION_TYPE=wayland
 
 export RUST_LOG="${RUST_LOG:-blair=debug,warn}"
