@@ -1252,7 +1252,9 @@ fn reload(state: &mut BlairState) {
     match load_from_paths(&ConfigPaths::default()) {
         Ok(next) if next == state.config => {}
         Ok(next) => {
-            state.apply_config(next);
+            if let Err(error) = state.apply_config(next) {
+                tracing::warn!(%error, "configuration reload rejected");
+            }
             tracing::info!("configuration reloaded");
         }
         Err(error) => {

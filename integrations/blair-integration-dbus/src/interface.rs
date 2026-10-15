@@ -37,6 +37,12 @@ impl CompositorInterface {
     )
 )]
 impl CompositorInterface {
+    async fn input_capabilities(&self) -> zbus::fdo::Result<crate::wire::DbusInputCapabilities> {
+        self.call(Command::InputCapabilities)
+            .await
+            .ok_or_else(|| zbus::fdo::Error::Failed("Compositor stopped".into()))
+    }
+
     async fn list_windows(&self) -> Vec<DbusWindow> {
         self.call(Command::ListWindows).await.unwrap_or_default()
     }

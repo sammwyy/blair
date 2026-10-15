@@ -81,6 +81,7 @@ pub trait CompositorApi {
         server_side_decorations: bool,
     ) -> bool;
     fn configuration(&self) -> String;
+    fn input_capabilities(&self) -> blair_protocol::InputCapabilities;
     fn set_configuration(&mut self, configuration: &str) -> bool;
     /// Persistent shortcuts owned by Blair's configuration, rather than a
     /// temporary shortcut registration owned by a D-Bus client.

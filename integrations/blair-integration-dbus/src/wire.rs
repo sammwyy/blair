@@ -4,6 +4,72 @@ use zbus::zvariant::Type;
 use blair_protocol::{Rect, WindowId, WindowInfo, WorkspaceInfo};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct DbusInputCapabilities {
+    pub backend: String,
+    pub devices: Vec<(String, String, bool, bool, Vec<String>, bool, bool, bool)>,
+    pub errors: Vec<String>,
+}
+
+impl From<blair_protocol::InputCapabilities> for DbusInputCapabilities {
+    fn from(info: blair_protocol::InputCapabilities) -> Self {
+        Self {
+            backend: info.backend,
+            devices: info
+                .devices
+                .into_iter()
+                .map(|device| {
+                    (
+                        device.id,
+                        device.name,
+                        device.touchpad,
+                        device.sensitivity,
+                        device.acceleration_profiles,
+                        device.tap,
+                        device.natural_scroll,
+                        device.disable_while_typing,
+                    )
+                })
+                .collect(),
+            errors: info.errors,
+        }
+    }
+}
+
+impl From<DbusInputCapabilities> for blair_protocol::InputCapabilities {
+    fn from(info: DbusInputCapabilities) -> Self {
+        Self {
+            backend: info.backend,
+            devices: info
+                .devices
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        name,
+                        touchpad,
+                        sensitivity,
+                        acceleration_profiles,
+                        tap,
+                        natural_scroll,
+                        disable_while_typing,
+                    )| blair_protocol::InputDeviceInfo {
+                        id,
+                        name,
+                        touchpad,
+                        sensitivity,
+                        acceleration_profiles,
+                        tap,
+                        natural_scroll,
+                        disable_while_typing,
+                    },
+                )
+                .collect(),
+            errors: info.errors,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct DbusDisplay {
     pub name: String,
     pub width: i32,
@@ -147,6 +213,29 @@ impl From<&WindowInfo> for DbusWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_capabilities_round_trip_without_losing_device_support() {
+        let info = blair_protocol::InputCapabilities {
+            backend: "drm".into(),
+            devices: vec![blair_protocol::InputDeviceInfo {
+                id: "event4".into(),
+                name: "Built-in Touchpad".into(),
+                touchpad: true,
+                sensitivity: true,
+                acceleration_profiles: vec!["adaptive".into(), "flat".into()],
+                tap: true,
+                natural_scroll: true,
+                disable_while_typing: true,
+            }],
+            errors: vec!["device rejected a previous change".into()],
+        };
+
+        assert_eq!(
+            blair_protocol::InputCapabilities::from(DbusInputCapabilities::from(info.clone())),
+            info
+        );
+    }
 
     #[test]
     fn display_signature_and_round_trip_preserve_physical_modes_and_preview() {

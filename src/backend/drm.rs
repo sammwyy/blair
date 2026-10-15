@@ -12,7 +12,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use smithay::reexports::input::{AccelProfile, Device as LibinputDevice, Libinput, ScrollMethod};
+#[cfg(test)]
+use smithay::reexports::input::ScrollMethod;
+use smithay::reexports::input::{Device as LibinputDevice, Libinput};
 use smithay::{
     backend::{
         allocator::{
@@ -52,7 +54,7 @@ use smithay::{
 };
 
 use crate::{
-    config::{CompositorConfig, InputConfig, OutputConfig, OutputTransform},
+    config::{CompositorConfig, OutputConfig, OutputTransform},
     input::{process_input_event, reset_keyboard_state, InputHooks},
     render::{
         cursor_is_animated, output_elements, send_frame_callbacks, take_presentation_feedback,
@@ -351,7 +353,9 @@ impl DrmBackend {
             self.pacer.force_redraw();
             self.timer.reset_presentation();
             reset_keyboard_state(state);
-            self.apply_input_config(&state.config.input);
+            if let Err(error) = state.input_devices.reapply(&state.config.input) {
+                tracing::warn!(%error, "could not restore input configuration after session activation");
+            }
             state.request_redraw();
         } else {
             tracing::info!("session paused (VT switch out)");
@@ -359,12 +363,6 @@ impl DrmBackend {
             self.drm.pause();
             // No vblank will arrive for an in-flight buffer once paused.
             self.pacer.frame_presented();
-        }
-    }
-
-    fn apply_input_config(&mut self, config: &InputConfig) {
-        for device in &mut self.devices {
-            configure_input_device(device, config);
         }
     }
 
@@ -379,8 +377,8 @@ impl DrmBackend {
         }
     }
 
-    fn device_added(&mut self, mut device: LibinputDevice, state: &mut BlairState) {
-        configure_input_device(&mut device, &state.config.input);
+    fn device_added(&mut self, device: LibinputDevice, state: &mut BlairState) {
+        state.input_devices.add(device.clone(), &state.config.input);
         log_input_device("input device added", &device);
         if InputDevice::has_capability(&device, DeviceCapability::Touch)
             && state.seat.get_touch().is_none()
@@ -391,9 +389,10 @@ impl DrmBackend {
         self.devices.push(device);
     }
 
-    fn device_removed(&mut self, device: &LibinputDevice) {
+    fn device_removed(&mut self, device: &LibinputDevice, state: &mut BlairState) {
         log_input_device("input device removed", device);
         self.devices.retain(|known| known != device);
+        state.input_devices.remove(device);
     }
 }
 
@@ -423,6 +422,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         events,
     );
     state.set_wayland_display(&socket);
+    state.input_devices.enable_native();
 
     let backend: Rc<RefCell<Option<DrmBackend>>> = Rc::new(RefCell::new(None));
     let session_active = Rc::new(Cell::new(session.is_active()));
@@ -503,7 +503,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
                     }
                     InputEvent::DeviceRemoved { device } => {
                         if let Some(backend) = input_backend.borrow_mut().as_mut() {
-                            backend.device_removed(&device);
+                            backend.device_removed(&device, state);
                         }
                     }
                     event => {
@@ -546,7 +546,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         );
         state.refresh();
         if std::mem::take(&mut state.input_config_changed) {
-            backend.apply_input_config(&state.config.input);
+            if let Err(error) = state.input_devices.reapply(&state.config.input) {
+                tracing::warn!(%error, "could not reapply input configuration");
+            }
         }
         backend.dispatch_redraw(state);
         if let Err(error) = state.display_handle.flush_clients() {
@@ -788,46 +790,6 @@ fn init_dmabuf(
         tracing::info!("linux-dmabuf enabled");
     }
     state.dmabuf_global = global;
-}
-
-fn configure_input_device(device: &mut LibinputDevice, config: &InputConfig) {
-    let profile = match config.mouse.acceleration.as_str() {
-        "flat" => AccelProfile::Flat,
-        _ => AccelProfile::Adaptive,
-    };
-    if let Err(error) = device.config_accel_set_profile(profile) {
-        tracing::debug!(?error, device = %device.name(), "pointer acceleration profile unsupported");
-    }
-    if let Err(error) = device.config_accel_set_speed(config.mouse.sensitivity) {
-        tracing::debug!(?error, device = %device.name(), "pointer sensitivity unsupported");
-    }
-    if let Err(error) = device.config_tap_set_enabled(config.touchpad.tap) {
-        tracing::debug!(?error, device = %device.name(), "tap-to-click unsupported");
-    }
-    let natural_scroll = natural_scroll_for_device(
-        device.config_tap_finger_count(),
-        device.config_scroll_default_method(),
-        config,
-    );
-    if let Err(error) = device.config_scroll_set_natural_scroll_enabled(natural_scroll) {
-        tracing::debug!(?error, device = %device.name(), "natural scrolling unsupported");
-    }
-    if let Err(error) = device.config_dwt_set_enabled(config.touchpad.disable_while_typing) {
-        tracing::debug!(?error, device = %device.name(), "disable-while-typing unsupported");
-    }
-}
-
-fn natural_scroll_for_device(
-    tap_fingers: u32,
-    scroll_method: Option<ScrollMethod>,
-    config: &InputConfig,
-) -> bool {
-    let touchpad = tap_fingers > 0
-        || matches!(
-            scroll_method,
-            Some(ScrollMethod::TwoFinger | ScrollMethod::Edge)
-        );
-    touchpad && config.touchpad.natural_scroll
 }
 
 fn log_input_device(message: &'static str, device: &impl InputDevice) {
@@ -1361,30 +1323,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mouse_scrolling_is_not_inverted_by_touchpad_preferences() {
-        let mut config = InputConfig::default();
-        config.touchpad.natural_scroll = true;
+    fn mice_are_not_mistaken_for_touchpads() {
         for method in [
             None,
             Some(ScrollMethod::NoScroll),
             Some(ScrollMethod::OnButtonDown),
         ] {
-            assert!(!natural_scroll_for_device(0, method, &config));
+            assert!(!crate::input_devices::is_touchpad(0, method));
         }
     }
 
     #[test]
-    fn touchpads_honor_natural_scrolling_even_without_tap_support() {
-        let mut config = InputConfig::default();
+    fn touchpad_detection_covers_touchpads_without_tap_support() {
         for (tap_fingers, method) in [
             (3, Some(ScrollMethod::NoScroll)),
             (0, Some(ScrollMethod::TwoFinger)),
             (0, Some(ScrollMethod::Edge)),
         ] {
-            config.touchpad.natural_scroll = true;
-            assert!(natural_scroll_for_device(tap_fingers, method, &config));
-            config.touchpad.natural_scroll = false;
-            assert!(!natural_scroll_for_device(tap_fingers, method, &config));
+            assert!(crate::input_devices::is_touchpad(tap_fingers, method));
         }
     }
 }

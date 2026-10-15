@@ -8,6 +8,7 @@ mod grabs;
 mod handlers;
 mod hot_corners;
 mod input;
+mod input_devices;
 mod integrations;
 mod logging;
 mod outputs;

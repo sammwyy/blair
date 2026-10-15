@@ -112,13 +112,14 @@ come from code inspection, without a running desktop session.
   Debounced callbacks recheck the flag before applying a queued reload.
   Sources: `src/config.rs` (`watch`), `src/state.rs` (`apply_config`),
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build_general`).
-- [ ] Expose input-device and backend capabilities to Settings. Its mouse
-  sensitivity and touchpad switches can be saved in a nested Winit session,
-  but libinput configuration is only applied by the DRM backend. On DRM,
-  unsupported device setters only log debug messages. Advertise which
-  controls can take effect and report failures to the settings client.
-  Sources: `src/backend/drm.rs` (`configure_input_device`, `apply_input_config`),
-  `src/backend/winit.rs`,
+- [x] Expose input-device and backend capabilities to Settings. Blair now
+  advertises the backend plus support for every connected device over D-Bus.
+  Settings disables unavailable mouse and touchpad controls with an
+  explanation, including nested Winit sessions. DRM applies input changes as
+  a transaction, restores all devices on failure, and reports native errors
+  back to Settings.
+  Sources: `src/input_devices.rs`, `src/backend/drm.rs`,
+  `crates/protocol/src/input.rs`,
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build_mouse`,
   `build_touchpad`).
 

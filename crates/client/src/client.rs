@@ -29,6 +29,10 @@ impl BlairClient {
             .collect())
     }
 
+    pub async fn input_capabilities(&self) -> zbus::fdo::Result<blair_protocol::InputCapabilities> {
+        self.proxy.input_capabilities().await.map(Into::into)
+    }
+
     pub async fn focus_window(&self, id: WindowId) -> zbus::Result<bool> {
         self.proxy.focus_window(id.0).await
     }

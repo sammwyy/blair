@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use blair_integration::{CompositorApi, EventChannel, EventFanout, Transport};
 use blair_integration_dbus::DbusIntegration;
-use blair_protocol::{Rect, RenderStats, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo};
+use blair_protocol::{
+    InputCapabilities, Rect, RenderStats, ShortcutBinding, ShortcutCommand, WindowId, WindowInfo,
+};
 
 use crate::config::{BindingConfig, DecorationModeConfig, WindowLayout};
 use crate::state::BlairState;
@@ -287,6 +289,10 @@ impl CompositorApi for BlairState {
         toml::to_string_pretty(&self.config).unwrap_or_default()
     }
 
+    fn input_capabilities(&self) -> InputCapabilities {
+        self.input_devices.capabilities()
+    }
+
     fn set_configuration(&mut self, configuration: &str) -> bool {
         let next = match toml::from_str(configuration) {
             Ok(next) => next,
@@ -299,12 +305,19 @@ impl CompositorApi for BlairState {
             tracing::warn!(%error, "integration sent a configuration that failed validation");
             return false;
         }
-        if let Err(error) = crate::config::save(&next) {
+        let previous = self.config.clone();
+        if let Err(error) = self.apply_config(next) {
+            tracing::warn!(%error, "integration sent an input configuration that could not be applied");
+            return false;
+        }
+        if let Err(error) = crate::config::save(&self.config) {
             tracing::warn!(%error, "failed to persist the configuration");
+            if let Err(rollback) = self.apply_config(previous) {
+                tracing::error!(%rollback, "could not restore configuration after a persistence failure");
+            }
             return false;
         }
         tracing::info!("configuration replaced by an integration");
-        self.apply_config(next);
         true
     }
 

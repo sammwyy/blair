@@ -58,6 +58,7 @@ pub enum Command {
     SetLayoutSettings(String, i32, i32, oneshot::Sender<bool>),
     SetWindowSettings(i32, i32, i32, bool, oneshot::Sender<bool>),
     Configuration(oneshot::Sender<String>),
+    InputCapabilities(oneshot::Sender<crate::wire::DbusInputCapabilities>),
     SetConfiguration(String, oneshot::Sender<bool>),
     ConfiguredShortcuts(oneshot::Sender<Vec<ShortcutBinding>>),
     SetConfiguredShortcuts(Vec<ShortcutBinding>, oneshot::Sender<bool>),

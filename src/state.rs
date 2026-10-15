@@ -232,6 +232,7 @@ pub struct BlairState {
     pub pending_screenshots: Vec<ScreenshotRequest>,
     pub pending_captures: Vec<ScreencopyRequest>,
     pub input_config_changed: bool,
+    pub input_devices: crate::input_devices::InputDevices,
     pub pending_display_requests: Vec<crate::outputs::DisplayRequest>,
     pub mutable_displays: HashSet<String>,
     pub display_confirmations: HashMap<String, Instant>,
@@ -409,6 +410,7 @@ impl BlairState {
             pending_screenshots: Vec::new(),
             pending_captures: Vec::new(),
             input_config_changed: false,
+            input_devices: crate::input_devices::InputDevices::default(),
             pending_display_requests: Vec::new(),
             mutable_displays: HashSet::new(),
             display_confirmations: HashMap::new(),
@@ -621,7 +623,7 @@ impl BlairState {
 
     /// Applies the parts of a successfully parsed configuration that can
     /// safely change while the compositor is running.
-    pub fn apply_config(&mut self, mut next: CompositorConfig) {
+    pub fn apply_config(&mut self, mut next: CompositorConfig) -> Result<(), String> {
         if self.config.general.backend != next.general.backend {
             tracing::warn!(
                 old = %self.config.general.backend,
@@ -644,6 +646,10 @@ impl BlairState {
             tracing::info!("autostart changes will be used on the next compositor start");
         }
 
+        if self.config.input != next.input {
+            self.input_devices
+                .configure(&next.input, &self.config.input)?;
+        }
         let previous = std::mem::replace(&mut self.config, next);
         if (previous.accessibility.sticky_keys && !self.config.accessibility.sticky_keys)
             || previous.input.keyboard != self.config.input.keyboard
@@ -695,6 +701,7 @@ impl BlairState {
         }
         self.request_redraw();
         self.emit(CompositorEvent::ConfigurationChanged);
+        Ok(())
     }
 
     fn apply_keyboard_config(&mut self) {
@@ -2737,7 +2744,7 @@ mod tests {
         assert!(keyboard.modifier_state().shift);
         let mut config = state.config.clone();
         config.accessibility.sticky_keys = false;
-        state.apply_config(config);
+        state.apply_config(config).unwrap();
         assert!(!keyboard.modifier_state().shift);
         assert!(!state.physical_mods.shift);
     }
@@ -2805,7 +2812,7 @@ mod tests {
                 output: Some("test-0".into()),
             },
         );
-        state.apply_config(config);
+        state.apply_config(config).unwrap();
         assert_eq!(state.config.workspaces.count, 2);
         assert_eq!(state.list_workspaces().len(), 2);
         assert_eq!(state.focused_workspace_id(), 2);
@@ -2818,14 +2825,14 @@ mod tests {
             .contains(&CompositorEvent::WorkspacesChanged));
         let mut config = state.config.clone();
         config.workspaces.dynamic = true;
-        state.apply_config(config);
+        state.apply_config(config).unwrap();
         assert_eq!(state.create_workspace("extra".into()), 3);
         assert!(state.switch_workspace(3));
         let mut config = state.config.clone();
         config.workspaces.dynamic = false;
         config.workspaces.count = 4;
         config.workspaces.wrap = true;
-        state.apply_config(config);
+        state.apply_config(config).unwrap();
         assert_eq!(state.list_workspaces().len(), 4);
         assert!(state.switch_workspace(5));
         assert_eq!(state.focused_workspace_id(), 1);
