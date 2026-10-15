@@ -179,6 +179,7 @@ fn drain(commands: &Receiver<Command>, backend: &mut dyn CompositorApi) {
             Command::InputCapabilities(reply) => {
                 let _ = reply.send(backend.input_capabilities().into());
             }
+            Command::PrepareForSleep => backend.prepare_for_sleep(),
             Command::SetConfiguration(configuration, reply) => {
                 let _ = reply.send(backend.set_configuration(&configuration));
             }

@@ -236,6 +236,34 @@ fn scene_elements(
     );
 
     let mut elements = Vec::new();
+    if state.session_locked {
+        for entry in state
+            .session_lock_surfaces
+            .iter()
+            .filter(|entry| entry.output == *output && entry.surface.alive())
+        {
+            elements.extend(surface_tree_elements(
+                renderer,
+                entry.surface.wl_surface(),
+                (0, 0).into(),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
+        state.session_lock_buffer.resize(output_geo.size);
+        elements.push(
+            SolidColorRenderElement::from_buffer(
+                &state.session_lock_buffer,
+                (0, 0),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into(),
+        );
+        return elements;
+    }
     if state.config.accessibility.visual_alerts
         && state
             .visual_bell_until
@@ -1396,6 +1424,9 @@ fn for_each_surface_root(state: &BlairState, mut f: impl FnMut(&WlSurface)) {
     }
     if let Some(icon) = &state.dnd_icon {
         f(icon);
+    }
+    for entry in &state.session_lock_surfaces {
+        f(entry.surface.wl_surface());
     }
 }
 

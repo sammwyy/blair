@@ -293,6 +293,10 @@ impl CompositorApi for BlairState {
         self.input_devices.capabilities()
     }
 
+    fn prepare_for_sleep(&mut self) {
+        BlairState::prepare_for_sleep(self);
+    }
+
     fn set_configuration(&mut self, configuration: &str) -> bool {
         let next = match toml::from_str(configuration) {
             Ok(next) => next,

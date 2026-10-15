@@ -222,6 +222,12 @@ pub fn process_input_event<B: InputBackend>(
 ) {
     let seat = state.seat.clone();
     state.idle_notifier_state.notify_activity(&seat);
+    if state.session_locked {
+        if let InputEvent::Keyboard { event } = event {
+            keyboard_key::<B>(state, event, hooks);
+        }
+        return;
+    }
     match event {
         InputEvent::Keyboard { event } => keyboard_key::<B>(state, event, hooks),
         InputEvent::PointerMotion { event } => {
@@ -455,6 +461,17 @@ pub(crate) fn keyboard_transition(
     } else {
         KeyState::Released
     };
+    if state.session_locked {
+        keyboard.input::<(), _>(
+            state,
+            keycode,
+            key_state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
+        return;
+    }
     state.shortcuts.update_key(raw, pressed);
     state.physical_mods = state.shortcuts.modifiers();
     let activated = state.shortcuts.maybe_activate_physical(state.physical_mods);

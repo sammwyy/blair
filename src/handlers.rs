@@ -8,8 +8,8 @@ use smithay::{
     delegate_kde_decoration, delegate_keyboard_shortcuts_inhibit, delegate_layer_shell,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_presentation, delegate_primary_selection, delegate_relative_pointer, delegate_seat,
-    delegate_shm, delegate_single_pixel_buffer, delegate_viewporter, delegate_xdg_activation,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_session_lock, delegate_shm, delegate_single_pixel_buffer, delegate_viewporter,
+    delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, layer_map_for_output, LayerSurface as DesktopLayerSurface,
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy,
@@ -639,6 +639,7 @@ impl KeyboardShortcutsInhibitHandler for BlairState {
 }
 
 delegate_keyboard_shortcuts_inhibit!(BlairState);
+delegate_session_lock!(BlairState);
 
 impl KdeDecorationHandler for BlairState {
     fn kde_decoration_state(&self) -> &KdeDecorationState {

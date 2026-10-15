@@ -15,6 +15,7 @@ mod outputs;
 mod render;
 mod rules;
 mod screencopy;
+mod session_lock;
 mod shortcuts;
 mod state;
 mod stats;

@@ -59,6 +59,7 @@ use smithay::{
             data_device::DataDeviceState, primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState,
         },
+        session_lock::{SessionLockManagerState, SessionLocker},
         shell::{
             kde::decoration::KdeDecorationState,
             wlr_layer::{KeyboardInteractivity, Layer, LayerSurfaceData, WlrLayerShellState},
@@ -191,8 +192,13 @@ pub struct BlairState {
     pub foreign_toplevel_state: ForeignToplevelListState,
     pub idle_notifier_state: IdleNotifierState<Self>,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
+    pub session_lock_state: SessionLockManagerState,
+    pub pending_session_lock: Option<SessionLocker>,
     pub kde_decoration_state: KdeDecorationState,
     pub idle_inhibitors: HashSet<WlSurface>,
+    pub session_locked: bool,
+    pub session_lock_surfaces: Vec<crate::session_lock::LockSurfaceEntry>,
+    pub session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer,
 
     pub space: Space<Window>,
     pub popup_manager: PopupManager,
@@ -312,6 +318,7 @@ impl BlairState {
         AlphaModifierState::new::<Self>(dh);
         let idle_notifier_state = IdleNotifierState::new(dh, loop_handle.clone());
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(dh, |_| true);
         screencopy::register::<Self>(dh);
         blur::register(dh);
         window_integration::register(dh);
@@ -372,8 +379,16 @@ impl BlairState {
             foreign_toplevel_state,
             idle_notifier_state,
             keyboard_shortcuts_inhibit_state,
+            session_lock_state,
+            pending_session_lock: None,
             kde_decoration_state,
             idle_inhibitors: HashSet::new(),
+            session_locked: false,
+            session_lock_surfaces: Vec::new(),
+            session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                (1, 1),
+                smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0),
+            ),
             space: Space::default(),
             popup_manager: PopupManager::default(),
             layer_surfaces: Vec::new(),
@@ -874,6 +889,16 @@ impl BlairState {
             }
             Err(error) => tracing::warn!(%error, command, "failed to spawn command"),
         }
+    }
+
+    pub fn spawn_executable(&mut self, executable: &str) -> std::io::Result<()> {
+        let child = Command::new(executable)
+            .envs(self.child_env.iter().map(|(key, value)| (key, value)))
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+        self.spawned_children.push(child);
+        Ok(())
     }
 
     /// Reaps exited children and restarts opted-in autostarts after a short
@@ -1441,7 +1466,14 @@ impl BlairState {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let target = self.exclusive_layer_surface().or(surface);
+        let target = if self.session_locked {
+            self.session_lock_surfaces
+                .iter()
+                .find(|entry| entry.surface.alive())
+                .map(|entry| entry.surface.wl_surface().clone())
+        } else {
+            self.exclusive_layer_surface().or(surface)
+        };
         if keyboard.current_focus() == target {
             return;
         }

@@ -35,6 +35,7 @@ pub struct CompositorConfig {
     pub decorations: DecorationConfig,
     pub cursor: CursorConfig,
     pub appearance: AppearanceConfig,
+    pub session: SessionConfig,
     pub hot_corners: crate::hot_corners::HotCornersConfig,
     pub accessibility: crate::accessibility::AccessibilityConfig,
     pub blur: BlurConfig,
@@ -44,6 +45,30 @@ pub struct CompositorConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AppearanceConfig {
     pub icon_theme: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionConfig {
+    pub lock_after_sleep: bool,
+    /// Program invoked without a shell before the machine suspends.
+    pub locker: Option<String>,
+}
+
+impl SessionConfig {
+    fn validate(&self) -> Result<()> {
+        if self
+            .locker
+            .as_deref()
+            .is_some_and(|locker| locker.trim().is_empty() || locker.contains(char::is_whitespace))
+        {
+            anyhow::bail!("session locker must be a single executable name or path");
+        }
+        if self.lock_after_sleep && self.locker.is_none() {
+            anyhow::bail!("session.locker is required when lock_after_sleep is enabled");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1139,6 +1164,7 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     config.decorations.validate()?;
     config.animations.validate()?;
     config.cursor.validate()?;
+    config.session.validate()?;
     if config
         .appearance
         .icon_theme
@@ -1763,5 +1789,21 @@ mod tests {
         config.animations.validate().unwrap();
         assert_eq!(config.animations.window_open.duration, 150);
         assert_eq!(config.animations.workspace.curve, AnimationCurve::EaseInOut);
+    }
+
+    #[test]
+    fn session_lock_requires_a_single_locker_executable() {
+        let missing: CompositorConfig =
+            toml::from_str("[session]\nlock_after_sleep = true\n").unwrap();
+        assert!(validate(&missing).is_err());
+
+        let unsafe_command: CompositorConfig =
+            toml::from_str("[session]\nlocker = \"swaylock --daemon\"\n").unwrap();
+        assert!(validate(&unsafe_command).is_err());
+
+        let configured: CompositorConfig =
+            toml::from_str("[session]\nlock_after_sleep = true\nlocker = \"/usr/bin/swaylock\"\n")
+                .unwrap();
+        assert!(validate(&configured).is_ok());
     }
 }

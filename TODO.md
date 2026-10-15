@@ -163,12 +163,16 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/apps/settings/src/views/personalization/fonts.rs`,
   `../coconut/integrations/system/src/lib.rs` (`discover_preferences`).
-- [ ] Connect "Require password after sleep" (`lock-after-sleep`) to a
-  session locker and suspend policy once Blair supports session locking.
-  The adapter currently only writes GNOME screensaver settings; it also
-  discovers `lock-delay`, but Settings has no control for that delay.
-  Sources: `../coconut/apps/settings/src/views/privacy/mod.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [x] Connect "Require password after sleep" (`lock-after-sleep`) to a
+  session locker and suspend policy. Blair implements `ext-session-lock`,
+  renders a fail-closed black frame before confirming the lock, and sends
+  keyboard input only to the locker. It watches logind's suspend signal and
+  launches the configured locker without a shell. Settings enables the
+  preference only when it finds an executable `swaylock`, `gtklock`, or
+  `waylock`; otherwise it explains why the policy cannot be enabled.
+  Sources: `src/session_lock.rs`, `src/handlers.rs`,
+  `integrations/blair-integration-dbus/src/server.rs`,
+  `../coconut/integrations/system/src/blair.rs`.
 - [ ] Provide an idle-dimming service and native `idle-dim` preference.
   Settings currently only uses GNOME's power-plugin setting. Blair already
   exposes idle notifications and inhibitors, so the remaining work includes

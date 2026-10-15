@@ -293,6 +293,7 @@ impl DrmBackend {
             let feedback = take_presentation_feedback(state, &self.output, &frame.states);
             match self.compositor.queue_frame(Some(feedback)) {
                 Ok(()) => {
+                    state.confirm_session_lock();
                     self.pacer.frame_queued(state);
                     self.frames.fetch_add(1, Ordering::Relaxed);
                 }

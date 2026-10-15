@@ -82,6 +82,8 @@ pub trait CompositorApi {
     ) -> bool;
     fn configuration(&self) -> String;
     fn input_capabilities(&self) -> blair_protocol::InputCapabilities;
+    /// logind announced that the machine is about to suspend.
+    fn prepare_for_sleep(&mut self);
     fn set_configuration(&mut self, configuration: &str) -> bool;
     /// Persistent shortcuts owned by Blair's configuration, rather than a
     /// temporary shortcut registration owned by a D-Bus client.

@@ -141,7 +141,10 @@ impl WinitData {
         let damaged = damage.is_some();
         if let Some(damage) = damage {
             match self.backend.submit(Some(&damage)) {
-                Ok(()) => self.age = self.backend.buffer_age().unwrap_or(0),
+                Ok(()) => {
+                    self.age = self.backend.buffer_age().unwrap_or(0);
+                    state.confirm_session_lock();
+                }
                 Err(error) => {
                     tracing::warn!(%error, "failed to submit the host surface");
                     self.age = 0;

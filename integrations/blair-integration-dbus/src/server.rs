@@ -145,12 +145,41 @@ async fn run(
         }
     });
 
+    let sleep_commands = commands.clone();
+    tokio::spawn(async move {
+        if let Err(error) = monitor_sleep(sleep_commands).await {
+            tracing::warn!(%error, "could not monitor logind sleep preparation");
+        }
+    });
+
     while let Some(event) = forward_rx.recv().await {
         if let Err(err) = emit(&iface_ref, event).await {
             tracing::warn!(%err, "failed to emit D-Bus signal");
         }
     }
 
+    Ok(())
+}
+
+async fn monitor_sleep(commands: CommandSender) -> zbus::Result<()> {
+    let connection = zbus::Connection::system().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?;
+    let mut signals = proxy.receive_signal("PrepareForSleep").await?;
+    while let Some(message) = signals.next().await {
+        let Ok((suspending,)) = message.body().deserialize::<(bool,)>() else {
+            tracing::warn!("received malformed PrepareForSleep signal");
+            continue;
+        };
+        if suspending {
+            commands.send(Command::PrepareForSleep);
+        }
+    }
     Ok(())
 }
 
