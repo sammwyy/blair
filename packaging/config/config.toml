@@ -41,6 +41,19 @@ dbus = true
 theme = "Adwaita"
 size = 24
 
+[appearance]
+icon_theme = "hicolor"
+
+[hot_corners]
+enabled = true
+dwell_ms = 350
+threshold = 4
+
+[hot_corners.top_left]
+# none | next_workspace | previous_workspace | show_desktop | exec
+action = "none"
+command = ""
+
 [input.keyboard]
 layout = "us"
 variant = ""

@@ -509,6 +509,7 @@ fn shortcuts_inhibited(state: &BlairState) -> bool {
 }
 
 pub fn reset_keyboard_state(state: &mut BlairState) {
+    state.hot_corners.cancel();
     state.physical_mods = Default::default();
     state.shortcuts.clear_pressed();
     state.suppressed_keys.clear();
@@ -645,6 +646,7 @@ fn move_pointer(
     };
     state.set_focused_output_at(location);
     update_hovered_button(state, location);
+    state.update_hot_corners(location);
     if state.config.focus.policy == FocusPolicy::Sloppy
         && !pointer.is_grabbed()
         && !state

@@ -332,6 +332,7 @@ impl DrmBackend {
     }
 
     fn set_active(&mut self, state: &mut BlairState, active: bool) {
+        state.hot_corners.cancel();
         self.active = active;
         if active {
             tracing::info!("session activated");

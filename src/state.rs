@@ -213,6 +213,7 @@ pub struct BlairState {
     pub seat: Seat<Self>,
     pub focused_window: Option<WindowId>,
     pub hovered_button: Option<(WindowId, crate::config::DecorationButton)>,
+    pub hot_corners: crate::hot_corners::HotCornerState,
     /// The cursor last requested by the focused client.
     pub client_cursor: CursorImageStatus,
     /// A cursor the compositor shows instead of the client's, over its own
@@ -349,7 +350,7 @@ impl BlairState {
             clock: Clock::new(),
             decoration_theme,
             system_accent,
-            icon_cache: crate::decorations::IconCache::default(),
+            icon_cache: crate::decorations::IconCache::new(config.appearance.icon_theme.as_deref()),
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -384,6 +385,7 @@ impl BlairState {
             seat,
             focused_window: None,
             hovered_button: None,
+            hot_corners: crate::hot_corners::HotCornerState::default(),
             client_cursor: CursorImageStatus::default_named(),
             compositor_cursor: None,
             cursor,
@@ -629,6 +631,9 @@ impl BlairState {
         }
 
         let previous = std::mem::replace(&mut self.config, next);
+        if previous.hot_corners != self.config.hot_corners {
+            self.hot_corners.cancel();
+        }
         if previous.workspaces != self.config.workspaces {
             self.apply_workspace_config();
         }
@@ -637,6 +642,12 @@ impl BlairState {
         }
         if previous.rules != self.config.rules {
             self.rules.set_configured(&self.config.rules);
+        }
+        if previous.appearance.icon_theme != self.config.appearance.icon_theme {
+            self.icon_cache
+                .reconfigure(self.config.appearance.icon_theme.as_deref());
+            self.decorations.clear();
+            tracing::info!(theme = ?self.config.appearance.icon_theme, "reloaded window icon theme");
         }
         if previous.input.keyboard != self.config.input.keyboard {
             self.apply_keyboard_config();
@@ -1051,7 +1062,7 @@ impl BlairState {
             .find(|workspace| workspace.id == id)
     }
 
-    fn focused_workspace_id(&self) -> u64 {
+    pub(crate) fn focused_workspace_id(&self) -> u64 {
         self.focused_output
             .as_ref()
             .and_then(|output| self.output_workspaces.get(output).copied())
@@ -1210,7 +1221,7 @@ impl BlairState {
         id
     }
 
-    fn ensure_workspace(&mut self, id: u64) {
+    pub(crate) fn ensure_workspace(&mut self, id: u64) {
         if id > self.config.workspaces.count && !self.config.workspaces.dynamic {
             return;
         }
@@ -2734,6 +2745,61 @@ mod tests {
         assert_eq!(state.list_workspaces().len(), 4);
         assert!(state.switch_workspace(5));
         assert_eq!(state.focused_workspace_id(), 1);
+    }
+
+    #[test]
+    fn hot_corners_trigger_once_per_entry_and_cancel_when_the_pointer_leaves() {
+        let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
+        let mut event_loop =
+            smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
+        let mut state = BlairState::new(
+            display.handle(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            CompositorConfig::default(),
+            Arc::new(TestEvents(std::sync::Mutex::new(Vec::new()))),
+        );
+        let output = Output::new(
+            "test-0".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "Test".into(),
+                model: "Test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (1280, 720).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        state.add_output(&output, (0, 0).into());
+        state.config.hot_corners.dwell_ms = 0;
+        state.config.hot_corners.top_left.action = crate::hot_corners::CornerAction::NextWorkspace;
+        let pointer = state.seat.get_pointer().unwrap();
+        pointer.set_location((1.0, 1.0).into());
+        state.update_hot_corners(pointer.current_location());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert_eq!(state.focused_workspace_id(), 2);
+        state.update_hot_corners(pointer.current_location());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert_eq!(state.focused_workspace_id(), 2);
+        pointer.set_location((100.0, 100.0).into());
+        state.update_hot_corners(pointer.current_location());
+        pointer.set_location((1.0, 1.0).into());
+        state.update_hot_corners(pointer.current_location());
+        pointer.set_location((100.0, 100.0).into());
+        state.update_hot_corners(pointer.current_location());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert_eq!(state.focused_workspace_id(), 2);
+        pointer.set_location((1.0, 1.0).into());
+        state.update_hot_corners(pointer.current_location());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert_eq!(state.focused_workspace_id(), 3);
     }
 
     fn area() -> Rectangle<i32, Logical> {

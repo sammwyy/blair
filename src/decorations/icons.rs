@@ -19,10 +19,33 @@ pub struct IconCache {
 
 impl Default for IconCache {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl IconCache {
+    pub fn new(theme: Option<&str>) -> Self {
+        Self::with_resolver(ApplicationIconResolver::new(
+            theme.map(str::to_owned).unwrap_or_else(system_icon_theme),
+        ))
+    }
+
+    fn with_resolver(resolver: ApplicationIconResolver) -> Self {
         Self {
             entries: RefCell::new(HashMap::new()),
-            resolver: ApplicationIconResolver::new(system_icon_theme()),
+            resolver,
         }
+    }
+
+    pub fn reconfigure(&mut self, theme: Option<&str>) {
+        self.replace_resolver(ApplicationIconResolver::new(
+            theme.map(str::to_owned).unwrap_or_else(system_icon_theme),
+        ));
+    }
+
+    fn replace_resolver(&mut self, resolver: ApplicationIconResolver) {
+        self.resolver = resolver;
+        self.entries.get_mut().clear();
     }
 }
 
@@ -65,6 +88,40 @@ fn decode_and_resize(path: &Path, size: i32) -> Option<RgbaBitmap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_icon_theme_replaces_cached_pixels() {
+        let root = std::env::temp_dir().join(format!("blair-icon-themes-{}", std::process::id()));
+        let paths = delib::xdg::XdgPaths {
+            data_home: root.join("data"),
+            data_dirs: vec![],
+            config_home: root.join("config"),
+            config_dirs: vec![],
+        };
+        std::fs::create_dir_all(paths.data_home.join("applications")).unwrap();
+        std::fs::write(
+            paths.data_home.join("applications/test.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Test\nExec=true\nIcon=test-icon\n",
+        )
+        .unwrap();
+        for (theme, pixel) in [("Red", [255, 0, 0, 255]), ("Blue", [0, 0, 255, 255])] {
+            let directory = paths.data_home.join("icons").join(theme);
+            std::fs::create_dir_all(directory.join("24x24/apps")).unwrap();
+            std::fs::write(directory.join("index.theme"), format!("[Icon Theme]\nName={theme}\nDirectories=24x24/apps\n[24x24/apps]\nSize=24\nType=Fixed\nContext=Applications\n")).unwrap();
+            image::RgbaImage::from_pixel(24, 24, image::Rgba(pixel))
+                .save(directory.join("24x24/apps/test-icon.png"))
+                .unwrap();
+        }
+        let mut cache =
+            IconCache::with_resolver(ApplicationIconResolver::with_paths(&paths, "Red"));
+        let red = cache.get("test", 24).unwrap();
+        assert_eq!(&red.pixels[..4], &[255, 0, 0, 255]);
+        cache.replace_resolver(ApplicationIconResolver::with_paths(&paths, "Blue"));
+        let blue = cache.get("test", 24).unwrap();
+        assert_eq!(&blue.pixels[..4], &[0, 0, 255, 255]);
+        assert!(!Rc::ptr_eq(&red, &blue));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn decodes_and_resizes_a_real_png() {

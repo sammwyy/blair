@@ -34,7 +34,15 @@ pub struct CompositorConfig {
     #[serde(alias = "decoration")]
     pub decorations: DecorationConfig,
     pub cursor: CursorConfig,
+    pub appearance: AppearanceConfig,
+    pub hot_corners: crate::hot_corners::HotCornersConfig,
     pub blur: BlurConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppearanceConfig {
+    pub icon_theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1112,7 +1120,16 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     config.decorations.validate()?;
     config.animations.validate()?;
     config.cursor.validate()?;
+    if config
+        .appearance
+        .icon_theme
+        .as_deref()
+        .is_some_and(|theme| theme.trim().is_empty())
+    {
+        anyhow::bail!("appearance.icon_theme cannot be empty");
+    }
     config.blur.validate()?;
+    config.hot_corners.validate()?;
     Ok(())
 }
 

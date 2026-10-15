@@ -54,9 +54,13 @@ come from code inspection, without a running desktop session.
   pointer or keyboard grabs. Coconut exposes the live policy switch.
   Sources: `src/config.rs` (`FocusPolicy`), `src/input.rs` (`move_pointer`),
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
-- [ ] Implement configurable hot corners and an API Coconut can use for
-  corner actions. Settings explicitly says Blair exposes no hot-corner
-  service. Source: `../coconut/apps/settings/src/views/desktop/hot_corners.rs`.
+- [x] Implement configurable hot corners and an API Coconut can use for
+  corner actions. `[hot_corners]` supports per-corner workspace navigation,
+  show/restore desktop, commands, dwell time, and hit areas through the
+  existing configuration API. Settings exposes all controls. Event-loop
+  tests verify single activation and cancellation on pointer departure.
+  Sources: `src/hot_corners.rs`,
+  `../coconut/apps/settings/src/views/desktop/hot_corners.rs`.
 - [ ] Implement desktop magnification and expose a native `zoom` setting.
   "Screen zoom" currently depends on GNOME's screen-magnifier preference;
   Blair has no equivalent configuration or rendering path.
@@ -125,17 +129,18 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   the work area's padded upper-left corner.
   Sources: `src/state.rs` (`map_window`),
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
-- [ ] Connect the cursor-theme picker to Blair's existing `[cursor].theme`
-  configuration. It currently only saves `appearance.cursor_theme` in
-  Coconut's shell configuration; Blair reads its own setting or
-  `XCURSOR_THEME`. Blair already supports live cursor reconfiguration.
+- [x] Connect the cursor-theme picker to Blair's existing `[cursor].theme`
+  configuration. Settings applies the Blair preference in the background
+  before updating Coconut's shell configuration and reports rejected
+  writes. Its selection reflects the native preference when set.
   Sources: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`
   (`cursor_themes`), `src/cursor.rs` (`resolve_theme`, `reconfigure`),
   `src/state.rs` (`apply_config`).
-- [ ] Synchronize the selected icon theme with Blair's titlebar icons and
-  invalidate their cache when it changes. Coconut's picker updates its
-  shell icon resolvers, while Blair's `IconCache` initializes from
-  `delib::icons::system_icon_theme` (KDE/GTK settings, then `hicolor`).
+- [x] Synchronize the selected icon theme with Blair's titlebar icons and
+  invalidate their cache when it changes. Settings updates Blair's live
+  `appearance.icon_theme` and then Coconut's shell resolvers. Unset themes
+  still use `delib::icons::system_icon_theme`. A fixture test switches two
+  real icon themes and verifies that cached pixels change.
   Sources: `src/decorations/icons.rs`, `../delib/src/icons.rs`,
   `../coconut/apps/settings/src/views/personalization/asset_packs.rs`,
   `../coconut/apps/shell/src/lib.rs` (`RuntimeEvent::ShellConfig`).

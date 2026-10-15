@@ -5,6 +5,7 @@ mod cursor;
 mod decorations;
 mod grabs;
 mod handlers;
+mod hot_corners;
 mod input;
 mod integrations;
 mod logging;
