@@ -13,11 +13,33 @@ use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::state::BlairState;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AccessibilityConfig {
     pub sticky_keys: bool,
     pub visual_alerts: bool,
+    pub zoom: bool,
+    pub zoom_factor: f64,
+}
+
+impl Default for AccessibilityConfig {
+    fn default() -> Self {
+        Self {
+            sticky_keys: false,
+            visual_alerts: false,
+            zoom: false,
+            zoom_factor: 2.0,
+        }
+    }
+}
+
+impl AccessibilityConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.zoom_factor.is_finite() || !(1.0..=8.0).contains(&self.zoom_factor) {
+            anyhow::bail!("accessibility.zoom_factor must be between 1 and 8");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]

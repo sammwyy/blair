@@ -61,12 +61,15 @@ come from code inspection, without a running desktop session.
   tests verify single activation and cancellation on pointer departure.
   Sources: `src/hot_corners.rs`,
   `../coconut/apps/settings/src/views/desktop/hot_corners.rs`.
-- [ ] Implement desktop magnification and expose a native `zoom` setting.
-  "Screen zoom" currently depends on GNOME's screen-magnifier preference;
-  Blair has no equivalent configuration or rendering path.
+- [x] Implement desktop magnification and expose native `zoom` and
+  `zoom-factor` settings. The magnifier renders the complete scene to a
+  texture, preserving decoration/blur clipping, then enlarges a region
+  anchored to the pointer. Surface frame/presentation tracking uses the
+  underlying scene's render states. EGL pixel tests verify the enlarged
+  output; Coconut exposes the live toggle and factor slider (1–8).
   Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
   `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
-  `src/config.rs`, `src/render/mod.rs`.
+  `src/config.rs`, `src/render/mod.rs`, `src/render/magnify.rs`.
 - [x] Implement sticky modifier keys and expose `sticky-keys` to Settings.
   Modifier taps latch for one chord; double taps lock until a third tap.
   Ordinary held chords retain their behavior. Disabling the preference or

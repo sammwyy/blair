@@ -47,6 +47,8 @@ icon_theme = "hicolor"
 [accessibility]
 sticky_keys = false
 visual_alerts = false
+zoom = false
+zoom_factor = 2.0
 
 [hot_corners]
 enabled = true

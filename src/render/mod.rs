@@ -2,6 +2,7 @@ mod blur;
 mod capture;
 mod clip;
 mod decoration;
+mod magnify;
 
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use smithay::{
             render_elements,
             solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            texture::TextureRenderElement,
             Element, Kind, RenderElementStates,
         },
         gles::{GlesPixelProgram, GlesRenderer, GlesTexProgram},
@@ -83,6 +85,7 @@ render_elements! {
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
     Blur=blur::BlurredBackdropElement,
     Solid=SolidColorRenderElement,
+    Texture=TextureRenderElement<GlesTexture>,
 }
 
 #[derive(Clone)]
@@ -175,6 +178,37 @@ pub fn z_ordered_windows(state: &BlairState, output: &Output) -> Vec<Window> {
 
 /// Builds the render elements of `output`, front to back.
 pub fn output_elements(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+    shaders: Option<&Shaders>,
+    cursor_mode: CursorMode,
+) -> Vec<OutputRenderElement> {
+    let elements = scene_elements(renderer, state, output, shaders, cursor_mode);
+    state.zoom_render_states.remove(&output.name());
+    if !state.config.accessibility.zoom || state.config.accessibility.zoom_factor <= 1.0 {
+        return elements;
+    }
+    let Some(geometry) = state.space.output_geometry(output) else {
+        return elements;
+    };
+    let scale = output.current_scale().fractional_scale();
+    let size = geometry.size.to_physical_precise_round(scale);
+    let pointer = (state.pointer_location() - geometry.loc.to_f64()).to_physical(scale);
+    let source = magnify::source_rect(size, pointer, state.config.accessibility.zoom_factor);
+    match magnify::render(renderer, &elements, size, geometry.size, scale, source) {
+        Ok((element, states)) => {
+            state.zoom_render_states.insert(output.name(), states);
+            vec![element.into()]
+        }
+        Err(error) => {
+            tracing::warn!(%error, "desktop magnification failed");
+            elements
+        }
+    }
+}
+
+fn scene_elements(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
     output: &Output,
@@ -1369,6 +1403,10 @@ pub fn update_primary_scanout_output(
     output: &Output,
     render_states: &RenderElementStates,
 ) {
+    let render_states = state
+        .zoom_render_states
+        .get(&output.name())
+        .unwrap_or(render_states);
     for_each_surface_root(state, |root| {
         with_surfaces_surface_tree(root, |surface, states| {
             update_surface_primary_scanout_output(
@@ -1400,6 +1438,10 @@ pub fn take_presentation_feedback(
     output: &Output,
     render_states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
+    let render_states = state
+        .zoom_render_states
+        .get(&output.name())
+        .unwrap_or(render_states);
     let mut feedback = OutputPresentationFeedback::new(output);
     for_each_surface_root(state, |root| {
         take_presentation_feedback_surface_tree(

@@ -1131,6 +1131,7 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     }
     config.blur.validate()?;
     config.hot_corners.validate()?;
+    config.accessibility.validate()?;
     Ok(())
 }
 
