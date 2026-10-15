@@ -345,6 +345,9 @@ impl CompositorApi for BlairState {
     }
 
     fn set_configured_shortcuts(&mut self, bindings: Vec<ShortcutBinding>) -> bool {
+        if bindings.len() > crate::shortcuts::MAX_BINDINGS_PER_CLIENT {
+            return false;
+        }
         let mut configured = Vec::with_capacity(bindings.len());
         for binding in bindings {
             let keys = binding
@@ -395,10 +398,13 @@ impl CompositorApi for BlairState {
             }
             configured.push(next);
         }
-        self.config.bindings = configured;
-        if crate::config::save(&self.config).is_err() {
+        let mut next = self.config.clone();
+        next.bindings = configured;
+        if let Err(error) = crate::config::save(&next) {
+            tracing::warn!(%error, "could not persist configured shortcuts");
             return false;
         }
+        self.config = next;
         self.replace_static_bindings(&self.config.bindings.clone());
         true
     }

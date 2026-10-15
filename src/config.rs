@@ -1106,6 +1106,12 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {
 /// Validate a configuration received through an integration before it is
 /// persisted or applied to the running compositor.
 pub fn validate(config: &CompositorConfig) -> Result<()> {
+    if config.bindings.len() > crate::shortcuts::MAX_BINDINGS_PER_CLIENT {
+        anyhow::bail!(
+            "at most {} configured shortcuts are supported",
+            crate::shortcuts::MAX_BINDINGS_PER_CLIENT
+        );
+    }
     if config
         .general
         .initial_output_size
@@ -1553,6 +1559,24 @@ mod tests {
         assert!(load_from_paths(&paths).is_err());
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_binding_count_cannot_exceed_the_runtime_registry() {
+        let mut config = CompositorConfig::default();
+        let binding = BindingConfig {
+            keys: vec!["Super".into(), "Q".into()],
+            action: Some("close".into()),
+            exec: None,
+            value: None,
+        };
+        config.bindings = vec![binding; crate::shortcuts::MAX_BINDINGS_PER_CLIENT + 1];
+        assert!(validate(&config)
+            .unwrap_err()
+            .to_string()
+            .contains("at most"));
+        config.bindings.pop();
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

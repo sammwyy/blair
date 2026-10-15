@@ -93,13 +93,16 @@ come from code inspection, without a running desktop session.
   (`configuration`, `set_configuration`),
   `../coconut/apps/settings/src/views/windows/mod.rs` (`build_working_area`,
   `Writer::save`).
-- [ ] Complete shortcut registration feedback in Settings. The shared
+- [x] Complete shortcut registration feedback in Settings. The shared
   `blair_protocol::ShortcutAccelerator` parser now maps Tab, navigation,
   punctuation, function/media keys, and rejects unmapped characters before
   registration. Settings validates with the same parser before saving.
   Bare modifiers activate on release and do not fire during a chord.
-  Unexpected runtime registration failures still need visible feedback
-  when Coconut reloads its bindings live.
+  Coconut exposes a live shortcut service, stages registrations on a fresh
+  connection, persists successful replacements, and retains the previous
+  generation on rejection. Settings displays startup and apply errors.
+  An isolated D-Bus test verifies replacement, rejection, persistence,
+  dispatch, and release of obsolete event subscriptions.
   Sources: `src/shortcuts.rs`, `../coconut/crates/core/src/shortcuts.rs`,
   `../coconut/apps/settings/src/views/windows/mod.rs` (`ShortcutRecorder`),
   `../coconut/apps/shell/src/shortcuts.rs` (`ShortcutListener::start`).
@@ -179,13 +182,14 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   missing window-compositing feature.
   Sources: `../coconut/apps/settings/src/views/privacy/mod.rs`,
   `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
-- [ ] Complete Coconut's shortcut editor: record Tab, function/media keys,
-  and modifier-only shortcuts, validate bindings against Blair, and apply
-  edits without restarting Coconut. The recorder currently only accepts
-  characters, Enter, and Escape with modifiers, even though the defaults
-  include bare Super and media keys. It saves `coconut/shortcuts.toml`;
-  it does not edit Blair's persistent `[[bindings]]` or use the existing
-  `ConfiguredShortcuts`/`SetConfiguredShortcuts` API.
+- [x] Complete Coconut's shortcut editor. Native capture records Tab,
+  function/media keys, and modifier-only chords while temporarily inhibiting
+  compositor shortcuts. Escape, focus loss, and navigation cancel capture.
+  Shared validation rejects unsupported keys, duplicates, missing commands,
+  and oversized sets. Shell edits apply live; a separate editor reads and
+  saves Blair's persistent `[[bindings]]` through its configuration API,
+  with all four actions and argument validation. Failed persistence leaves
+  the compositor's previous configuration intact.
   Sources: `../coconut/apps/settings/src/views/windows/mod.rs`
   (`ShortcutRecorder`, `ShortcutState::save`), `src/integrations.rs`
   (`configured_shortcuts`, `set_configured_shortcuts`).

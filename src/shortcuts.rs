@@ -28,7 +28,7 @@ pub struct ActivatedShortcut {
 
 pub type PhysicalMods = ShortcutMods;
 
-const MAX_BINDINGS_PER_CLIENT: usize = 256;
+pub(crate) const MAX_BINDINGS_PER_CLIENT: usize = 256;
 
 impl ShortcutRegistry {
     pub fn bind(&mut self, client: &str, id: &str, accelerator: &str) -> bool {

@@ -19,7 +19,12 @@ impl Events {
 
         let (sender, receiver) = unbounded_channel();
         tokio::spawn(async move {
-            while let Some(message) = stream.next().await {
+            loop {
+                let message = tokio::select! {
+                    _ = sender.closed() => break,
+                    message = stream.next() => message,
+                };
+                let Some(message) = message else { break };
                 let Ok(message) = message else {
                     continue;
                 };
