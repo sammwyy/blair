@@ -196,6 +196,7 @@ pub struct BlairState {
     pub pending_session_lock: Option<SessionLocker>,
     pub kde_decoration_state: KdeDecorationState,
     pub idle_inhibitors: HashSet<WlSurface>,
+    pub idle_dimming: crate::idle_dim::IdleDimming,
     pub session_locked: bool,
     pub session_lock_surfaces: Vec<crate::session_lock::LockSurfaceEntry>,
     pub session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer,
@@ -383,6 +384,7 @@ impl BlairState {
             pending_session_lock: None,
             kde_decoration_state,
             idle_inhibitors: HashSet::new(),
+            idle_dimming: crate::idle_dim::IdleDimming::default(),
             session_locked: false,
             session_lock_surfaces: Vec::new(),
             session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer::new(
@@ -441,6 +443,10 @@ impl BlairState {
         };
         state.refresh_child_env();
         state.replace_static_bindings(&state.config.bindings.clone());
+        if state.config.power.idle_dim {
+            let generation = state.idle_dimming.activity();
+            state.schedule_idle_dim(generation);
+        }
         state
     }
 
@@ -518,6 +524,36 @@ impl BlairState {
         self.pointer_focus_dirty = true;
     }
 
+    pub fn note_input_activity(&mut self) {
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
+        let generation = self.idle_dimming.activity();
+        self.schedule_idle_dim(generation);
+    }
+
+    fn schedule_idle_dim(&mut self, generation: u64) {
+        if !self.config.power.idle_dim {
+            return;
+        }
+        let timeout = Duration::from_secs(self.config.power.idle_dim_timeout);
+        if let Err(error) = self.loop_handle.insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(timeout),
+            move |_, _, state: &mut BlairState| {
+                if state.idle_dimming.generation() == generation {
+                    state.refresh_idle_dimming();
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        ) {
+            tracing::warn!(%error, "could not schedule idle dimming");
+        }
+    }
+
+    fn refresh_idle_dimming(&mut self) {
+        self.idle_dimming
+            .tick(&self.config.power, !self.idle_inhibitors.is_empty());
+    }
+
     /// Runs once per event loop iteration after all sources were dispatched.
     pub fn refresh(&mut self) {
         profiling::scope!("state_refresh");
@@ -534,6 +570,7 @@ impl BlairState {
         }
         let inhibited = !self.idle_inhibitors.is_empty();
         self.idle_notifier_state.set_is_inhibited(inhibited);
+        self.refresh_idle_dimming();
     }
 
     fn refresh_pointer_focus(&mut self) {
@@ -666,6 +703,10 @@ impl BlairState {
                 .configure(&next.input, &self.config.input)?;
         }
         let previous = std::mem::replace(&mut self.config, next);
+        if previous.power != self.config.power {
+            let generation = self.idle_dimming.activity();
+            self.schedule_idle_dim(generation);
+        }
         if (previous.accessibility.sticky_keys && !self.config.accessibility.sticky_keys)
             || previous.input.keyboard != self.config.input.keyboard
         {

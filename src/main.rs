@@ -7,6 +7,7 @@ mod decorations;
 mod grabs;
 mod handlers;
 mod hot_corners;
+mod idle_dim;
 mod input;
 mod input_devices;
 mod integrations;

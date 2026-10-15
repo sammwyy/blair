@@ -173,14 +173,14 @@ editor also accepts the nonfunctional `class`, `role`, and `type` selectors
   Sources: `src/session_lock.rs`, `src/handlers.rs`,
   `integrations/blair-integration-dbus/src/server.rs`,
   `../coconut/integrations/system/src/blair.rs`.
-- [ ] Provide an idle-dimming service and native `idle-dim` preference.
-  Settings currently only uses GNOME's power-plugin setting. Blair already
-  exposes idle notifications and inhibitors, so the remaining work includes
-  wiring an idle policy to backlight control and restoring brightness on
-  activity. Sources: `src/handlers.rs` (`IdleNotifierHandler`,
-  `IdleInhibitHandler`), `src/state.rs` (`idle_inhibitors`),
-  `../coconut/apps/settings/src/views/hardware/mod.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`).
+- [x] Provide an idle-dimming service and native `idle-dim` preference.
+  Blair now schedules dimming from user activity, respects idle inhibitors,
+  halves a writable kernel backlight after `power.idle_dim_timeout`, and
+  restores the exact saved level on activity or inhibition. Settings writes
+  the native policy and disables the control with an explanation when no
+  writable kernel backlight is available.
+  Sources: `src/idle_dim.rs`, `src/state.rs` (`note_input_activity`),
+  `../coconut/integrations/system/src/blair.rs`.
 - [ ] Connect "Location services" (`location`) to the session's location
   provider/permission policy. The current adapter only supports GNOME's
   preference. This is desktop/service integration work, rather than a

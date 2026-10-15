@@ -220,8 +220,7 @@ pub fn process_input_event<B: InputBackend>(
     event: InputEvent<B>,
     hooks: &mut dyn InputHooks,
 ) {
-    let seat = state.seat.clone();
-    state.idle_notifier_state.notify_activity(&seat);
+    state.note_input_activity();
     if state.session_locked {
         if let InputEvent::Keyboard { event } = event {
             keyboard_key::<B>(state, event, hooks);

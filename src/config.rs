@@ -36,6 +36,7 @@ pub struct CompositorConfig {
     pub cursor: CursorConfig,
     pub appearance: AppearanceConfig,
     pub session: SessionConfig,
+    pub power: PowerConfig,
     pub hot_corners: crate::hot_corners::HotCornersConfig,
     pub accessibility: crate::accessibility::AccessibilityConfig,
     pub blur: BlurConfig,
@@ -66,6 +67,31 @@ impl SessionConfig {
         }
         if self.lock_after_sleep && self.locker.is_none() {
             anyhow::bail!("session.locker is required when lock_after_sleep is enabled");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PowerConfig {
+    pub idle_dim: bool,
+    pub idle_dim_timeout: u64,
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        Self {
+            idle_dim: false,
+            idle_dim_timeout: 300,
+        }
+    }
+}
+
+impl PowerConfig {
+    fn validate(&self) -> Result<()> {
+        if !(30..=3_600).contains(&self.idle_dim_timeout) {
+            anyhow::bail!("power.idle_dim_timeout must be between 30 and 3600 seconds");
         }
         Ok(())
     }
@@ -1165,6 +1191,7 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
     config.animations.validate()?;
     config.cursor.validate()?;
     config.session.validate()?;
+    config.power.validate()?;
     if config
         .appearance
         .icon_theme
