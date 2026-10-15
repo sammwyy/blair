@@ -10,11 +10,9 @@ use crate::{
     INTERFACE_NAME, OBJECT_PATH, SERVICE_NAME,
 };
 
-/// CreamUI's public theme-reload contract (`coconut_core::ipc`), emitted by
-/// the settings app whenever the system theme or accent color changes.
-const THEME_INTERFACE: &str = "org.creamui.Theme";
-const THEME_PATH: &str = "/org/creamui/Theme";
-const THEME_RELOAD_MEMBER: &str = "ReloadTheme";
+use creamui_theme_watch::{
+    INTERFACE as THEME_INTERFACE, OBJECT_PATH as THEME_PATH, SIGNAL as THEME_RELOAD_MEMBER,
+};
 
 /// Starts the D-Bus service thread. `environment` is published to the bus so
 /// D-Bus activated services inherit the session variables.

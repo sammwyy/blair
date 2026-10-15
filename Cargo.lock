@@ -229,6 +229,7 @@ version = "0.1.0"
 dependencies = [
  "blair-integration",
  "blair-protocol",
+ "creamui-theme-watch",
  "futures-util",
  "serde",
  "tokio",
@@ -494,6 +495,13 @@ dependencies = [
  "delib",
  "serde",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "creamui-theme-watch"
+version = "0.2.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

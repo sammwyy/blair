@@ -16,3 +16,4 @@ tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+creamui-theme-watch = { path = "../../../creamui/crates/theme-watch", default-features = false }
