@@ -1093,6 +1093,7 @@ fn parse_color(hex: &str) -> [u8; 4] {
 }
 
 const CONFIG_FILE_NAME: &str = "config.toml";
+const GREETER_CONFIG_PATH: &str = "/etc/blair/greeter.toml";
 
 /// Locations contributing configuration, in increasing precedence order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1134,6 +1135,18 @@ pub fn user_config_path() -> PathBuf {
 /// merge recursively. Fragments are loaded in lexicographic filename order.
 pub fn load_or_default() -> Result<CompositorConfig> {
     load_from_paths(&ConfigPaths::default())
+}
+
+/// Loads the system-managed greeter profile without user configuration layers.
+pub fn load_greeter_profile() -> Result<CompositorConfig> {
+    let mut merged = Value::try_from(CompositorConfig::default())
+        .context("failed to serialize built-in compositor config")?;
+    merge_file_if_present(&mut merged, Path::new(GREETER_CONFIG_PATH))?;
+    let config: CompositorConfig = merged
+        .try_into()
+        .context("greeter configuration does not match the schema")?;
+    validate(&config)?;
+    Ok(config)
 }
 
 pub fn load_from_paths(paths: &ConfigPaths) -> Result<CompositorConfig> {

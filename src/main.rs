@@ -39,7 +39,11 @@ fn main() -> Result<()> {
         "Blair compositor starting"
     );
 
-    let mut config = config::load_or_default().context("failed to load compositor config")?;
+    let mut config = match startup.profile {
+        Profile::Default => config::load_or_default(),
+        Profile::Greeter => config::load_greeter_profile(),
+    }
+    .context("failed to load compositor config")?;
     config.autostart.extend(startup.run);
     tracing::info!(
         backend = %config.general.backend,
@@ -52,23 +56,39 @@ fn main() -> Result<()> {
 
 struct StartupOptions {
     run: Vec<config::AutostartConfig>,
+    profile: Profile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    Default,
+    Greeter,
 }
 
 fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<StartupOptions> {
     let mut args = args.into_iter();
     let mut run = Vec::new();
+    let mut profile = Profile::Default;
 
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
             "--run" => args.next().context("missing command after --run")?,
+            "--profile" => {
+                profile = parse_profile(&args.next().context("missing profile name")?)?;
+                continue;
+            }
             "--help" | "-h" => {
-                println!("Usage: blair [--run <command>]...");
+                println!("Usage: blair [--profile <default|greeter>] [--run <command>]...");
                 println!("\n  --run  Add a command to this session's autostart list.");
+                println!("  --profile  Select an installed configuration profile.");
                 std::process::exit(0);
             }
             _ => {
                 if let Some(value) = arg.strip_prefix("--run=") {
                     value.to_owned()
+                } else if let Some(value) = arg.strip_prefix("--profile=") {
+                    profile = parse_profile(value)?;
+                    continue;
                 } else {
                     bail!("unknown argument: {arg}");
                 }
@@ -84,7 +104,15 @@ fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<Start
         });
     }
 
-    Ok(StartupOptions { run })
+    Ok(StartupOptions { run, profile })
+}
+
+fn parse_profile(value: &str) -> Result<Profile> {
+    match value {
+        "default" => Ok(Profile::Default),
+        "greeter" => Ok(Profile::Greeter),
+        _ => bail!("unknown profile: {value}"),
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +129,7 @@ mod tests {
         .unwrap();
         assert_eq!(options.run.len(), 2);
         assert_eq!(options.run[1].command, "swaybg -i wallpaper.png");
+        assert_eq!(options.profile, super::Profile::Default);
     }
 
     #[test]
@@ -113,5 +142,11 @@ mod tests {
     fn rejects_unknown_or_duplicate_arguments() {
         assert!(parse_startup_options(["--unknown".into()]).is_err());
         assert!(parse_startup_options(["--run".into(), " ".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_greeter_profile() {
+        let options = parse_startup_options(["--profile=greeter".into()]).unwrap();
+        assert_eq!(options.profile, super::Profile::Greeter);
     }
 }
