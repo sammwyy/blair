@@ -1860,6 +1860,9 @@ impl BlairState {
     }
 
     pub fn set_fullscreen(&mut self, window: &Window, fullscreen: bool) {
+        if self.config.general.kiosk && !fullscreen {
+            return;
+        }
         let (Some(toplevel), Some(id)) = (window.toplevel(), self.window_id(window)) else {
             return;
         };
@@ -2249,7 +2252,16 @@ impl BlairState {
         }
         let tiled = !self.window_floats(window);
         let output = self.focused_output();
-        if let (true, Some(output)) = (tiled, output.as_ref()) {
+        if self.config.general.kiosk {
+            let size = output
+                .as_ref()
+                .and_then(|output| self.space.output_geometry(output))
+                .map(|geometry| geometry.size);
+            toplevel.with_pending_state(|state| {
+                state.size = size;
+                state.states.set(xdg_toplevel::State::Fullscreen);
+            });
+        } else if let (true, Some(output)) = (tiled, output.as_ref()) {
             let area = self.work_area_rect(output);
             let padding = self.config.window.work_area_padding.max(0);
             let (horizontal, vertical, _, _) = self.frame_insets(window);
@@ -2296,6 +2308,13 @@ impl BlairState {
                     .and_then(|(name, _)| self.output_by_name(name).cloned())
             })
             .or_else(|| self.focused_output());
+        let kiosk_geometry = if self.config.general.kiosk {
+            output
+                .as_ref()
+                .and_then(|output| self.space.output_geometry(output))
+        } else {
+            None
+        };
         let area = output
             .as_ref()
             .map(|output| self.work_area_rect(output))
@@ -2317,6 +2336,7 @@ impl BlairState {
                     area.loc.y + ((area.size.h - size.h + top) / 2).max(top),
                 ))
             });
+        let location = kiosk_geometry.map_or(location, |geometry| geometry.loc);
 
         let (title, app_id) = window_meta(window);
         let foreign = self
@@ -2324,6 +2344,7 @@ impl BlairState {
             .new_toplevel::<Self>(&title, app_id.as_deref().unwrap_or(""));
         if let Some(managed) = self.windows.get_mut(&id) {
             managed.mapped = true;
+            managed.fullscreen = self.config.general.kiosk;
             managed.workspace = workspace;
             managed.opened_at = self.config.animations.enabled.then(Instant::now);
             managed.foreign = Some(foreign);
@@ -2337,7 +2358,7 @@ impl BlairState {
         self.retile(workspace);
 
         let visible = workspace == self.focused_workspace_id();
-        if visible && self.config.focus.focus_new_windows {
+        if visible && (self.config.general.kiosk || self.config.focus.focus_new_windows) {
             self.focus_window(window);
         } else if let Some(workspace) = self.workspace_mut(workspace) {
             workspace.focus_history.insert(0, id);
@@ -2407,6 +2428,11 @@ impl BlairState {
     }
 
     pub fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        if self.config.general.kiosk && !self.windows.is_empty() {
+            tracing::warn!("rejecting additional toplevel in kiosk mode");
+            surface.send_close();
+            return;
+        }
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
         with_states(surface.wl_surface(), |states| {

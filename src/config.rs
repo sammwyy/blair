@@ -153,6 +153,7 @@ impl BlurConfig {
 pub struct GeneralConfig {
     pub backend: String,
     pub hot_reload: bool,
+    pub kiosk: bool,
     /// Startup fallback; a saved per-output mode takes precedence.
     pub initial_output_size: Option<[i32; 2]>,
 }
@@ -860,6 +861,7 @@ impl Default for GeneralConfig {
         Self {
             backend: "auto".to_string(),
             hot_reload: true,
+            kiosk: false,
             initial_output_size: None,
         }
     }
@@ -1142,10 +1144,12 @@ pub fn load_greeter_profile() -> Result<CompositorConfig> {
     let mut merged = Value::try_from(CompositorConfig::default())
         .context("failed to serialize built-in compositor config")?;
     merge_file_if_present(&mut merged, Path::new(GREETER_CONFIG_PATH))?;
-    let config: CompositorConfig = merged
+    let mut config: CompositorConfig = merged
         .try_into()
         .context("greeter configuration does not match the schema")?;
     validate(&config)?;
+    config.general.kiosk = true;
+    config.general.hot_reload = false;
     Ok(config)
 }
 
@@ -1505,6 +1509,14 @@ mod tests {
         validate(&config).expect("packaged sample config should validate");
         assert_eq!(config.decorations.titlebar_color, TitlebarColorMode::Blend);
         assert_eq!(config.decorations.drag_margin, 0);
+    }
+
+    #[test]
+    fn greeter_profile_enables_kiosk_without_changing_regular_sessions() {
+        assert!(!CompositorConfig::default().general.kiosk);
+        let config = load_greeter_profile().unwrap();
+        assert!(config.general.kiosk);
+        assert!(!config.general.hot_reload);
     }
 
     #[test]

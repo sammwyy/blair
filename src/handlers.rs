@@ -234,6 +234,9 @@ impl XdgShellHandler for BlairState {
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if self.config.general.kiosk {
+            return;
+        }
         if let Some(window) = self.window_for_toplevel(&surface) {
             self.minimize_window(&window);
         }

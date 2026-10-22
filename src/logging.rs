@@ -14,6 +14,15 @@ pub fn setup() -> Option<std::path::PathBuf> {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("blair=debug,warn"));
 
+    if std::env::var_os("BLAIR_LOG_STDERR").is_some() {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init();
+        return None;
+    }
+
     if let Some(path) = state_log_path() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
