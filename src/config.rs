@@ -154,7 +154,10 @@ pub struct GeneralConfig {
     pub backend: String,
     pub hot_reload: bool,
     pub kiosk: bool,
-    /// Startup fallback; a saved per-output mode takes precedence.
+    /// `auto` selects the monitor's best mode. `initial` uses `initial_output_size`.
+    /// A saved per-output mode takes precedence over both.
+    pub output_mode: String,
+    /// Used when `output_mode` is `initial`.
     pub initial_output_size: Option<[i32; 2]>,
 }
 
@@ -460,7 +463,10 @@ pub enum OutputTransform {
 
 impl OutputConfig {
     pub fn parsed_mode(&self) -> Result<Option<OutputMode>> {
-        self.mode.as_deref().map(parse_output_mode).transpose()
+        match self.mode.as_deref() {
+            None | Some("auto") => Ok(None),
+            Some(value) => parse_output_mode(value).map(Some),
+        }
     }
 
     pub fn parsed_transform(&self) -> Result<Option<OutputTransform>> {
@@ -862,6 +868,7 @@ impl Default for GeneralConfig {
             backend: "auto".to_string(),
             hot_reload: true,
             kiosk: false,
+            output_mode: "auto".to_string(),
             initial_output_size: None,
         }
     }
@@ -1095,7 +1102,11 @@ fn parse_color(hex: &str) -> [u8; 4] {
 }
 
 const CONFIG_FILE_NAME: &str = "config.toml";
-const GREETER_CONFIG_PATH: &str = "/etc/blair/greeter.toml";
+const PROFILES_DIR: &str = "/etc/blair/profiles";
+/// Profile that layers system configuration with the user configuration directory.
+pub const USER_PROFILE: &str = "user";
+
+static ACTIVE_PROFILE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// Locations contributing configuration, in increasing precedence order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1131,25 +1142,73 @@ pub fn user_config_path() -> PathBuf {
     ConfigPaths::default().user_config_path()
 }
 
-/// Loads built-in defaults followed by system and user configuration.
-///
-/// Scalars and arrays in a later layer replace earlier values. TOML tables
-/// merge recursively. Fragments are loaded in lexicographic filename order.
-pub fn load_or_default() -> Result<CompositorConfig> {
-    load_from_paths(&ConfigPaths::default())
+/// Selects the profile used by [`load_active`] and [`save`].
+pub fn set_active_profile(profile: &str) {
+    *ACTIVE_PROFILE.lock().expect("profile lock") = profile.to_owned();
 }
 
-/// Loads the system-managed greeter profile without user configuration layers.
-pub fn load_greeter_profile() -> Result<CompositorConfig> {
+pub fn active_profile() -> String {
+    let profile = ACTIVE_PROFILE.lock().expect("profile lock").clone();
+    if profile.is_empty() {
+        USER_PROFILE.to_owned()
+    } else {
+        profile
+    }
+}
+
+/// A profile id is one file name, with no directory separators.
+pub fn validate_profile_id(id: &str) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        });
+    if !valid {
+        anyhow::bail!("invalid profile id: {id}");
+    }
+    Ok(())
+}
+
+pub fn profile_path(id: &str) -> PathBuf {
+    PathBuf::from(PROFILES_DIR).join(format!("{id}.toml"))
+}
+
+/// Loads the active profile.
+///
+/// `user` layers built-in defaults, `/etc/blair`, and the user directory.
+/// Any other id loads `/etc/blair/profiles/<id>.toml` over the built-in
+/// defaults and does not read the user directory. Scalars and arrays in a
+/// later layer replace earlier values. TOML tables merge recursively.
+/// Fragments are loaded in lexicographic filename order.
+pub fn load_active() -> Result<CompositorConfig> {
+    let profile = active_profile();
+    validate_profile_id(&profile)?;
+    if profile == USER_PROFILE {
+        return load_from_paths(&ConfigPaths::default());
+    }
+    load_profile_file(&profile_path(&profile))
+}
+
+fn load_profile_file(path: &Path) -> Result<CompositorConfig> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("profile not found: {}", path.display())
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read profile {}", path.display()))
+        }
+    };
     let mut merged = Value::try_from(CompositorConfig::default())
         .context("failed to serialize built-in compositor config")?;
-    merge_file_if_present(&mut merged, Path::new(GREETER_CONFIG_PATH))?;
-    let mut config: CompositorConfig = merged
+    let layer: Value =
+        toml::from_str(&contents).with_context(|| format!("invalid TOML in {}", path.display()))?;
+    merge_toml(&mut merged, layer);
+    let config: CompositorConfig = merged
         .try_into()
-        .context("greeter configuration does not match the schema")?;
+        .with_context(|| format!("profile {} does not match the schema", path.display()))?;
     validate(&config)?;
-    config.general.kiosk = true;
-    config.general.hot_reload = false;
+    tracing::info!(path = %path.display(), "loaded configuration profile");
     Ok(config)
 }
 
@@ -1179,6 +1238,9 @@ pub fn validate(config: &CompositorConfig) -> Result<()> {
             "at most {} configured shortcuts are supported",
             crate::shortcuts::MAX_BINDINGS_PER_CLIENT
         );
+    }
+    if !matches!(config.general.output_mode.as_str(), "auto" | "initial") {
+        anyhow::bail!("general.output_mode must be \"auto\" or \"initial\"");
     }
     if config
         .general
@@ -1319,7 +1381,7 @@ fn refresh_watches(
 }
 
 fn reload(state: &mut BlairState) {
-    match load_from_paths(&ConfigPaths::default()) {
+    match load_active() {
         Ok(next) if next == state.config => {}
         Ok(next) => {
             if let Err(error) = state.apply_config(next) {
@@ -1396,6 +1458,11 @@ fn merge_toml(base: &mut Value, override_value: Value) {
 }
 
 pub fn save(config: &CompositorConfig) -> Result<()> {
+    let profile = active_profile();
+    if profile != USER_PROFILE {
+        tracing::debug!(%profile, "not persisting configuration for a system profile");
+        return Ok(());
+    }
     let path = user_config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1470,6 +1537,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn output_mode_defaults_to_auto() {
+        let config = CompositorConfig::default();
+        assert_eq!(config.general.output_mode, "auto");
+        let loaded: CompositorConfig =
+            toml::from_str("[general]\noutput_mode = \"auto\"\n").unwrap();
+        assert!(validate(&loaded).is_ok());
+        let mut rejected = loaded;
+        rejected.general.output_mode = "native".into();
+        assert!(validate(&rejected).is_err());
+    }
+
+    #[test]
     fn initial_output_size_is_optional_and_validated() {
         let mut config = CompositorConfig::default();
         assert_eq!(config.general.initial_output_size, None);
@@ -1512,11 +1591,56 @@ mod tests {
     }
 
     #[test]
-    fn greeter_profile_enables_kiosk_without_changing_regular_sessions() {
+    fn user_profile_does_not_enable_kiosk() {
         assert!(!CompositorConfig::default().general.kiosk);
-        let config = load_greeter_profile().unwrap();
+        assert!(CompositorConfig::default().general.hot_reload);
+        assert_eq!(active_profile(), USER_PROFILE);
+    }
+
+    #[test]
+    fn named_profile_loads_its_file_without_forcing_kiosk() {
+        let root = scratch_dir("named-profile");
+        let path = root.join("greeter.toml");
+        fs::write(
+            &path,
+            "[general]\nkiosk = true\nhot_reload = false\ninitial_output_size = [1280, 720]\n",
+        )
+        .unwrap();
+        let config = load_profile_file(&path).unwrap();
         assert!(config.general.kiosk);
         assert!(!config.general.hot_reload);
+        assert_eq!(config.general.initial_output_size, Some([1280, 720]));
+        assert_eq!(
+            config.general.backend,
+            CompositorConfig::default().general.backend
+        );
+
+        fs::write(&path, "[general]\nbackend = \"winit\"\n").unwrap();
+        let config = load_profile_file(&path).unwrap();
+        assert!(!config.general.kiosk);
+        assert!(config.general.hot_reload);
+        assert_eq!(config.general.backend, "winit");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_or_invalid_profile_file_fails() {
+        let root = scratch_dir("missing-profile");
+        let error = load_profile_file(&root.join("absent.toml")).unwrap_err();
+        assert!(error.to_string().contains("profile not found"));
+        fs::write(root.join("broken.toml"), "kiosk =").unwrap();
+        assert!(load_profile_file(&root.join("broken.toml")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_ids_reject_paths() {
+        assert!(validate_profile_id("greeter").is_ok());
+        assert!(validate_profile_id("user").is_ok());
+        assert!(validate_profile_id("").is_err());
+        assert!(validate_profile_id("../greeter").is_err());
+        assert!(validate_profile_id("greeter.toml").is_err());
+        assert!(validate_profile_id("a/b").is_err());
     }
 
     #[test]
@@ -1671,6 +1795,21 @@ mod tests {
             }
         );
         assert!(parse_output_mode("2560x1440").is_err());
+        assert_eq!(
+            OutputConfig {
+                mode: Some("auto".into()),
+                ..OutputConfig::default()
+            }
+            .parsed_mode()
+            .unwrap(),
+            None
+        );
+        assert!(OutputConfig {
+            mode: Some("auto".into()),
+            ..OutputConfig::default()
+        }
+        .validate("DP-1")
+        .is_ok());
         assert!(OutputConfig {
             scale: Some(0.0),
             ..Default::default()

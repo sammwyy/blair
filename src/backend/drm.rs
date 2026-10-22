@@ -634,7 +634,7 @@ fn init_drm(
         &resources,
         drm.crtcs(),
         &state.config.outputs,
-        state.config.general.initial_output_size,
+        &state.config.general,
     )
     .context("no connected display found")?;
     let connector_info = device_fd
@@ -911,12 +911,81 @@ fn to_smithay_transform(transform: OutputTransform) -> Transform {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RankedMode {
+    width: u32,
+    height: u32,
+    refresh: u32,
+    preferred: bool,
+}
+
+impl RankedMode {
+    /// Preferred timings describe the panel. A larger non-preferred timing is
+    /// often only a standard mode the monitor does not actually use.
+    fn rank(self) -> (u8, u64, u32) {
+        (
+            u8::from(self.preferred),
+            u64::from(self.width) * u64::from(self.height),
+            self.refresh,
+        )
+    }
+}
+
+fn ranked_mode(mode: &drm::control::Mode) -> RankedMode {
+    let (width, height) = mode.size();
+    RankedMode {
+        width: u32::from(width),
+        height: u32::from(height),
+        refresh: mode.vrefresh(),
+        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+    }
+}
+
+fn best_mode_index(modes: &[RankedMode]) -> Option<usize> {
+    modes
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, mode)| mode.rank())
+        .map(|(index, _)| index)
+}
+
+fn best_connector_mode(modes: &[drm::control::Mode]) -> Option<&drm::control::Mode> {
+    let ranked: Vec<RankedMode> = modes.iter().map(ranked_mode).collect();
+    best_mode_index(&ranked).and_then(|index| modes.get(index))
+}
+
+fn match_mode(
+    modes: &[drm::control::Mode],
+    width: i32,
+    height: i32,
+    refresh_millihz: Option<i32>,
+) -> Option<&drm::control::Mode> {
+    let width_slack = if refresh_millihz.is_some() { 0 } else { 8 };
+    modes
+        .iter()
+        .filter(|mode| {
+            let (mode_width, mode_height) = mode.size();
+            (i32::from(mode_width) - width).abs() <= width_slack
+                && i32::from(mode_height) == height
+                && refresh_millihz.is_none_or(|refresh| {
+                    (OutputMode::from(**mode).refresh - refresh).abs() <= 1_000
+                })
+        })
+        .min_by_key(|mode| {
+            let width_delta = (i32::from(mode.size().0) - width).abs();
+            let refresh_delta = refresh_millihz
+                .map(|refresh| (OutputMode::from(**mode).refresh - refresh).abs())
+                .unwrap_or(0);
+            (width_delta, refresh_delta)
+        })
+}
+
 fn find_output(
     fd: &DrmDeviceFd,
     resources: &smithay::reexports::drm::control::ResourceHandles,
     crtcs: &[crtc::Handle],
     outputs: &std::collections::BTreeMap<String, OutputConfig>,
-    initial_size: Option<[i32; 2]>,
+    general: &crate::config::GeneralConfig,
 ) -> Option<(
     connector::Handle,
     smithay::reexports::drm::control::Mode,
@@ -939,55 +1008,39 @@ fn find_output(
             if config.and_then(|config| config.enabled) == Some(false) && !allow_disabled {
                 continue;
             }
-            let requested = config.and_then(|config| config.parsed_mode().ok().flatten());
-            let mode = requested
-                .and_then(|requested| {
-                    connector
-                        .modes()
-                        .iter()
-                        .filter(|mode| {
-                            let size = mode.size();
-                            i32::from(size.0) == requested.width
-                                && i32::from(size.1) == requested.height
-                                && (OutputMode::from(**mode).refresh - requested.refresh_millihz)
-                                    .abs()
-                                    <= 1_000
-                        })
-                        .min_by_key(|mode| {
-                            (OutputMode::from(**mode).refresh - requested.refresh_millihz).abs()
-                        })
-                })
-                .or_else(|| {
-                    if requested.is_none() {
-                        initial_size.and_then(|[width, height]| {
-                            // Virtual GPUs can round a timing's width to a multiple of eight.
-                            connector
-                                .modes()
-                                .iter()
-                                .filter(|mode| {
-                                    let (w, h) = mode.size();
-                                    (i32::from(w) - width).abs() <= 8 && i32::from(h) == height
-                                })
-                                .min_by_key(|mode| (i32::from(mode.size().0) - width).abs())
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    connector
-                        .modes()
-                        .iter()
-                        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-                })
-                .or_else(|| connector.modes().first())
-                .copied()?;
-            if requested.is_some_and(|requested| {
-                let size = mode.size();
-                i32::from(size.0) != requested.width || i32::from(size.1) != requested.height
-            }) {
-                tracing::warn!(output = %name, ?requested, "the requested mode is unavailable; using the preferred mode");
+            let per_output = config.and_then(|config| config.mode.as_deref());
+            let automatic = per_output == Some("auto")
+                || (per_output.is_none() && general.output_mode == "auto");
+            let requested = if automatic {
+                None
+            } else {
+                config.and_then(|config| config.parsed_mode().ok().flatten())
+            };
+            let mode = if let Some(requested) = requested {
+                match_mode(connector.modes(), requested.width, requested.height, Some(requested.refresh_millihz))
+                    .or_else(|| {
+                        tracing::warn!(output = %name, ?requested, "the requested mode is unavailable; using the best monitor mode");
+                        best_connector_mode(connector.modes())
+                    })
+            } else if !automatic {
+                general.initial_output_size.and_then(|[width, height]| {
+                    // Virtual GPUs can round a timing's width to a multiple of eight.
+                    match_mode(connector.modes(), width, height, None)
+                }).or_else(|| best_connector_mode(connector.modes()))
+            } else {
+                best_connector_mode(connector.modes())
             }
+            .copied()?;
+            let best = ranked_mode(&mode);
+            tracing::info!(
+                output = %name,
+                width = best.width,
+                height = best.height,
+                refresh = best.refresh,
+                preferred = best.preferred,
+                automatic,
+                "selected display mode"
+            );
 
             for &encoder_handle in connector.encoders() {
                 let Ok(encoder) = fd.get_encoder(encoder_handle) else {
@@ -1322,6 +1375,80 @@ fn current_master_diagnostic(card: &std::path::Path, holders: &[(u32, String)]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_mode_prefers_the_monitor_timing_over_a_larger_standard_mode() {
+        let modes = [
+            RankedMode {
+                width: 5120,
+                height: 2160,
+                refresh: 50,
+                preferred: false,
+            },
+            RankedMode {
+                width: 1920,
+                height: 1080,
+                refresh: 60,
+                preferred: true,
+            },
+            RankedMode {
+                width: 1280,
+                height: 720,
+                refresh: 60,
+                preferred: false,
+            },
+            RankedMode {
+                width: 1920,
+                height: 1080,
+                refresh: 144,
+                preferred: true,
+            },
+        ];
+        let best = modes[best_mode_index(&modes).unwrap()];
+        assert_eq!(
+            best,
+            RankedMode {
+                width: 1920,
+                height: 1080,
+                refresh: 144,
+                preferred: true
+            }
+        );
+    }
+
+    #[test]
+    fn automatic_mode_uses_the_largest_timing_when_none_is_preferred() {
+        let modes = [
+            RankedMode {
+                width: 1280,
+                height: 720,
+                refresh: 60,
+                preferred: false,
+            },
+            RankedMode {
+                width: 2560,
+                height: 1440,
+                refresh: 60,
+                preferred: false,
+            },
+            RankedMode {
+                width: 2560,
+                height: 1440,
+                refresh: 120,
+                preferred: false,
+            },
+        ];
+        let best = modes[best_mode_index(&modes).unwrap()];
+        assert_eq!(
+            best,
+            RankedMode {
+                width: 2560,
+                height: 1440,
+                refresh: 120,
+                preferred: false
+            }
+        );
+    }
 
     #[test]
     fn mice_are_not_mistaken_for_touchpads() {

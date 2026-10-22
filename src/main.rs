@@ -39,14 +39,13 @@ fn main() -> Result<()> {
         "Blair compositor starting"
     );
 
-    let mut config = match startup.profile {
-        Profile::Default => config::load_or_default(),
-        Profile::Greeter => config::load_greeter_profile(),
-    }
-    .context("failed to load compositor config")?;
+    config::set_active_profile(&startup.profile);
+    let mut config = config::load_active().context("failed to load compositor config")?;
     config.autostart.extend(startup.run);
     tracing::info!(
+        profile = %startup.profile,
         backend = %config.general.backend,
+        kiosk = config.general.kiosk,
         autostart_count = config.autostart.len(),
         "config loaded"
     );
@@ -56,19 +55,13 @@ fn main() -> Result<()> {
 
 struct StartupOptions {
     run: Vec<config::AutostartConfig>,
-    profile: Profile,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Profile {
-    Default,
-    Greeter,
+    profile: String,
 }
 
 fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<StartupOptions> {
     let mut args = args.into_iter();
     let mut run = Vec::new();
-    let mut profile = Profile::Default;
+    let mut profile = config::USER_PROFILE.to_owned();
 
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
@@ -78,9 +71,13 @@ fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<Start
                 continue;
             }
             "--help" | "-h" => {
-                println!("Usage: blair [--profile <default|greeter>] [--run <command>]...");
-                println!("\n  --run  Add a command to this session's autostart list.");
-                println!("  --profile  Select an installed configuration profile.");
+                println!("Usage: blair [--profile <id>] [--run <command>]...");
+                println!("\n  --run      Add a command to this session's autostart list.");
+                println!(
+                    "  --profile  Configuration profile. \"{}\" (the default) loads the system and user directories.",
+                    config::USER_PROFILE
+                );
+                println!("             Any other id loads /etc/blair/profiles/<id>.toml.");
                 std::process::exit(0);
             }
             _ => {
@@ -107,12 +104,9 @@ fn parse_startup_options(args: impl IntoIterator<Item = String>) -> Result<Start
     Ok(StartupOptions { run, profile })
 }
 
-fn parse_profile(value: &str) -> Result<Profile> {
-    match value {
-        "default" => Ok(Profile::Default),
-        "greeter" => Ok(Profile::Greeter),
-        _ => bail!("unknown profile: {value}"),
-    }
+fn parse_profile(value: &str) -> Result<String> {
+    config::validate_profile_id(value)?;
+    Ok(value.to_owned())
 }
 
 #[cfg(test)]
@@ -129,7 +123,7 @@ mod tests {
         .unwrap();
         assert_eq!(options.run.len(), 2);
         assert_eq!(options.run[1].command, "swaybg -i wallpaper.png");
-        assert_eq!(options.profile, super::Profile::Default);
+        assert_eq!(options.profile, crate::config::USER_PROFILE);
     }
 
     #[test]
@@ -145,8 +139,25 @@ mod tests {
     }
 
     #[test]
-    fn parses_greeter_profile() {
-        let options = parse_startup_options(["--profile=greeter".into()]).unwrap();
-        assert_eq!(options.profile, super::Profile::Greeter);
+    fn defaults_to_the_user_profile() {
+        let options = parse_startup_options(std::iter::empty()).unwrap();
+        assert_eq!(options.profile, crate::config::USER_PROFILE);
+    }
+
+    #[test]
+    fn parses_a_named_profile() {
+        let options = parse_startup_options(["--profile".into(), "greeter".into()]).unwrap();
+        assert_eq!(options.profile, "greeter");
+        let options = parse_startup_options(["--profile=kiosk".into()]).unwrap();
+        assert_eq!(options.profile, "kiosk");
+    }
+
+    #[test]
+    fn rejects_profile_ids_that_are_not_file_names() {
+        assert!(parse_startup_options(["--profile".into()]).is_err());
+        assert!(parse_startup_options(["--profile=".into()]).is_err());
+        assert!(parse_startup_options(["--profile=../greeter".into()]).is_err());
+        assert!(parse_startup_options(["--profile=greeter.toml".into()]).is_err());
+        assert!(parse_startup_options(["--profile=/etc/blair/profiles/greeter".into()]).is_err());
     }
 }

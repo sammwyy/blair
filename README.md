@@ -124,8 +124,11 @@ Without explicit output entries, Blair uses a safe automatic profile. Cursor
 settings fall back to `XCURSOR_THEME` and `XCURSOR_SIZE` and are passed to
 applications Blair starts.
 
-`general.initial_output_size = [1366, 768]` selects a startup size from the
-display's supported modes when no per-output mode has been saved. Physical
+`general.output_mode = "auto"` is the default. It selects the monitor's preferred
+mode, or the highest resolution and refresh rate when the monitor does not mark
+one. `mode = "auto"` on an output does the same. A saved `WIDTHxHEIGHT@REFRESH`
+mode takes precedence. `output_mode = "initial"` with
+`general.initial_output_size = [1366, 768]` requests that size instead. Physical
 outputs advertise all their supported modes through Wayland and `DisplayInfo`
 on D-Bus. `ApplyDisplayMode` previews a supported size and refresh rate for 15
 seconds; `ConfirmDisplayMode` saves it in the user configuration, while
@@ -147,7 +150,7 @@ RUST_LOG=blair=debug,warn cargo run -p blair
 
 ## Configuration model
 
-Later TOML layers override earlier ones:
+`--profile user` is the default. Later TOML layers override earlier ones:
 
 ```text
 built-in defaults
@@ -156,6 +159,10 @@ built-in defaults
 ~/.config/blair/config.toml
 ~/.config/blair/conf.d/*.toml
 ```
+
+`--profile <id>` loads `/etc/blair/profiles/<id>.toml` over the built-in defaults
+and does not read the user directory. Kiosk mode is `general.kiosk` in that
+file. Settings changed at runtime are stored only for the `user` profile.
 
 Blair validates every layer before applying it, so an invalid edit preserves the
 previous configuration. See the [bundled example](packaging/config/config.toml)
