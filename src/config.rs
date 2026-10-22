@@ -622,8 +622,14 @@ impl WindowRuleConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
-    pub default_width: i32,
-    pub default_height: i32,
+    /// Accepted only so configurations from older releases keep loading.
+    /// These values are ignored: a floating client owns its initial size.
+    #[serde(rename = "default_width", skip_serializing)]
+    pub deprecated_default_width: Option<i32>,
+    /// Accepted only so configurations from older releases keep loading.
+    /// These values are ignored: a floating client owns its initial size.
+    #[serde(rename = "default_height", skip_serializing)]
+    pub deprecated_default_height: Option<i32>,
     pub center_new_windows: bool,
     pub server_side_decorations: bool,
     pub layout: WindowLayout,
@@ -883,8 +889,8 @@ impl Default for IntegrationsConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            default_width: 900,
-            default_height: 600,
+            deprecated_default_width: None,
+            deprecated_default_height: None,
             center_new_windows: true,
             server_side_decorations: true,
             layout: WindowLayout::Floating,
@@ -897,9 +903,6 @@ impl Default for WindowConfig {
 
 impl WindowConfig {
     fn validate(&self) -> Result<()> {
-        if self.default_width <= 0 || self.default_height <= 0 {
-            anyhow::bail!("window default size must be positive");
-        }
         if !(0..=512).contains(&self.work_area_padding) || !(0..=512).contains(&self.gap) {
             anyhow::bail!("window padding and gap must be between 0 and 512");
         }
@@ -1565,8 +1568,24 @@ mod tests {
         let config = CompositorConfig::default();
         let serialized = toml::to_string_pretty(&config).expect("serialize");
         let restored: CompositorConfig = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(restored.window.default_width, config.window.default_width);
+        assert!(!serialized.contains("default_width"));
+        assert!(!serialized.contains("default_height"));
+        assert!(restored.window.deprecated_default_width.is_none());
+        assert!(restored.window.deprecated_default_height.is_none());
         assert!(restored.integrations.dbus);
+    }
+
+    #[test]
+    fn deprecated_default_window_size_is_ignored() {
+        let config: CompositorConfig =
+            toml::from_str("[window]\ndefault_width = 1000\ndefault_height = 700\n")
+                .expect("legacy window size remains readable");
+        assert_eq!(config.window.deprecated_default_width, Some(1000));
+        assert_eq!(config.window.deprecated_default_height, Some(700));
+        assert!(validate(&config).is_ok());
+        let serialized = toml::to_string_pretty(&config).expect("serialize");
+        assert!(!serialized.contains("default_width"));
+        assert!(!serialized.contains("default_height"));
     }
 
     #[test]
@@ -1679,35 +1698,34 @@ mod tests {
 
         fs::write(
             paths.system_dir.join(CONFIG_FILE_NAME),
-            "[general]\nbackend = \"winit\"\n[window]\ndefault_width = 1000\n",
+            "[general]\nbackend = \"winit\"\n[window]\nwork_area_padding = 20\n",
         )
         .unwrap();
         fs::write(
             paths.system_dir.join("conf.d").join("20-window.toml"),
-            "[window]\ndefault_width = 1100\ndefault_height = 700\n",
+            "[window]\nwork_area_padding = 24\ngap = 10\n",
         )
         .unwrap();
         fs::write(
             paths.system_dir.join("conf.d").join("10-window.toml"),
-            "[window]\ndefault_width = 1050\n",
+            "[window]\nwork_area_padding = 22\n",
         )
         .unwrap();
         fs::write(
             paths.user_dir.join(CONFIG_FILE_NAME),
-            "[general]\nbackend = \"drm\"\n[window]\ndefault_height = 800\n",
+            "[general]\nbackend = \"drm\"\n[window]\ngap = 14\n",
         )
         .unwrap();
         fs::write(
             paths.user_dir.join("conf.d").join("30-window.toml"),
-            "[window]\ndefault_width = 1200\n",
+            "[window]\nwork_area_padding = 30\n",
         )
         .unwrap();
 
         let config = load_from_paths(&paths).unwrap();
         assert_eq!(config.general.backend, "drm");
-        assert_eq!(config.window.default_width, 1200);
-        assert_eq!(config.window.default_height, 800);
-        assert_eq!(config.window.work_area_padding, 16);
+        assert_eq!(config.window.work_area_padding, 30);
+        assert_eq!(config.window.gap, 14);
 
         fs::remove_dir_all(&root).ok();
     }

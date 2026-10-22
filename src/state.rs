@@ -64,8 +64,8 @@ use smithay::{
             kde::decoration::KdeDecorationState,
             wlr_layer::{KeyboardInteractivity, Layer, LayerSurfaceData, WlrLayerShellState},
             xdg::{
-                decoration::XdgDecorationState, PopupSurface, SurfaceCachedState, ToplevelSurface,
-                XdgShellState, XdgToplevelSurfaceData,
+                decoration::XdgDecorationState, PopupSurface, ToplevelSurface, XdgShellState,
+                XdgToplevelSurfaceData,
             },
         },
         shm::ShmState,
@@ -2222,20 +2222,9 @@ impl BlairState {
         let Some(toplevel) = window.toplevel() else {
             return;
         };
-        let (min, max) = with_states(toplevel.wl_surface(), |states| {
-            let mut cached = states.cached_state.get::<SurfaceCachedState>();
-            let current = cached.current();
-            (current.min_size, current.max_size)
-        });
-        let fixed_size = min.w > 0 && min == max;
-        let size = rules.size.map(|[w, h]| Size::from((w, h))).or_else(|| {
-            (!fixed_size).then(|| {
-                Size::from((
-                    self.config.window.default_width,
-                    self.config.window.default_height,
-                ))
-            })
-        });
+        // A floating client chooses its initial size. Only an explicit window
+        // rule may request a compositor-provided size.
+        let size = rules.size.map(|[w, h]| Size::from((w, h)));
         if let Some(decoration) = rules.decoration {
             let mode = if decoration {
                 DecorationMode::ServerSide
