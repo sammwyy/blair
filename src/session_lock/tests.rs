@@ -2,7 +2,7 @@ use super::*;
 use smithay::{
     backend::input::ButtonState,
     input::pointer::{ButtonEvent, MotionEvent},
-    output::{Mode, PhysicalProperties, Subpixel},
+    output::Mode,
     utils::SERIAL_COUNTER,
 };
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_output, wl_seat, wl_surface};
@@ -19,27 +19,7 @@ fn add_output(state: &mut BlairState) -> Output {
 }
 
 fn add_named_output(state: &mut BlairState, name: &str, location: (i32, i32)) -> Output {
-    let output = Output::new(
-        name.into(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Test".into(),
-            model: "Test".into(),
-        },
-    );
-    output.change_current_state(
-        Some(Mode {
-            size: (800, 600).into(),
-            refresh: 60_000,
-        }),
-        None,
-        None,
-        Some(location.into()),
-    );
-    output.create_global::<BlairState>(&state.display_handle);
-    state.add_output(&output, location.into());
-    output
+    crate::test_support::add_output(state, name, location, (800, 600))
 }
 
 fn present_lock_frame(state: &mut BlairState, output: &Output) {

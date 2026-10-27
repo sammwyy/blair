@@ -215,11 +215,11 @@ impl CompositorApi for BlairState {
         if !(0..=128).contains(&work_area_padding) || !matches!(corner_radius, 0 | 12 | 24) {
             return false;
         }
-        self.config.window.layout = layout;
-        self.config.window.work_area_padding = work_area_padding;
-        self.config.decorations.corner_radius = corner_radius;
-        if let Err(error) = crate::config::save(&self.config) {
-            tracing::warn!(%error, "failed to persist layout settings");
+        let mut next = self.config.clone();
+        next.window.layout = layout;
+        next.window.work_area_padding = work_area_padding;
+        next.decorations.corner_radius = corner_radius;
+        if !self.commit_configuration(next) {
             return false;
         }
         tracing::info!(
@@ -228,8 +228,6 @@ impl CompositorApi for BlairState {
             corner_radius,
             "layout settings updated by an integration"
         );
-        self.retile_focused_workspace();
-        self.request_redraw();
         true
     }
 
@@ -252,29 +250,28 @@ impl CompositorApi for BlairState {
             );
             return false;
         }
-        self.config.decorations.titlebar_height = titlebar_height;
+        let mut next = self.config.clone();
+        next.decorations.titlebar_height = titlebar_height;
         // Pixel widths from integrations snap to the nearest named size; 0
         // hides the border like the settings' "None" choice.
         if border_width == 0 {
-            self.config.decorations.border = crate::config::BorderColorMode::None;
+            next.decorations.border = crate::config::BorderColorMode::None;
         } else {
-            if self.config.decorations.border == crate::config::BorderColorMode::None {
-                self.config.decorations.border = crate::config::BorderColorMode::Theme;
+            if next.decorations.border == crate::config::BorderColorMode::None {
+                next.decorations.border = crate::config::BorderColorMode::Theme;
             }
-            self.config.decorations.border_size = crate::config::BorderSize::nearest(border_width);
+            next.decorations.border_size = crate::config::BorderSize::nearest(border_width);
         }
-        self.config.decorations.corner_radius = corner_radius;
-        self.config.window.server_side_decorations = server_side_decorations;
-        self.config.decorations.mode = if server_side_decorations {
+        next.decorations.corner_radius = corner_radius;
+        next.window.server_side_decorations = server_side_decorations;
+        next.decorations.mode = if server_side_decorations {
             DecorationModeConfig::Server
         } else {
             DecorationModeConfig::Client
         };
-        if let Err(error) = crate::config::save(&self.config) {
-            tracing::warn!(%error, "failed to persist window settings");
+        if !self.commit_configuration(next) {
             return false;
         }
-        self.request_redraw();
         tracing::info!(
             titlebar_height,
             border_width,
@@ -305,20 +302,7 @@ impl CompositorApi for BlairState {
                 return false;
             }
         };
-        if let Err(error) = crate::config::validate(&next) {
-            tracing::warn!(%error, "integration sent a configuration that failed validation");
-            return false;
-        }
-        let previous = self.config.clone();
-        if let Err(error) = self.apply_config(next) {
-            tracing::warn!(%error, "integration sent an input configuration that could not be applied");
-            return false;
-        }
-        if let Err(error) = crate::config::save(&self.config) {
-            tracing::warn!(%error, "failed to persist the configuration");
-            if let Err(rollback) = self.apply_config(previous) {
-                tracing::error!(%rollback, "could not restore configuration after a persistence failure");
-            }
+        if !self.commit_configuration(next) {
             return false;
         }
         tracing::info!("configuration replaced by an integration");
@@ -417,13 +401,7 @@ impl CompositorApi for BlairState {
         }
         let mut next = self.config.clone();
         next.bindings = configured;
-        if let Err(error) = crate::config::save(&next) {
-            tracing::warn!(%error, "could not persist configured shortcuts");
-            return false;
-        }
-        self.config = next;
-        self.replace_static_bindings(&self.config.bindings.clone());
-        true
+        self.commit_configuration(next)
     }
 
     fn bind_shortcut(&mut self, client: &str, id: &str, accelerator: &str) -> bool {
@@ -465,5 +443,315 @@ impl CompositorApi for BlairState {
 
     fn quit(&mut self) {
         self.request_exit();
+    }
+}
+
+impl BlairState {
+    fn commit_configuration(&mut self, next: crate::config::CompositorConfig) -> bool {
+        if let Err(error) = crate::config::validate(&next) {
+            tracing::warn!(%error, "integration sent a configuration that failed validation");
+            return false;
+        }
+        if let Err(error) = self.apply_config_with(next, |config| {
+            crate::config::save(config).map_err(|error| error.to_string())
+        }) {
+            tracing::warn!(%error, "integration configuration update rejected");
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{state::tests::fixture, test_support::isolated_config_test};
+    use std::fs;
+
+    #[test]
+    fn legacy_settings_update_the_theme_and_persist_the_effective_configuration() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::legacy_settings_update_the_theme_and_persist_the_effective_configuration"
+            ),
+            |_| {
+                let (_display, _event_loop, mut state) = fixture();
+                let system = creamui_theme_loader::SystemThemeLoader::new().load().ok();
+                let radius = |fallback| {
+                    system
+                        .as_ref()
+                        .map_or(fallback, |system| system.corners.window_radius())
+                };
+                let text_scale = state.decoration_theme().text_scale;
+                assert!(state.set_layout_settings("floating", 24, 24));
+                assert_eq!(state.layout_settings(), ("floating".into(), 24, radius(24)));
+                assert_eq!(state.config.decorations.corner_radius, 24);
+                assert_eq!(read_configuration(), state.config);
+                assert!(state.set_window_settings(40, 0, 12, false));
+                assert_eq!(state.window_settings(), (40, 0, radius(12), false));
+                assert_eq!(
+                    state.decoration_theme().titlebar_height,
+                    (40.0 * text_scale).round() as i32
+                );
+                assert_eq!(read_configuration(), state.config);
+                assert!(state.set_window_settings(32, 3, 24, true));
+                assert_eq!(state.window_settings(), (32, 2, radius(24), true));
+                assert_eq!(state.config.decorations.mode, DecorationModeConfig::Server);
+                assert_eq!(read_configuration(), state.config);
+            },
+        );
+    }
+
+    fn read_configuration() -> crate::config::CompositorConfig {
+        toml::from_str(&fs::read_to_string(crate::config::user_config_path()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn failed_saves_leave_legacy_and_full_configuration_state_unchanged() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::failed_saves_leave_legacy_and_full_configuration_state_unchanged"
+            ),
+            |root| {
+                let (mut display, _event_loop, mut state) = fixture();
+                let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+                client
+                    .bind::<wayland_client::protocol::wl_seat::WlSeat>(7)
+                    .get_keyboard(&client.handle(), ());
+                client.dispatch(&mut display, &mut state);
+                let keymaps = client.events.keymaps;
+                let repeat = client.events.repeat_info.clone();
+                state.take_redraw_request();
+                let previous = state.config.clone();
+                let previous_theme = state.window_settings();
+                fs::write(root.join("blair"), "not a directory").unwrap();
+                assert!(!state.set_layout_settings("floating", 64, 24));
+                assert_eq!(state.config, previous);
+                assert_eq!(state.window_settings(), previous_theme);
+                assert!(!state.set_window_settings(48, 0, 24, false));
+                assert_eq!(state.config, previous);
+                assert_eq!(state.window_settings(), previous_theme);
+                let mut next = state.config.clone();
+                next.workspaces.count = 2;
+                next.input.keyboard.layout = "de".into();
+                let keyboard = state.seat.get_keyboard().unwrap();
+                let layout = keyboard.with_xkb_state(&mut state, |context| {
+                    let xkb = context.xkb().lock().unwrap();
+                    xkb.layout_name(xkb.active_layout()).to_owned()
+                });
+                assert!(!state.set_configuration(&toml::to_string(&next).unwrap()));
+                assert_eq!(state.config, previous);
+                assert_eq!(
+                    state.list_workspaces().len(),
+                    previous.workspaces.count as usize
+                );
+                let actual = keyboard.with_xkb_state(&mut state, |context| {
+                    let xkb = context.xkb().lock().unwrap();
+                    xkb.layout_name(xkb.active_layout()).to_owned()
+                });
+                assert_eq!(actual, layout);
+                client.dispatch(&mut display, &mut state);
+                assert_eq!(client.events.keymaps, keymaps);
+                assert_eq!(client.events.repeat_info, repeat);
+                assert!(!state.take_redraw_request());
+                assert_eq!(
+                    fs::read_to_string(root.join("blair")).unwrap(),
+                    "not a directory"
+                );
+            },
+        );
+    }
+
+    fn map_window(
+        client: &mut crate::test_support::TestClient,
+        display: &mut smithay::reexports::wayland_server::Display<BlairState>,
+        state: &mut BlairState,
+    ) -> (
+        WindowId,
+        wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
+    ) {
+        use wayland_client::protocol::wl_compositor::WlCompositor;
+        use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
+        let root = client
+            .bind::<WlCompositor>(6)
+            .create_surface(&client.handle(), ());
+        let shell = client.bind::<XdgWmBase>(6);
+        let xdg = shell.get_xdg_surface(&root, &client.handle(), ());
+        let toplevel = xdg.get_toplevel(&client.handle(), ());
+        root.commit();
+        client.dispatch(display, state);
+        client.paint_surface(&root, 400, 300);
+        client.dispatch(display, state);
+        let id = *state.windows.last_key_value().unwrap().0;
+        assert!(state.windows[&id].mapped);
+        (id, toplevel)
+    }
+
+    #[test]
+    fn legacy_window_settings_refresh_decoration_negotiation() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::legacy_window_settings_refresh_decoration_negotiation"
+            ),
+            |_| {
+                use wayland_protocols::xdg::decoration::zv1::client::{
+                    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+                    zxdg_toplevel_decoration_v1::Mode,
+                };
+                let (mut display, _event_loop, mut state) = fixture();
+                crate::test_support::add_output(&mut state, "test-0", (0, 0), (800, 600));
+                let mut config = state.config.clone();
+                config.decorations.mode = DecorationModeConfig::Server;
+                state.apply_config(config).unwrap();
+                let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+                let (_id, toplevel) = map_window(&mut client, &mut display, &mut state);
+                let manager = client.bind::<ZxdgDecorationManagerV1>(1);
+                let _decoration = manager.get_toplevel_decoration(&toplevel, &client.handle(), ());
+                client.dispatch(&mut display, &mut state);
+                assert_eq!(
+                    client.events.decoration_modes.last(),
+                    Some(&Mode::ServerSide)
+                );
+                assert!(state.set_window_settings(32, 2, 12, false));
+                client.dispatch(&mut display, &mut state);
+                assert_eq!(
+                    client.events.decoration_modes.last(),
+                    Some(&Mode::ClientSide)
+                );
+                assert!(state.set_window_settings(40, 3, 24, true));
+                client.dispatch(&mut display, &mut state);
+                assert_eq!(
+                    client.events.decoration_modes.last(),
+                    Some(&Mode::ServerSide)
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn layout_updates_reach_all_workspaces_and_failed_renames_preserve_window_state() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::layout_updates_reach_all_workspaces_and_failed_renames_preserve_window_state"
+            ),
+            |_| {
+                let (mut display, _event_loop, mut state) = fixture();
+                crate::test_support::add_output(&mut state, "test-0", (0, 0), (800, 600));
+                crate::test_support::add_output(&mut state, "test-1", (800, 0), (800, 600));
+                let mut config = state.config.clone();
+                config.window.layout = WindowLayout::Tiling;
+                config.decorations.mode = DecorationModeConfig::Server;
+                state.apply_config(config).unwrap();
+                let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+                let (first, _) = map_window(&mut client, &mut display, &mut state);
+                state.set_focused_output_at((900.0, 100.0).into());
+                let (second, _) = map_window(&mut client, &mut display, &mut state);
+                assert_ne!(
+                    state.windows[&first].workspace,
+                    state.windows[&second].workspace
+                );
+                assert!(state.set_layout_settings("tiling", 40, 12));
+                client.dispatch(&mut display, &mut state);
+                let border = state.decoration_theme().border_width;
+                for (id, x) in [(first, 0), (second, 800)] {
+                    assert_eq!(
+                        state.space.element_location(&state.windows[&id].window),
+                        Some((x + 40 + border, 40 + border).into())
+                    );
+                }
+                let locations: Vec<_> = [first, second]
+                    .into_iter()
+                    .map(|id| state.space.element_location(&state.windows[&id].window))
+                    .collect();
+                let workspaces: Vec<_> = [first, second]
+                    .into_iter()
+                    .map(|id| state.windows[&id].workspace)
+                    .collect();
+                let previous = state.config.clone();
+                let path = crate::config::user_config_path();
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+                assert!(!state.set_layout_settings("floating", 64, 24));
+                let mut next = previous.clone();
+                next.workspaces.count = 1;
+                assert!(!state.set_configuration(&toml::to_string(&next).unwrap()));
+                assert_eq!(state.config, previous);
+                assert_eq!(
+                    state.list_workspaces().len(),
+                    previous.workspaces.count as usize
+                );
+                assert_eq!(
+                    [first, second]
+                        .into_iter()
+                        .map(|id| state.space.element_location(&state.windows[&id].window))
+                        .collect::<Vec<_>>(),
+                    locations
+                );
+                assert_eq!(
+                    [first, second]
+                        .into_iter()
+                        .map(|id| state.windows[&id].workspace)
+                        .collect::<Vec<_>>(),
+                    workspaces
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn configured_shortcuts_share_the_configuration_commit_boundary() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::configured_shortcuts_share_the_configuration_commit_boundary"
+            ),
+            |_| {
+                let (_display, _event_loop, mut state) = fixture();
+                let binding = ShortcutBinding {
+                    accelerator: "Super+Return".into(),
+                    command: ShortcutCommand::Execute,
+                    argument: Some("true".into()),
+                };
+                assert!(state.set_configured_shortcuts(vec![binding]));
+                assert_eq!(state.config.bindings.len(), 1);
+                assert_eq!(read_configuration(), state.config);
+                let previous = state.config.clone();
+                let bindings = state.configured_shortcuts();
+                let path = crate::config::user_config_path();
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+                assert!(!state.set_configured_shortcuts(Vec::new()));
+                assert_eq!(state.config, previous);
+                assert_eq!(state.configured_shortcuts(), bindings);
+            },
+        );
+    }
+
+    #[test]
+    fn rejected_configuration_is_never_persisted() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::rejected_configuration_is_never_persisted"
+            ),
+            |_| {
+                let (_display, _event_loop, mut state) = fixture();
+                assert!(state.set_layout_settings("floating", 16, 12));
+                let previous = state.config.clone();
+                let saved = fs::read(crate::config::user_config_path()).unwrap();
+                assert!(!state.set_layout_settings("tiling", 129, 12));
+                assert!(!state.set_window_settings(5, 8, 12, true));
+                assert!(!state.set_configuration("not valid TOML"));
+                let mut next = state.config.clone();
+                next.input.keyboard.layout = "blair_missing_layout".into();
+                assert!(!state.set_configuration(&toml::to_string(&next).unwrap()));
+                assert_eq!(state.config, previous);
+                assert_eq!(fs::read(crate::config::user_config_path()).unwrap(), saved);
+            },
+        );
     }
 }

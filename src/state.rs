@@ -702,7 +702,15 @@ impl BlairState {
 
     /// Applies the parts of a successfully parsed configuration that can
     /// safely change while the compositor is running.
-    pub fn apply_config(&mut self, mut next: CompositorConfig) -> Result<(), String> {
+    pub fn apply_config(&mut self, next: CompositorConfig) -> Result<(), String> {
+        self.apply_config_with(next, |_| Ok(()))
+    }
+
+    pub fn apply_config_with(
+        &mut self,
+        mut next: CompositorConfig,
+        mut persist: impl FnMut(&CompositorConfig) -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.config.general.backend != next.general.backend {
             tracing::warn!(
                 old = %self.config.general.backend,
@@ -745,28 +753,43 @@ impl BlairState {
             .transpose()?;
         let devices_changed = self.config.input.mouse != next.input.mouse
             || self.config.input.touchpad != next.input.touchpad;
-        if devices_changed {
-            self.input_devices
-                .configure(&next.input, &self.config.input)?;
-        }
-        if let (Some(keyboard), Some(keymap)) = (keyboard.as_ref(), keymap) {
-            if let Err(error) = keyboard.set_keymap_from_string(self, keymap) {
-                let error = format!(
-                    "could not apply keyboard layout '{}', variant '{}': {error}",
-                    next.input.keyboard.layout, next.input.keyboard.variant
-                );
-                if devices_changed {
-                    if let Err(rollback) = self
-                        .input_devices
-                        .configure(&self.config.input, &next.input)
-                    {
-                        return Err(format!(
-                            "{error}; could not restore input devices: {rollback}"
-                        ));
-                    }
-                }
-                return Err(error);
+        let rollback = devices_changed
+            .then(|| {
+                self.input_devices
+                    .configure(&next.input, &self.config.input)
+            })
+            .transpose()?;
+        let mut persisted = false;
+        let result = (|| {
+            persist(&next).map_err(|error| format!("could not persist configuration: {error}"))?;
+            persisted = true;
+            if let (Some(keyboard), Some(keymap)) = (keyboard.as_ref(), keymap) {
+                keyboard
+                    .set_keymap_from_string(self, keymap)
+                    .map_err(|error| {
+                        format!(
+                            "could not apply keyboard layout '{}', variant '{}': {error}",
+                            next.input.keyboard.layout, next.input.keyboard.variant,
+                        )
+                    })?;
             }
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = result {
+            let mut errors = vec![error];
+            if let Some(rollback) = rollback {
+                if let Err(error) = self.input_devices.rollback(rollback) {
+                    errors.push(error);
+                }
+            }
+            if persisted {
+                if let Err(error) = persist(&self.config) {
+                    errors.push(format!(
+                        "could not restore persisted configuration: {error}"
+                    ));
+                }
+            }
+            return Err(errors.join("; "));
         }
         let previous = std::mem::replace(&mut self.config, next);
         if previous.power != self.config.power {
@@ -1788,10 +1811,6 @@ impl BlairState {
             .and_then(|(name, _)| self.output_by_name(name))
             .cloned()
             .or_else(|| self.focused_output())
-    }
-
-    pub fn retile_focused_workspace(&mut self) {
-        self.retile(self.focused_workspace_id());
     }
 
     pub fn close_window(&mut self, window: &Window) -> bool {

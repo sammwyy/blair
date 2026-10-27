@@ -11,6 +11,9 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
+};
 use wayland_protocols::{
     ext::session_lock::v1::client::{
         ext_session_lock_manager_v1, ext_session_lock_surface_v1, ext_session_lock_v1,
@@ -27,6 +30,7 @@ pub struct ClientEvents {
     pub keys: Vec<(u32, wl_keyboard::KeyState)>,
     pub keymaps: usize,
     pub repeat_info: Vec<(i32, i32)>,
+    pub decoration_modes: Vec<zxdg_toplevel_decoration_v1::Mode>,
     pub pointer: Vec<wl_pointer::Event>,
     pub touch: Vec<wl_touch::Event>,
     pub locks_confirmed: usize,
@@ -191,6 +195,21 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ClientEvents {
     }
 }
 
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for ClientEvents {
+    fn event(
+        state: &mut Self,
+        _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            state.decoration_modes.push(mode.into_result().unwrap());
+        }
+    }
+}
+
 impl Dispatch<xdg_popup::XdgPopup, ()> for ClientEvents {
     fn event(
         state: &mut Self,
@@ -316,3 +335,69 @@ wayland_client::delegate_noop!(ClientEvents: ignore wayland_protocols::wp::viewp
 
 wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_subcompositor::WlSubcompositor);
 wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_subsurface::WlSubsurface);
+
+pub fn isolated_config_test(name: &str, test: impl FnOnce(&std::path::Path)) {
+    const CHILD: &str = "BLAIR_TEST_CONFIG_CHILD";
+    let name = name
+        .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+        .unwrap_or(name);
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        eprintln!("{CHILD}={name}");
+        let root = std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap());
+        test(&root);
+        return;
+    }
+    let root = std::env::temp_dir().join(format!(
+        "blair-{}-{}",
+        name.replace("::", "-"),
+        std::process::id()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .env("XDG_CONFIG_HOME", &root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stderr).contains(&format!("{CHILD}={name}")),
+        "isolated test failed; artifacts: {}\n{}\n{}",
+        root.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+wayland_client::delegate_noop!(ClientEvents: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
+
+pub fn add_output(
+    state: &mut BlairState,
+    name: &str,
+    location: (i32, i32),
+    size: (i32, i32),
+) -> smithay::output::Output {
+    use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+    let output = Output::new(
+        name.into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "Test".into(),
+            model: "Test".into(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode {
+            size: size.into(),
+            refresh: 60_000,
+        }),
+        None,
+        None,
+        Some(location.into()),
+    );
+    output.create_global::<BlairState>(&state.display_handle);
+    state.add_output(&output, location.into());
+    output
+}

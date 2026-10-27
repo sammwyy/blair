@@ -108,12 +108,12 @@
   output-local coordinates, cursor rendering, keyboard selection, and unlock
   focus restoration are covered by protocol/GPU tests. Completed touch frames
   are cancelled before crossing the lock boundary, and hot corners stay disabled.
-- [ ] Apply the legacy D-Bus layout/window setters through the validated
-  configuration transaction in `src/integrations.rs`. They mutate
-  `self.config` before saving without rebuilding `decoration_theme`, refreshing
-  decoration negotiation, or consistently relaying out workspaces. The file
-  watcher then skips the identical configuration, leaving live behavior stale;
-  failed saves also leave partially changed in-memory settings.
+- [x] Apply legacy D-Bus layout/window setters through the shared validated
+  configuration transaction. Persistence completes before live layout, theme,
+  keymap, decoration negotiation, workspace, or shortcut updates; failed saves
+  preserve live state, and native input changes retain snapshots for rollback.
+  Isolated filesystem/protocol tests cover successful updates, all-workspace
+  relayout, invalid input, failed directory creation, and failed final renames.
 - [x] Reject invalid XKB layouts transactionally. Keymaps are compiled before
   changing devices or configuration; failed preparation preserves keymaps and
   repeat settings. Repeat-only updates keep sticky modifiers and avoid keymap

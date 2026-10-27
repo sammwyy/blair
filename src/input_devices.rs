@@ -12,6 +12,9 @@ pub struct InputDevices {
     errors: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct InputConfigRollback(Vec<Snapshot>);
+
 impl InputDevices {
     pub fn enable_native(&mut self) {
         self.native = true;
@@ -46,15 +49,26 @@ impl InputDevices {
         &mut self,
         config: &InputConfig,
         previous: &InputConfig,
-    ) -> Result<(), String> {
+    ) -> Result<InputConfigRollback, String> {
         self.preflight(config, previous)?;
         if !self.native {
-            return Ok(());
-        } else {
-            self.errors = configure_transaction(&mut self.devices, config)
-                .err()
-                .unwrap_or_default();
+            return Ok(InputConfigRollback(Vec::new()));
         }
+        match configure_transaction(&mut self.devices, config) {
+            Ok(snapshots) => {
+                self.errors.clear();
+                Ok(InputConfigRollback(snapshots))
+            }
+            Err(errors) => {
+                self.errors = errors;
+                self.log_errors();
+                Err(self.errors.join("; "))
+            }
+        }
+    }
+
+    pub fn rollback(&mut self, rollback: InputConfigRollback) -> Result<(), String> {
+        self.errors = restore_transaction(&mut self.devices, rollback.0);
         self.log_errors();
         if self.errors.is_empty() {
             Ok(())
@@ -151,24 +165,32 @@ trait ConfigurableDevice {
 fn configure_transaction<D: ConfigurableDevice>(
     devices: &mut [D],
     config: &InputConfig,
-) -> Result<(), Vec<String>> {
+) -> Result<Vec<D::Snapshot>, Vec<String>> {
     let snapshots: Vec<_> = devices.iter().map(ConfigurableDevice::snapshot).collect();
     let mut errors: Vec<_> = devices
         .iter_mut()
         .flat_map(|device| device.apply(config))
         .collect();
     if errors.is_empty() {
-        return Ok(());
+        return Ok(snapshots);
     }
-    for (device, snapshot) in devices.iter_mut().zip(snapshots) {
-        errors.extend(
-            device
-                .restore(snapshot)
-                .into_iter()
-                .map(|error| format!("Rollback failed: {error}")),
-        );
-    }
+    errors.extend(restore_transaction(devices, snapshots));
     Err(errors)
+}
+
+fn restore_transaction<D: ConfigurableDevice>(
+    devices: &mut [D],
+    snapshots: Vec<D::Snapshot>,
+) -> Vec<String> {
+    if devices.len() != snapshots.len() {
+        return vec!["Rollback failed: the input device list changed during configuration".into()];
+    }
+    devices
+        .iter_mut()
+        .zip(snapshots)
+        .flat_map(|(device, snapshot)| device.restore(snapshot))
+        .map(|error| format!("Rollback failed: {error}"))
+        .collect()
 }
 
 struct NativeDevice {
@@ -212,6 +234,7 @@ pub(crate) fn is_touchpad(tap_fingers: u32, scroll_method: Option<ScrollMethod>)
         )
 }
 
+#[derive(Debug)]
 struct Snapshot {
     profile: Option<AccelProfile>,
     speed: f64,
@@ -391,6 +414,21 @@ mod tests {
         devices[1].reject = false;
         assert!(configure_transaction(&mut devices, &config).is_ok());
         assert!(devices.iter().all(|device| device.speed == 0.8));
+    }
+
+    #[test]
+    fn successful_device_updates_can_restore_the_actual_previous_state() {
+        let mut devices = [DeviceFixture {
+            speed: 0.35,
+            reject: false,
+            reject_rollback: false,
+        }];
+        let mut config = InputConfig::default();
+        config.mouse.sensitivity = 0.8;
+        let rollback = configure_transaction(&mut devices, &config).unwrap();
+        assert_eq!(devices[0].speed, 0.8);
+        assert!(restore_transaction(&mut devices, rollback).is_empty());
+        assert_eq!(devices[0].speed, 0.35);
     }
 
     #[test]
