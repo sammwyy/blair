@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use smithay::{
+    backend::renderer::{element::solid::SolidColorBuffer, Color32F},
     desktop::PopupUngrabStrategy,
     input::pointer::MotionEvent,
     output::Output,
-    reexports::wayland_server::{protocol::wl_output::WlOutput, Resource},
+    reexports::wayland_server::{backend::ObjectId, protocol::wl_output::WlOutput, Resource},
     utils::{Logical, Size, SERIAL_COUNTER},
     wayland::session_lock::{LockSurface, SessionLockHandler, SessionLocker},
 };
@@ -12,6 +15,21 @@ use crate::{input::reset_keyboard_state, state::BlairState};
 pub struct LockSurfaceEntry {
     pub surface: LockSurface,
     pub output: Output,
+}
+
+pub struct PendingSessionLock {
+    confirmation: SessionLocker,
+    outputs: HashSet<Output>,
+}
+
+#[derive(Debug)]
+pub struct SessionLockFrame {
+    lock: ObjectId,
+    output: Output,
+}
+
+pub fn background_buffer() -> SolidColorBuffer {
+    SolidColorBuffer::new((1, 1), Color32F::new(0.0, 0.0, 0.0, 1.0))
 }
 
 impl BlairState {
@@ -44,9 +62,38 @@ impl BlairState {
         self.compositor_cursor = None;
     }
 
-    pub fn confirm_session_lock(&mut self) {
-        if let Some(confirmation) = self.pending_session_lock.take() {
-            confirmation.lock();
+    pub fn pending_session_lock_frame(&self, output: &Output) -> Option<SessionLockFrame> {
+        let pending = self.pending_session_lock.as_ref()?;
+        pending.outputs.contains(output).then(|| SessionLockFrame {
+            lock: pending.confirmation.ext_session_lock().id(),
+            output: output.clone(),
+        })
+    }
+
+    pub fn session_lock_frame_presented(&mut self, frame: SessionLockFrame) {
+        let Some(pending) = self.pending_session_lock.as_mut() else {
+            return;
+        };
+        if pending.confirmation.ext_session_lock().id() != frame.lock
+            || !pending.outputs.remove(&frame.output)
+        {
+            return;
+        }
+        self.confirm_session_lock_if_ready();
+    }
+
+    fn confirm_session_lock_if_ready(&mut self) {
+        if self
+            .pending_session_lock
+            .as_ref()
+            .is_some_and(|pending| pending.outputs.is_empty())
+        {
+            self.pending_session_lock
+                .take()
+                .unwrap()
+                .confirmation
+                .lock();
+            tracing::debug!("session lock confirmed on all outputs");
         }
     }
 
@@ -86,9 +133,14 @@ impl SessionLockHandler for BlairState {
             .client()
             .map(|client| client.id());
         self.session_lock_surfaces.clear();
+        self.session_lock_buffer = background_buffer();
         self.cancel_client_input();
         self.set_keyboard_focus(None);
-        self.pending_session_lock = Some(confirmation);
+        self.pending_session_lock = Some(PendingSessionLock {
+            confirmation,
+            outputs: self.space.outputs().cloned().collect(),
+        });
+        self.confirm_session_lock_if_ready();
         self.request_redraw();
         tracing::info!("session lock engaged");
     }
@@ -152,8 +204,12 @@ mod tests {
     use crate::{state::tests::fixture, test_support::TestClient};
 
     fn add_output(state: &mut BlairState) -> Output {
+        add_named_output(state, "test-0", (0, 0))
+    }
+
+    fn add_named_output(state: &mut BlairState, name: &str, location: (i32, i32)) -> Output {
         let output = Output::new(
-            "test-0".into(),
+            name.into(),
             PhysicalProperties {
                 size: (0, 0).into(),
                 subpixel: Subpixel::Unknown,
@@ -168,11 +224,16 @@ mod tests {
             }),
             None,
             None,
-            Some((0, 0).into()),
+            Some(location.into()),
         );
         output.create_global::<BlairState>(&state.display_handle);
-        state.add_output(&output, (0, 0).into());
+        state.add_output(&output, location.into());
         output
+    }
+
+    fn present_lock_frame(state: &mut BlairState, output: &Output) {
+        let frame = state.pending_session_lock_frame(output).unwrap();
+        state.session_lock_frame_presented(frame);
     }
 
     fn keyboard(client: &TestClient) -> wl_keyboard::WlKeyboard {
@@ -287,7 +348,7 @@ mod tests {
             state.seat.get_keyboard().unwrap().current_focus(),
             Some(locker.surface(&lock_surface))
         );
-        state.confirm_session_lock();
+        present_lock_frame(&mut state, &_output);
         locker.dispatch(&mut display, &mut state);
         lock.unlock_and_destroy();
         locker.dispatch(&mut display, &mut state);
@@ -403,6 +464,86 @@ mod tests {
     }
 
     #[test]
+    fn lock_confirmation_waits_for_a_presented_frame_on_every_output() {
+        let (mut display, _event_loop, mut state) = fixture();
+        let first = add_output(&mut state);
+        let second = add_named_output(&mut state, "test-1", (800, 0));
+        let mut locker = TestClient::new(&mut display, &mut state);
+        let (_lock, _) = lock(&locker);
+        locker.dispatch(&mut display, &mut state);
+        let discarded = state.pending_session_lock_frame(&first).unwrap();
+        drop(discarded);
+        locker.dispatch(&mut display, &mut state);
+        assert_eq!(locker.events.locks_confirmed, 0);
+        let duplicate = state.pending_session_lock_frame(&first).unwrap();
+        present_lock_frame(&mut state, &first);
+        state.session_lock_frame_presented(duplicate);
+        locker.dispatch(&mut display, &mut state);
+        assert_eq!(locker.events.locks_confirmed, 0);
+        assert!(state.pending_session_lock_frame(&first).is_none());
+        present_lock_frame(&mut state, &second);
+        locker.dispatch(&mut display, &mut state);
+        assert_eq!(locker.events.locks_confirmed, 1);
+        assert!(state.pending_session_lock.is_none());
+    }
+
+    #[test]
+    fn presentation_from_a_previous_lock_cannot_confirm_a_new_lock() {
+        use smithay::backend::renderer::element::{solid::SolidColorRenderElement, Element, Kind};
+        let (mut display, _event_loop, mut state) = fixture();
+        let output = add_output(&mut state);
+        let mut locker = TestClient::new(&mut display, &mut state);
+        let (first, _) = lock(&locker);
+        locker.dispatch(&mut display, &mut state);
+        let stale = state.pending_session_lock_frame(&output).unwrap();
+        let background = SolidColorRenderElement::from_buffer(
+            &state.session_lock_buffer,
+            (0, 0),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        )
+        .id()
+        .clone();
+        present_lock_frame(&mut state, &output);
+        locker.dispatch(&mut display, &mut state);
+        first.unlock_and_destroy();
+        locker.dispatch(&mut display, &mut state);
+        let (_second, _) = lock(&locker);
+        locker.dispatch(&mut display, &mut state);
+        assert_ne!(
+            SolidColorRenderElement::from_buffer(
+                &state.session_lock_buffer,
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified
+            )
+            .id(),
+            &background
+        );
+        state.session_lock_frame_presented(stale);
+        locker.dispatch(&mut display, &mut state);
+        assert_eq!(locker.events.locks_confirmed, 1);
+        assert!(state.pending_session_lock.is_some());
+        present_lock_frame(&mut state, &output);
+        locker.dispatch(&mut display, &mut state);
+        assert_eq!(locker.events.locks_confirmed, 2);
+    }
+
+    #[test]
+    fn a_session_without_outputs_can_confirm_its_lock_immediately() {
+        let (mut display, _event_loop, mut state) = fixture();
+        let mut locker = TestClient::new(&mut display, &mut state);
+        let manager = locker.bind::<ext_session_lock_manager_v1::ExtSessionLockManagerV1>(1);
+        let _lock = manager.lock(&locker.handle(), ());
+        locker.dispatch(&mut display, &mut state);
+        assert!(state.session_locked);
+        assert_eq!(locker.events.locks_confirmed, 1);
+        assert!(state.pending_session_lock.is_none());
+    }
+
+    #[test]
     fn rejected_lockers_cannot_add_surfaces_to_another_clients_lock() {
         let (mut display, _event_loop, mut state) = fixture();
         let _output = add_output(&mut state);
@@ -410,7 +551,7 @@ mod tests {
         let _keyboard = keyboard(&locker);
         let (_lock, surface) = lock(&locker);
         locker.dispatch(&mut display, &mut state);
-        state.confirm_session_lock();
+        present_lock_frame(&mut state, &_output);
         locker.dispatch(&mut display, &mut state);
         assert_eq!(locker.events.locks_confirmed, 1);
         let mut rejected = TestClient::new(&mut display, &mut state);

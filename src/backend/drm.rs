@@ -60,6 +60,7 @@ use crate::{
         cursor_is_animated, output_elements, send_frame_callbacks, take_presentation_feedback,
         update_primary_scanout_output, CursorMode, Shaders, CLEAR_COLOR,
     },
+    session_lock::SessionLockFrame,
     state::BlairState,
     stats::FrameTimer,
 };
@@ -67,9 +68,14 @@ use crate::{
 type BlairDrmCompositor = DrmCompositor<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
-    Option<smithay::desktop::utils::OutputPresentationFeedback>,
+    QueuedFrame,
     DrmDeviceFd,
 >;
+
+struct QueuedFrame {
+    feedback: smithay::desktop::utils::OutputPresentationFeedback,
+    session_lock: Option<SessionLockFrame>,
+}
 
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Xrgb8888, Fourcc::Argb8888];
 
@@ -292,13 +298,20 @@ impl DrmBackend {
         update_primary_scanout_output(state, &self.output, &frame.states);
         if damaged {
             let feedback = take_presentation_feedback(state, &self.output, &frame.states);
-            match self.compositor.queue_frame(Some(feedback)) {
+            let queued = QueuedFrame {
+                feedback,
+                session_lock: state.pending_session_lock_frame(&self.output),
+            };
+            match self.compositor.queue_frame(queued) {
                 Ok(()) => {
-                    state.confirm_session_lock();
                     self.pacer.frame_queued(state);
                     self.frames.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(error) => tracing::warn!(%error, "failed to queue the frame"),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to queue the frame");
+                    self.compositor.reset_buffer_ages();
+                    self.pacer.keep_awake(state, true);
+                }
             }
         }
         send_frame_callbacks(state, &self.output, state.clock_now());
@@ -317,19 +330,26 @@ impl DrmBackend {
         };
         let sequence = metadata.map(|metadata| metadata.sequence).unwrap_or(0);
         match self.compositor.frame_submitted() {
-            Ok(Some(Some(mut feedback))) => {
+            Ok(Some(mut frame)) => {
                 let flags = wp_presentation_feedback::Kind::Vsync
                     | wp_presentation_feedback::Kind::HwClock
                     | wp_presentation_feedback::Kind::HwCompletion;
-                feedback.presented::<_, smithay::utils::Monotonic>(
+                frame.feedback.presented::<_, smithay::utils::Monotonic>(
                     presentation_time,
                     Refresh::fixed(self.refresh_interval),
                     u64::from(sequence),
                     flags,
                 );
+                if let Some(lock) = frame.session_lock {
+                    state.session_lock_frame_presented(lock);
+                }
             }
             Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "frame submission failed"),
+            Err(error) => {
+                tracing::warn!(%error, "frame submission failed");
+                self.compositor.reset_buffer_ages();
+                state.request_redraw();
+            }
         }
         self.timer.record_presented(Instant::now());
         self.dispatch_redraw(state);

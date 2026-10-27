@@ -86,11 +86,11 @@
   grabs, and clears normal pointer/touch focus. Only the accepted locker may
   add lock surfaces. In-process Wayland tests verify key delivery during
   pending/active locks, unlock restoration, rejected lockers, and grab teardown.
-- [ ] Confirm DRM session locks after the locked frame is presented.
-  `src/backend/drm.rs::render` calls `confirm_session_lock` immediately after
-  `queue_frame`, before `on_vblank`. `ext-session-lock-v1` requires the locked
-  frame to have reached every output before sending `locked`; otherwise a
-  locker that suspends on confirmation can race with the old visible frame.
+- [x] Confirm DRM session locks after successful presentation. Queued frames
+  carry the lock identity and output; only `on_vblank` completes their lock
+  confirmations after `frame_submitted` succeeds. All active outputs must
+  present; duplicate, discarded, and previous-lock frames cannot confirm a
+  pending lock. Protocol tests cover these transitions and headless sessions.
 - [ ] Hold a logind sleep-delay inhibitor until the locker has confirmed the
   session lock. `monitor_sleep` in the D-Bus integration only queues a command
   on `PrepareForSleep(true)`, and `src/session_lock.rs::prepare_for_sleep`

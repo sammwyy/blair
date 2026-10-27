@@ -106,6 +106,7 @@ impl WinitData {
             CursorMode::HostNamed,
         );
         let build = build_start.elapsed();
+        let session_lock_frame = state.pending_session_lock_frame(&self.output);
 
         let render_start = Instant::now();
         let age = self.age;
@@ -113,6 +114,7 @@ impl WinitData {
             Ok(bound) => bound,
             Err(error) => {
                 tracing::warn!(%error, "failed to bind the host surface");
+                self.pacer.keep_awake(state, true);
                 return;
             }
         };
@@ -132,6 +134,8 @@ impl WinitData {
             ),
             Err(error) => {
                 tracing::warn!(%error, "render failed");
+                self.age = 0;
+                self.pacer.keep_awake(state, true);
                 return;
             }
         };
@@ -143,11 +147,14 @@ impl WinitData {
             match self.backend.submit(Some(&damage)) {
                 Ok(()) => {
                     self.age = self.backend.buffer_age().unwrap_or(0);
-                    state.confirm_session_lock();
+                    if let Some(frame) = session_lock_frame {
+                        state.session_lock_frame_presented(frame);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "failed to submit the host surface");
                     self.age = 0;
+                    self.pacer.keep_awake(state, true);
                 }
             }
         }
