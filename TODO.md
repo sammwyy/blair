@@ -36,7 +36,10 @@
   Winit, both empty and with the shell loaded. Record RSS/PSS, anonymous
   memory, shared mappings, output resolution/scale, and graphics buffers;
   repeat window open/close and configuration changes to distinguish retained
-  allocations from the initial footprint. `src/stats.rs` only tracks frames.
+  allocations from the initial footprint. `PERFORMANCE.md` records the first
+  empty Winit samples and `scripts/measure-nested-memory.py` reproduces that
+  case; DRM, shell-loaded, and allocation-churn measurements remain pending.
+  `src/stats.rs` only tracks frames.
 - [x] Keep one cancellable idle-dimming timer. Input only advances the idle
   deadline; the timer reschedules itself until that deadline and is removed
   when dimming is disabled or its configuration changes. Event-loop tests

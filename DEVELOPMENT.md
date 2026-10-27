@@ -87,6 +87,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+See [PERFORMANCE.md](PERFORMANCE.md) for release-build memory sampling.
+
 ## Local installation
 
 ```bash
