@@ -81,12 +81,11 @@
   calls `src/render/capture.rs::screenshot` synchronously, so large captures
   or slow storage block input, client dispatch, and presentation until the
   entire file is written.
-- [ ] Enforce session-lock focus isolation in every focus/grab path.
-  `src/state.rs::focus_interactive_layer_surface` calls `keyboard.set_focus`
-  directly on layer commits, bypassing the lock check in `set_keyboard_focus`;
-  an exclusive shell layer can regain keyboard focus while locked and receive
-  keys forwarded by `src/input.rs`. Guard popup grabs in `src/handlers.rs`
-  too, and cancel existing normal-client grabs when engaging the lock.
+- [x] Enforce session-lock focus isolation. Layer and window focus paths use
+  the lock policy; lock engagement dismisses popup grabs, finishes interactive
+  grabs, and clears normal pointer/touch focus. Only the accepted locker may
+  add lock surfaces. In-process Wayland tests verify key delivery during
+  pending/active locks, unlock restoration, rejected lockers, and grab teardown.
 - [ ] Confirm DRM session locks after the locked frame is presented.
   `src/backend/drm.rs::render` calls `confirm_session_lock` immediately after
   `queue_frame`, before `on_vblank`. `ext-session-lock-v1` requires the locked
@@ -130,3 +129,7 @@
 - [ ] Consolidate rendering parameters in `src/render/mod.rs` for
   `window_elements` and `titlebar_pixel_source`. Both exceed Clippy's argument
   count threshold; use render context/options types when refactoring the pass.
+- [ ] Validate initial `xdg_popup.grab` requests against an input serial from
+  the focused client. `src/handlers.rs` checks existing grab serials, but with
+  no active grab it accepts arbitrary serials and can focus an unfocused app's
+  popup. Cover pointer- and keyboard-triggered popups and nested grabs.

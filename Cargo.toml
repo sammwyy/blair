@@ -104,3 +104,8 @@ creamui-theme-loader = { version = "0.2.0", path = "../creamui/crates/theme-load
 creamui-fonts = { version = "0.2.0", path = "../creamui/crates/fonts" }
 tracy-client = { version = "0.18", optional = true }
 delib = { version = "0.1.0", path = "../delib" }
+
+[dev-dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

@@ -20,6 +20,8 @@ mod session_lock;
 mod shortcuts;
 mod state;
 mod stats;
+#[cfg(test)]
+mod test_support;
 mod window_integration;
 
 use anyhow::{bail, Context, Result};

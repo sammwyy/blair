@@ -189,6 +189,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracy-client",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "wayland-server",
  "xcursor",
 ]

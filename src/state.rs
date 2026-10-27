@@ -13,7 +13,7 @@ use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::with_renderer_surface_state},
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
-        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
+        LayerSurface as DesktopLayerSurface, PopupGrab, PopupKind, PopupManager, Space, Window,
         WindowSurfaceType,
     },
     input::{
@@ -197,6 +197,7 @@ pub struct BlairState {
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub session_lock_state: SessionLockManagerState,
     pub pending_session_lock: Option<SessionLocker>,
+    pub session_lock_client: Option<ClientId>,
     pub kde_decoration_state: KdeDecorationState,
     pub idle_inhibitors: HashSet<WlSurface>,
     idle_dimming: crate::idle_dim::IdleDimming,
@@ -207,6 +208,7 @@ pub struct BlairState {
 
     pub space: Space<Window>,
     pub popup_manager: PopupManager,
+    pub active_popup_grab: Option<PopupGrab<Self>>,
     pub layer_surfaces: Vec<DesktopLayerSurface>,
     pub windows: BTreeMap<WindowId, ManagedWindow>,
     workspaces: Vec<Workspace>,
@@ -386,6 +388,7 @@ impl BlairState {
             keyboard_shortcuts_inhibit_state,
             session_lock_state,
             pending_session_lock: None,
+            session_lock_client: None,
             kde_decoration_state,
             idle_inhibitors: HashSet::new(),
             idle_dimming: crate::idle_dim::IdleDimming::default(),
@@ -398,6 +401,7 @@ impl BlairState {
             ),
             space: Space::default(),
             popup_manager: PopupManager::default(),
+            active_popup_grab: None,
             layer_surfaces: Vec::new(),
             windows: BTreeMap::new(),
             workspaces,
@@ -569,6 +573,13 @@ impl BlairState {
         profiling::scope!("state_refresh");
         self.space.refresh();
         self.popup_manager.cleanup();
+        if self
+            .active_popup_grab
+            .as_ref()
+            .is_some_and(PopupGrab::has_ended)
+        {
+            self.active_popup_grab = None;
+        }
         self.layer_surfaces.retain(|layer| layer.alive());
         self.idle_inhibitors.retain(|surface| surface.alive());
         self.prune_finished_animations();
@@ -1955,7 +1966,7 @@ impl BlairState {
     }
 
     pub fn begin_move(&mut self, window: &Window, serial: Serial, button: u32) -> bool {
-        if !self.window_floats(window) || self.window_is_fullscreen(window) {
+        if self.session_locked || !self.window_floats(window) || self.window_is_fullscreen(window) {
             return false;
         }
         let (Some(pointer), Some(mut geometry)) =
@@ -2004,7 +2015,11 @@ impl BlairState {
         serial: Serial,
         button: u32,
     ) -> bool {
-        if edges.is_empty() || !self.window_floats(window) || self.window_is_fullscreen(window) {
+        if self.session_locked
+            || edges.is_empty()
+            || !self.window_floats(window)
+            || self.window_is_fullscreen(window)
+        {
             return false;
         }
         let (Some(pointer), Some(geometry), Some(id)) = (
@@ -2056,6 +2071,9 @@ impl BlairState {
     }
 
     pub fn focus_interactive_layer_surface(&mut self, surface: &WlSurface) {
+        if self.session_locked {
+            return;
+        }
         let Some(layer) = self
             .layer_surfaces
             .iter()
@@ -2075,8 +2093,7 @@ impl BlairState {
             KeyboardInteractivity::None => false,
         };
         if wants_focus && keyboard.current_focus().as_ref() != Some(surface) {
-            let surface = surface.clone();
-            keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
+            self.set_keyboard_focus(Some(surface.clone()));
         }
     }
 
@@ -2089,9 +2106,6 @@ impl BlairState {
             let target = self
                 .focused_workspace_window()
                 .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-            }
             self.set_keyboard_focus(target);
         }
         self.mark_pointer_focus_dirty();

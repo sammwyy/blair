@@ -175,6 +175,10 @@ impl XdgShellHandler for BlairState {
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        if self.session_locked {
+            surface.send_popup_done();
+            return;
+        }
         let Some(seat) = Seat::<Self>::from_resource(&seat) else {
             return;
         };
@@ -197,8 +201,6 @@ impl XdgShellHandler for BlairState {
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
-            keyboard.set_focus(self, grab.current_grab(), serial);
-            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         }
         if let Some(pointer) = seat.get_pointer() {
             if pointer.is_grabbed()
@@ -208,8 +210,15 @@ impl XdgShellHandler for BlairState {
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
+        }
+        if let Some(keyboard) = seat.get_keyboard() {
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
+        self.active_popup_grab = Some(grab);
     }
 
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
@@ -276,6 +285,9 @@ impl BlairState {
         seat: &WlSeat,
         serial: Serial,
     ) -> Option<(smithay::desktop::Window, u32)> {
+        if self.session_locked {
+            return None;
+        }
         let seat = Seat::<Self>::from_resource(seat)?;
         let pointer = seat.get_pointer()?;
         if !pointer.has_grab(serial) {

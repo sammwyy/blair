@@ -822,9 +822,7 @@ fn press_target(
         }) => {
             tracing::trace!(?layer, can_focus, "click hit a layer surface");
             if can_focus {
-                if let Some(keyboard) = state.seat.get_keyboard() {
-                    keyboard.set_focus(state, Some(surface), serial);
-                }
+                state.set_keyboard_focus(Some(surface));
             } else if matches!(layer, WlrLayer::Bottom | WlrLayer::Background) {
                 state.set_keyboard_focus(None);
             }
