@@ -3,10 +3,12 @@ use zbus::zvariant::Type;
 
 use blair_protocol::{Rect, WindowId, WindowInfo, WorkspaceInfo};
 
+pub type DbusInputDevice = (String, String, bool, bool, Vec<String>, bool, bool, bool);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct DbusInputCapabilities {
     pub backend: String,
-    pub devices: Vec<(String, String, bool, bool, Vec<String>, bool, bool, bool)>,
+    pub devices: Vec<DbusInputDevice>,
     pub errors: Vec<String>,
 }
 

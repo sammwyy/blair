@@ -2616,9 +2616,7 @@ impl BlairState {
     /// client surface, so no frame pixels are reserved around the window.
     pub fn window_has_overlay_controls(&self, window: &Window) -> bool {
         (self.config.decorations.mode == DecorationModeConfig::Hybrid
-            || window_integration::hybrid_requested(
-                window.wl_surface().as_ref().map(|surface| &**surface),
-            ))
+            || window_integration::hybrid_requested(window.wl_surface().as_deref()))
             && self.window_has_server_decoration(window)
     }
 

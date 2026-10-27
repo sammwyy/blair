@@ -5,20 +5,11 @@ use smithay::{
     reexports::input::{AccelProfile, Device, ScrollMethod},
 };
 
+#[derive(Default)]
 pub struct InputDevices {
     native: bool,
     devices: Vec<NativeDevice>,
     errors: Vec<String>,
-}
-
-impl Default for InputDevices {
-    fn default() -> Self {
-        Self {
-            native: false,
-            devices: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
 }
 
 impl InputDevices {

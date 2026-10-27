@@ -738,9 +738,9 @@ fn move_pointer(
 fn update_hovered_button(state: &mut BlairState, location: Point<f64, Logical>) {
     let target = pointer_target(state, location);
     let hovered = match &target {
-        Some(PointerTarget::Window { window, part, .. }) => state
-            .window_id(window)
-            .and_then(|id| decoration_button(*part).map(|button| (id, button))),
+        Some(PointerTarget::Window { window, part, .. }) => {
+            state.window_id(window).zip(decoration_button(*part))
+        }
         _ => None,
     };
     state.hovered_button = hovered;

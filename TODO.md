@@ -125,3 +125,6 @@
   callbacks when `send_frame_callbacks` is already called during a repaint;
   it does not schedule one. Hidden clients can wait indefinitely when the
   visible workspace is idle despite the intended roughly one-second cadence.
+- [ ] Consolidate rendering parameters in `src/render/mod.rs` for
+  `window_elements` and `titlebar_pixel_source`. Both exceed Clippy's argument
+  count threshold; use render context/options types when refactoring the pass.

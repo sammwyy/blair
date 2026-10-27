@@ -122,9 +122,10 @@ impl ShortcutRegistry {
             self.modifier_chord_used = false;
             pending
         } else {
-            if self.pending_modifiers.is_none() {
-                self.pending_modifiers = Some(mods);
-            } else if modifier_count(mods) > modifier_count(self.pending_modifiers.unwrap()) {
+            if self
+                .pending_modifiers
+                .is_none_or(|pending| modifier_count(mods) > modifier_count(pending))
+            {
                 self.pending_modifiers = Some(mods);
             }
             None
