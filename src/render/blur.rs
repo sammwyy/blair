@@ -27,7 +27,7 @@ use smithay::{
 
 use super::{
     clip::local_from_ndc, layer_elements, window_elements, FrameContext, OutputRenderElement,
-    RoundedClip, Shaders, CLEAR_COLOR,
+    RoundedClip, Shaders, WindowRenderContext, CLEAR_COLOR,
 };
 use crate::state::BlairState;
 
@@ -123,17 +123,14 @@ pub(super) fn push_backdrop(
     }
 
     let mut backdrop = Vec::new();
+    let window_context = WindowRenderContext {
+        output,
+        frame: ctx,
+        shaders: Some(shaders),
+        font,
+    };
     for window in windows_behind.iter().rev() {
-        window_elements(
-            renderer,
-            state,
-            output,
-            window,
-            ctx,
-            Some(shaders),
-            font,
-            &mut backdrop,
-        );
+        window_elements(renderer, state, window, &window_context, &mut backdrop);
     }
     layer_elements(
         renderer,

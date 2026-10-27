@@ -63,6 +63,8 @@
   allocates the full available title rectangle even for a short title;
   `WindowDecoration` retains separate CPU buffers and renderer textures per
   window. The title allocation grows with the square of the buffer scale.
+  Replace formatted title/button/icon cache keys with typed state so cache
+  hits do not allocate temporary strings on every rendered frame.
 - [ ] Reuse the magnifier texture, damage tracker, and render-element ID in
   `src/render/magnify.rs`. Each zoomed repaint allocates an output-sized RGBA
   texture, rebuilds the tracker with buffer age zero, and waits synchronously
@@ -130,9 +132,10 @@
   callbacks when `send_frame_callbacks` is already called during a repaint;
   it does not schedule one. Hidden clients can wait indefinitely when the
   visible workspace is idle despite the intended roughly one-second cadence.
-- [ ] Consolidate rendering parameters in `src/render/mod.rs` for
-  `window_elements` and `titlebar_pixel_source`. Both exceed Clippy's argument
-  count threshold; use render context/options types when refactoring the pass.
+- [x] Consolidate window rendering parameters into `WindowRenderContext` and
+  titlebar sampling parameters into `TitlebarSampleParams`. Both rendering
+  helpers now use explicit context/options types without argument-count lint
+  suppressions.
 - [ ] Validate initial `xdg_popup.grab` requests against an input serial from
   the focused client. `src/handlers.rs` checks existing grab serials, but with
   no active grab it accepts arbitrary serials and can focus an unfocused app's

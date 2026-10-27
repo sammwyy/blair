@@ -349,17 +349,14 @@ fn scene_elements(
             &mut elements,
         );
     }
+    let window_context = WindowRenderContext {
+        output,
+        frame: &ctx,
+        shaders,
+        font: &font,
+    };
     for (index, window) in windows.iter().enumerate().rev() {
-        window_elements(
-            renderer,
-            state,
-            output,
-            window,
-            &ctx,
-            shaders,
-            &font,
-            &mut elements,
-        );
+        window_elements(renderer, state, window, &window_context, &mut elements);
         push_theme_titlebar_blur(
             renderer,
             state,
@@ -765,16 +762,27 @@ fn layer_blur_elements(
     }
 }
 
+#[derive(Clone, Copy)]
+struct WindowRenderContext<'a> {
+    output: &'a Output,
+    frame: &'a FrameContext,
+    shaders: Option<&'a Shaders>,
+    font: &'a creamui_fonts::FontFace,
+}
+
 fn window_elements(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
-    output: &Output,
     window: &Window,
-    ctx: &FrameContext,
-    shaders: Option<&Shaders>,
-    font: &creamui_fonts::FontFace,
+    context: &WindowRenderContext<'_>,
     elements: &mut Vec<OutputRenderElement>,
 ) {
+    let WindowRenderContext {
+        output,
+        frame: ctx,
+        shaders,
+        font,
+    } = *context;
     let (Some(frame), Some(surface), Some(id)) = (
         window_frame(state, window),
         window.wl_surface(),
@@ -822,10 +830,12 @@ fn window_elements(
                 decoration,
                 &surface,
                 window,
-                frame.client.size,
-                scale,
-                shaders,
-                mode,
+                TitlebarSampleParams {
+                    size: frame.client.size,
+                    scale,
+                    shaders,
+                    mode,
+                },
             )
         }
         _ => {
@@ -1161,17 +1171,27 @@ struct SampledTitlebar {
     dominant: Option<[u8; 4]>,
 }
 
+struct TitlebarSampleParams<'a> {
+    size: Size<i32, Logical>,
+    scale: f64,
+    shaders: &'a Shaders,
+    mode: TitlebarColorMode,
+}
+
 /// Refreshes the window's cached titlebar strip and returns it.
 fn titlebar_pixel_source(
     renderer: &mut GlesRenderer,
     decoration: &mut WindowDecoration,
     surface: &WlSurface,
     window: &Window,
-    size: smithay::utils::Size<i32, Logical>,
-    scale: f64,
-    shaders: &Shaders,
-    mode: TitlebarColorMode,
+    params: TitlebarSampleParams<'_>,
 ) -> Option<SampledTitlebar> {
+    let TitlebarSampleParams {
+        size,
+        scale,
+        shaders,
+        mode,
+    } = params;
     let size = size.to_physical_precise_round(scale);
     if size.is_empty() {
         decoration.strip = None;
