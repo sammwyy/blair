@@ -41,15 +41,14 @@
   deadline; the timer reschedules itself until that deadline and is removed
   when dimming is disabled or its configuration changes. Event-loop tests
   cover sustained input, cancellation, reconfiguration, and expiry.
-- [ ] Lazily initialize the application-icon resolver and retain only the
-  desktop-entry fields needed for icons. `BlairState::new` constructs it
-  even when no window icons are drawn; `ApplicationIconResolver` in
-  `../delib/src/application_icons.rs` eagerly parses and retains every
-  installed desktop entry, including localized names and unrelated fields.
-- [ ] Add a byte/entry budget and eviction policy to `IconCache` in
-  `src/decorations/icons.rs`. Every distinct `(app_id, size)` retains decoded
-  pixels or a negative result until the icon theme changes; closing windows
-  never evicts entries, and clients can change their app IDs repeatedly.
+- [ ] Retain only the desktop-entry fields needed for application icons in
+  `../delib/src/application_icons.rs`. Blair now initializes the resolver on
+  the first icon lookup, but the resolver still retains every installed
+  desktop entry, including localized names and unrelated fields.
+- [x] Bound `IconCache` in `src/decorations/icons.rs` to 256 entries and 8 MiB
+  of decoded pixels and app-ID storage. Least-recently-used eviction includes
+  negative results; oversized entries are not retained, and theme changes
+  release all cached entries and reset lazy resolver initialization.
 - [ ] Bound font-fallback file retention used by decoration titles.
   `fallback_face` in `../creamui/crates/fonts/src/lib.rs` maps and caches
   every font it tries, including candidates that do not cover the requested
