@@ -185,6 +185,7 @@ pub struct BlairState {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
+    pub touch_points: HashMap<smithay::backend::input::TouchSlot, Point<f64, Logical>>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub data_control_state: DataControlState,
@@ -376,6 +377,7 @@ impl BlairState {
             xdg_shell_state,
             shm_state,
             seat_state,
+            touch_points: HashMap::new(),
             data_device_state,
             primary_selection_state,
             data_control_state,
@@ -1529,10 +1531,7 @@ impl BlairState {
             return;
         };
         let target = if self.session_locked {
-            self.session_lock_surfaces
-                .iter()
-                .find(|entry| entry.surface.alive())
-                .map(|entry| entry.surface.wl_surface().clone())
+            self.session_lock_focus(surface)
         } else {
             self.exclusive_layer_surface().or(surface)
         };
@@ -2175,6 +2174,14 @@ impl BlairState {
             self.commit_window(id, &root, surface == &root);
         }
 
+        if self.session_locked
+            && self
+                .session_lock_surfaces
+                .iter()
+                .any(|entry| entry.surface.wl_surface() == &root)
+        {
+            self.mark_pointer_focus_dirty();
+        }
         self.popup_manager.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popup_manager.find_popup(surface) {
             if !popup.is_initial_configure_sent() {

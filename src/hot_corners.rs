@@ -130,7 +130,8 @@ impl HotCornerState {
 
 impl BlairState {
     fn hot_corner_at(&self, location: Point<f64, Logical>) -> Option<(String, Corner)> {
-        if !self.config.hot_corners.enabled
+        if self.session_locked
+            || !self.config.hot_corners.enabled
             || self
                 .seat
                 .get_pointer()

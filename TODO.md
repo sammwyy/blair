@@ -3,7 +3,8 @@
 - [ ] Add output hotplug support. Both backends currently create exactly one
   output at startup. `OutputAdded` is emitted once; `OutputRemoved` is defined
   in the protocol but never emitted because neither backend tears down or adds
-  outputs at runtime.
+  outputs at runtime. Newly added outputs must join any pending session-lock
+  presentation barrier and display locked content before becoming visible.
 - [ ] Support multi-monitor output in the DRM backend. It currently drives a
   single connector (the one with the most reliable detected mode); extended
   and mirrored output are not implemented.
@@ -102,10 +103,11 @@
   merely spawns the locker. Suspend can therefore occur before it connects
   or before a locked frame is presented. Provide this policy independently
   of whether the optional shell D-Bus API is enabled.
-- [ ] Route pointer and touch input to session-lock surfaces. The locked
-  branch of `src/input.rs::process_input_event` forwards only keyboard events
-  and discards everything else, making lock-screen buttons and touch-based
-  authentication unusable. Lock-surface hit testing must exclude normal clients.
+- [x] Route pointer and touch input to session-lock surfaces. Shared input
+  dispatch uses lock-only hit testing, including regions and subsurfaces;
+  output-local coordinates, cursor rendering, keyboard selection, and unlock
+  focus restoration are covered by protocol/GPU tests. Completed touch frames
+  are cancelled before crossing the lock boundary, and hot corners stay disabled.
 - [ ] Apply the legacy D-Bus layout/window setters through the validated
   configuration transaction in `src/integrations.rs`. They mutate
   `self.config` before saving without rebuilding `decoration_theme`, refreshing

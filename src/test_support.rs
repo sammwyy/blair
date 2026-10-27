@@ -1,9 +1,12 @@
+pub mod input;
+
 use std::{os::unix::net::UnixStream, sync::Arc};
 
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
 use wayland_client::{
     protocol::{
-        wl_callback, wl_compositor, wl_keyboard, wl_output, wl_registry, wl_seat, wl_surface,
+        wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
+        wl_surface, wl_touch,
     },
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
@@ -22,6 +25,8 @@ use crate::state::{BlairState, ClientState};
 pub struct ClientEvents {
     pub globals: Vec<(u32, String, u32)>,
     pub keys: Vec<(u32, wl_keyboard::KeyState)>,
+    pub pointer: Vec<wl_pointer::Event>,
+    pub touch: Vec<wl_touch::Event>,
     pub locks_confirmed: usize,
     pub locks_rejected: usize,
     pub popups_dismissed: usize,
@@ -76,6 +81,32 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientEvents {
         {
             state.keys.push((key, key_state.into_result().unwrap()));
         }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for ClientEvents {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.pointer.push(event);
+    }
+}
+
+impl Dispatch<wl_touch::WlTouch, ()> for ClientEvents {
+    fn event(
+        state: &mut Self,
+        _: &wl_touch::WlTouch,
+        event: wl_touch::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.touch.push(event);
     }
 }
 
@@ -219,8 +250,14 @@ impl TestClient {
             .iter()
             .find(|(_, interface, _)| interface == I::interface().name)
             .unwrap_or_else(|| panic!("missing global {}", I::interface().name));
-        self.registry
-            .bind(*name, version.min(*advertised), &self.handle(), ())
+        self.bind_global(*name, version.min(*advertised))
+    }
+
+    pub fn bind_global<I: Proxy + 'static>(&self, name: u32, version: u32) -> I
+    where
+        ClientEvents: Dispatch<I, ()>,
+    {
+        self.registry.bind(name, version, &self.handle(), ())
     }
 
     pub fn dispatch(&mut self, display: &mut Display<BlairState>, state: &mut BlairState) {
@@ -230,6 +267,21 @@ impl TestClient {
         display.flush_clients().unwrap();
         self.connection.prepare_read().unwrap().read().unwrap();
         self.queue.dispatch_pending(&mut self.events).unwrap();
+    }
+
+    pub fn paint_surface(&self, surface: &wl_surface::WlSurface, width: i32, height: i32) {
+        use wayland_protocols::wp::{
+            single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1,
+            viewporter::client::wp_viewporter::WpViewporter,
+        };
+        let manager = self.bind::<WpSinglePixelBufferManagerV1>(1);
+        let buffer = manager.create_u32_rgba_buffer(u32::MAX, 0, 0, u32::MAX, &self.handle(), ());
+        let viewporter = self.bind::<WpViewporter>(1);
+        let viewport = viewporter.get_viewport(surface, &self.handle(), ());
+        viewport.set_destination(width, height);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, 1, 1);
+        surface.commit();
     }
 
     pub fn surface(
@@ -252,3 +304,11 @@ wayland_client::delegate_noop!(ClientEvents: ignore xdg_toplevel::XdgToplevel);
 wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientEvents: ignore blair_blur_protocol::client::blair_blur_manager_v1::BlairBlurManagerV1);
 wayland_client::delegate_noop!(ClientEvents: ignore blair_blur_protocol::client::blair_blur_v1::BlairBlurV1);
+
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_buffer::WlBuffer);
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1);
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter);
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport);
+
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_subcompositor::WlSubcompositor);
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_subsurface::WlSubsurface);

@@ -230,13 +230,9 @@ fn scene_elements(
         viewport,
     };
 
-    let font = creamui_fonts::resolve(
-        &creamui_fonts::preferred_family(),
-        creamui_fonts::FontWeight::Regular,
-    );
-
     let mut elements = Vec::new();
     if state.session_locked {
+        cursor_elements(renderer, state, output, &ctx, cursor_mode, &mut elements);
         for entry in state
             .session_lock_surfaces
             .iter()
@@ -264,6 +260,11 @@ fn scene_elements(
         );
         return elements;
     }
+    let font = creamui_fonts::resolve(
+        &creamui_fonts::preferred_family(),
+        creamui_fonts::FontWeight::Regular,
+    );
+
     if state.config.accessibility.visual_alerts
         && state
             .visual_bell_until

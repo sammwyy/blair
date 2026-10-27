@@ -6,7 +6,7 @@ use smithay::{
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
         TouchEvent,
     },
-    desktop::{layer_map_for_output, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, utils::under_from_surface_tree, Window, WindowSurfaceType},
     input::{
         keyboard::{keysyms, FilterResult},
         pointer::{
@@ -50,6 +50,10 @@ pub trait InputHooks {
 }
 
 pub enum PointerTarget {
+    Lock {
+        surface: WlSurface,
+        origin: Point<f64, Logical>,
+    },
     Layer {
         surface: WlSurface,
         origin: Point<f64, Logical>,
@@ -65,6 +69,25 @@ pub enum PointerTarget {
 
 pub fn pointer_target(state: &BlairState, pos: Point<f64, Logical>) -> Option<PointerTarget> {
     let output = state.output_at(pos)?;
+    if state.session_locked {
+        let origin = state.space.output_geometry(&output)?.loc;
+        return state
+            .session_lock_surfaces
+            .iter()
+            .filter(|entry| entry.output == output && entry.surface.alive())
+            .find_map(|entry| {
+                let (surface, offset) = under_from_surface_tree(
+                    entry.surface.wl_surface(),
+                    pos - origin.to_f64(),
+                    (0, 0),
+                    WindowSurfaceType::ALL,
+                )?;
+                Some(PointerTarget::Lock {
+                    surface,
+                    origin: (origin + offset).to_f64(),
+                })
+            });
+    }
     let windows = z_ordered_windows(state, &output);
     let fullscreen = windows
         .last()
@@ -187,7 +210,8 @@ pub fn surface_under(
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
     match pointer_target(state, pos)? {
-        PointerTarget::Layer {
+        PointerTarget::Lock { surface, origin }
+        | PointerTarget::Layer {
             surface, origin, ..
         } => Some((surface, origin)),
         PointerTarget::Window { surface, .. } => surface,
@@ -199,6 +223,16 @@ pub fn surface_origin(state: &BlairState, surface: &WlSurface) -> Option<Point<f
     let mut root = surface.clone();
     while let Some(parent) = get_parent(&root) {
         root = parent;
+    }
+    if let Some(entry) = state
+        .session_lock_surfaces
+        .iter()
+        .find(|entry| entry.surface.wl_surface() == &root)
+    {
+        return state
+            .space
+            .output_geometry(&entry.output)
+            .map(|geometry| geometry.loc.to_f64());
     }
     if let Some(window) = state
         .space
@@ -221,12 +255,6 @@ pub fn process_input_event<B: InputBackend>(
     hooks: &mut dyn InputHooks,
 ) {
     state.note_input_activity();
-    if state.session_locked {
-        if let InputEvent::Keyboard { event } = event {
-            keyboard_key::<B>(state, event, hooks);
-        }
-        return;
-    }
     match event {
         InputEvent::Keyboard { event } => keyboard_key::<B>(state, event, hooks),
         InputEvent::PointerMotion { event } => {
@@ -336,11 +364,24 @@ pub fn process_input_event<B: InputBackend>(
             let Some(location) = touch_location::<B, _>(state, &event) else {
                 return;
             };
-            let under = surface_under(state, location);
-            if let Some(PointerTarget::Window { window, .. }) = pointer_target(state, location) {
-                state.focus_window(&window);
-            }
+            let under = match pointer_target(state, location) {
+                Some(PointerTarget::Lock { surface, origin }) => {
+                    state.set_keyboard_focus(Some(surface.clone()));
+                    Some((surface, origin))
+                }
+                Some(PointerTarget::Window {
+                    window, surface, ..
+                }) => {
+                    state.focus_window(&window);
+                    surface
+                }
+                Some(PointerTarget::Layer {
+                    surface, origin, ..
+                }) => Some((surface, origin)),
+                None => None,
+            };
             if let Some(touch) = state.seat.get_touch() {
+                state.touch_points.insert(event.slot(), location);
                 touch.down(
                     state,
                     under,
@@ -354,9 +395,13 @@ pub fn process_input_event<B: InputBackend>(
             }
         }
         InputEvent::TouchMotion { event } => {
+            if !state.touch_points.contains_key(&event.slot()) {
+                return;
+            }
             let Some(location) = touch_location::<B, _>(state, &event) else {
                 return;
             };
+            state.touch_points.insert(event.slot(), location);
             let under = surface_under(state, location);
             if let Some(touch) = state.seat.get_touch() {
                 touch.motion(
@@ -371,6 +416,9 @@ pub fn process_input_event<B: InputBackend>(
             }
         }
         InputEvent::TouchUp { event } => {
+            if state.touch_points.remove(&event.slot()).is_none() {
+                return;
+            }
             if let Some(touch) = state.seat.get_touch() {
                 touch.up(
                     state,
@@ -382,17 +430,33 @@ pub fn process_input_event<B: InputBackend>(
                 );
             }
         }
-        InputEvent::TouchCancel { .. } => {
-            if let Some(touch) = state.seat.get_touch() {
-                touch.cancel(state);
-            }
-        }
+        InputEvent::TouchCancel { .. } => cancel_touch_input(state),
         InputEvent::TouchFrame { .. } => {
             if let Some(touch) = state.seat.get_touch() {
                 touch.frame(state);
             }
         }
         _ => {}
+    }
+}
+
+pub(crate) fn cancel_touch_input(state: &mut BlairState) {
+    let points = std::mem::take(&mut state.touch_points);
+    if let Some(touch) = state.seat.get_touch() {
+        touch.unset_grab(state);
+        // Smithay cancels only slots with events pending since the last touch frame.
+        for (slot, location) in points {
+            touch.motion(
+                state,
+                None,
+                &touch::MotionEvent {
+                    slot,
+                    location,
+                    time: state.clock_now().as_millis() as u32,
+                },
+            );
+        }
+        touch.cancel(state);
     }
 }
 
@@ -814,6 +878,10 @@ fn press_target(
     serial: smithay::utils::Serial,
 ) -> bool {
     match pointer_target(state, location) {
+        Some(PointerTarget::Lock { surface, .. }) => {
+            state.set_keyboard_focus(Some(surface));
+            false
+        }
         Some(PointerTarget::Layer {
             surface,
             layer,
