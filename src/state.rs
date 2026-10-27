@@ -23,7 +23,10 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        calloop::{LoopHandle, LoopSignal},
+        calloop::{
+            timer::{TimeoutAction, Timer},
+            LoopHandle, LoopSignal, RegistrationToken,
+        },
         wayland_protocols::xdg::{
             decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
             shell::server::xdg_toplevel,
@@ -196,7 +199,8 @@ pub struct BlairState {
     pub pending_session_lock: Option<SessionLocker>,
     pub kde_decoration_state: KdeDecorationState,
     pub idle_inhibitors: HashSet<WlSurface>,
-    pub idle_dimming: crate::idle_dim::IdleDimming,
+    idle_dimming: crate::idle_dim::IdleDimming,
+    idle_dim_timer: Option<RegistrationToken>,
     pub session_locked: bool,
     pub session_lock_surfaces: Vec<crate::session_lock::LockSurfaceEntry>,
     pub session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer,
@@ -385,6 +389,7 @@ impl BlairState {
             kde_decoration_state,
             idle_inhibitors: HashSet::new(),
             idle_dimming: crate::idle_dim::IdleDimming::default(),
+            idle_dim_timer: None,
             session_locked: false,
             session_lock_surfaces: Vec::new(),
             session_lock_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer::new(
@@ -443,10 +448,7 @@ impl BlairState {
         };
         state.refresh_child_env();
         state.replace_static_bindings(&state.config.bindings.clone());
-        if state.config.power.idle_dim {
-            let generation = state.idle_dimming.activity();
-            state.schedule_idle_dim(generation);
-        }
+        state.schedule_idle_dim();
         state
     }
 
@@ -527,25 +529,33 @@ impl BlairState {
     pub fn note_input_activity(&mut self) {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
-        let generation = self.idle_dimming.activity();
-        self.schedule_idle_dim(generation);
+        self.idle_dimming.activity();
+        self.schedule_idle_dim();
     }
 
-    fn schedule_idle_dim(&mut self, generation: u64) {
-        if !self.config.power.idle_dim {
+    fn schedule_idle_dim(&mut self) {
+        if !self.config.power.idle_dim || self.idle_dim_timer.is_some() {
             return;
         }
-        let timeout = Duration::from_secs(self.config.power.idle_dim_timeout);
-        if let Err(error) = self.loop_handle.insert_source(
-            smithay::reexports::calloop::timer::Timer::from_duration(timeout),
-            move |_, _, state: &mut BlairState| {
-                if state.idle_dimming.generation() == generation {
-                    state.refresh_idle_dimming();
+        let deadline = self
+            .idle_dimming
+            .deadline(self.config.power.idle_dim_timeout);
+        match self.loop_handle.insert_source(
+            Timer::from_deadline(deadline),
+            |_, _, state: &mut BlairState| {
+                let deadline = state
+                    .idle_dimming
+                    .deadline(state.config.power.idle_dim_timeout);
+                if deadline > Instant::now() {
+                    return TimeoutAction::ToInstant(deadline);
                 }
-                smithay::reexports::calloop::timer::TimeoutAction::Drop
+                state.idle_dim_timer = None;
+                state.refresh_idle_dimming();
+                TimeoutAction::Drop
             },
         ) {
-            tracing::warn!(%error, "could not schedule idle dimming");
+            Ok(token) => self.idle_dim_timer = Some(token),
+            Err(error) => tracing::warn!(%error, "could not schedule idle dimming"),
         }
     }
 
@@ -704,8 +714,11 @@ impl BlairState {
         }
         let previous = std::mem::replace(&mut self.config, next);
         if previous.power != self.config.power {
-            let generation = self.idle_dimming.activity();
-            self.schedule_idle_dim(generation);
+            if let Some(token) = self.idle_dim_timer.take() {
+                self.loop_handle.remove(token);
+            }
+            self.idle_dimming.activity();
+            self.schedule_idle_dim();
         }
         if (previous.accessibility.sticky_keys && !self.config.accessibility.sticky_keys)
             || previous.input.keyboard != self.config.input.keyboard
@@ -2782,26 +2795,71 @@ fn client_decoration_request(surface: &WlSurface) -> Option<DecorationMode> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct TestEvents(std::sync::Mutex<Vec<CompositorEvent>>);
 
-    fn fixture() -> (
+    pub(crate) fn fixture() -> (
         smithay::reexports::wayland_server::Display<BlairState>,
         smithay::reexports::calloop::EventLoop<'static, BlairState>,
         BlairState,
     ) {
         let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
         let event_loop = smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
-        let state = BlairState::new(
+        let mut state = BlairState::new(
             display.handle(),
             event_loop.handle(),
             event_loop.get_signal(),
             CompositorConfig::default(),
             Arc::new(TestEvents(std::sync::Mutex::new(Vec::new()))),
         );
+        state.idle_dimming = crate::idle_dim::IdleDimming::without_backlight();
         (display, event_loop, state)
+    }
+
+    #[test]
+    fn idle_dimming_reuses_one_timer_during_sustained_input() {
+        let (_display, mut event_loop, mut state) = fixture();
+        state.config.power.idle_dim = true;
+        state.config.power.idle_dim_timeout = 0;
+        state.note_input_activity();
+        let token = state.idle_dim_timer.unwrap();
+        state.config.power.idle_dim_timeout = 300;
+        for _ in 0..10_000 {
+            state.note_input_activity();
+            assert_eq!(state.idle_dim_timer, Some(token));
+        }
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert_eq!(state.idle_dim_timer, Some(token));
+        assert!(state.loop_handle.update(&token).is_ok());
+
+        let mut config = state.config.clone();
+        config.power.idle_dim = false;
+        state.apply_config(config).unwrap();
+        assert!(state.idle_dim_timer.is_none());
+        assert!(state.loop_handle.update(&token).is_err());
+        state.note_input_activity();
+        assert!(state.idle_dim_timer.is_none());
+    }
+
+    #[test]
+    fn idle_dimming_replaces_the_timer_on_configuration_changes_and_drops_it_on_expiry() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut config = state.config.clone();
+        config.power.idle_dim = true;
+        state.apply_config(config).unwrap();
+        let token = state.idle_dim_timer.unwrap();
+        let mut config = state.config.clone();
+        config.power.idle_dim_timeout = 0;
+        state.apply_config(config).unwrap();
+        assert!(state.loop_handle.update(&token).is_err());
+        let token = state.idle_dim_timer.unwrap();
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert!(state.idle_dim_timer.is_none());
+        assert!(state.loop_handle.update(&token).is_err());
+        state.note_input_activity();
+        assert!(state.idle_dim_timer.is_some());
     }
 
     #[test]

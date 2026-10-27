@@ -37,11 +37,10 @@
   memory, shared mappings, output resolution/scale, and graphics buffers;
   repeat window open/close and configuration changes to distinguish retained
   allocations from the initial footprint. `src/stats.rs` only tracks frames.
-- [ ] Keep one cancellable idle-dimming timer in `src/state.rs`
-  (`note_input_activity`, `schedule_idle_dim`). With `power.idle_dim` enabled,
-  every input event registers another timer; generation checks ignore stale
-  callbacks but retain their allocations until the timeout, which defaults
-  to 300 seconds. Pending timers grow with input rate times timeout.
+- [x] Keep one cancellable idle-dimming timer. Input only advances the idle
+  deadline; the timer reschedules itself until that deadline and is removed
+  when dimming is disabled or its configuration changes. Event-loop tests
+  cover sustained input, cancellation, reconfiguration, and expiry.
 - [ ] Lazily initialize the application-icon resolver and retain only the
   desktop-entry fields needed for icons. `BlairState::new` constructs it
   even when no window icons are drawn; `ApplicationIconResolver` in

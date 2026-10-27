@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::config::PowerConfig;
@@ -45,7 +45,6 @@ pub struct IdleDimming {
     original: Option<u32>,
     dimmed: bool,
     failed: bool,
-    generation: u64,
 }
 
 impl Default for IdleDimming {
@@ -56,22 +55,27 @@ impl Default for IdleDimming {
             original: None,
             dimmed: false,
             failed: false,
-            generation: 0,
         }
     }
 }
 
 impl IdleDimming {
-    pub fn activity(&mut self) -> u64 {
-        self.last_activity = Instant::now();
-        self.failed = false;
-        self.generation = self.generation.wrapping_add(1);
-        self.restore();
-        self.generation
+    #[cfg(test)]
+    pub fn without_backlight() -> Self {
+        Self {
+            backlight: None,
+            ..Self::default()
+        }
     }
 
-    pub fn generation(&self) -> u64 {
-        self.generation
+    pub fn activity(&mut self) {
+        self.last_activity = Instant::now();
+        self.failed = false;
+        self.restore();
+    }
+
+    pub fn deadline(&self, timeout: u64) -> Instant {
+        self.last_activity + Duration::from_secs(timeout)
     }
 
     pub fn tick(&mut self, config: &PowerConfig, inhibited: bool) {
