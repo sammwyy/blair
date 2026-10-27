@@ -64,10 +64,10 @@
   `src/render/magnify.rs`. Each zoomed repaint allocates an output-sized RGBA
   texture, rebuilds the tracker with buffer age zero, and waits synchronously
   for the GPU, forcing a full scene render and new allocation on every frame.
-- [ ] Cancel obsolete repaint/watchdog timers in `FramePacer`
-  (`src/backend/mod.rs`). `frame_presented` clears the pending-frame flag but
-  leaves its watchdog registered, so successful presentations still cause
-  later redraws. Scheduling an earlier wakeup also leaves the old timer alive.
+- [x] Cancel obsolete repaint/watchdog timers in `FramePacer`. Presentation,
+  forced redraws, and mode changes remove pending wakeups; earlier deadlines
+  replace old timers. Event-loop tests also cover missing presentation feedback
+  after an animation wakeup.
 - [ ] Bound integration queues and limit commands processed per event-loop
   iteration. `integrations/blair-integration-dbus/src/backend.rs` uses
   unbounded command/event channels and drains commands until empty;

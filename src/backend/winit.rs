@@ -173,7 +173,7 @@ impl WinitData {
     /// Renders when a repaint is due, at most once per host frame.
     fn dispatch_redraw(&mut self, state: &mut BlairState) {
         if std::mem::take(&mut self.force_redraw) {
-            self.pacer.force_redraw();
+            self.pacer.force_redraw(state);
         }
         if self.pacer.poll(state) {
             self.render(state);

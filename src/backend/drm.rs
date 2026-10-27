@@ -125,6 +125,7 @@ impl DrmBackend {
         self.output
             .change_current_state(Some(mode), None, None, None);
         self.refresh_interval = refresh_interval(mode.refresh);
+        self.pacer.cancel_wakeup(state);
         self.pacer = super::FramePacer::new(self.refresh_interval);
         self.timer.reset_presentation();
         state.output_changed(&self.output);
@@ -309,7 +310,7 @@ impl DrmBackend {
     }
 
     fn on_vblank(&mut self, state: &mut BlairState, metadata: Option<DrmEventMetadata>) {
-        self.pacer.frame_presented();
+        self.pacer.frame_presented(state);
         let presentation_time = match metadata.as_ref().map(|metadata| metadata.time) {
             Some(DrmEventTime::Monotonic(time)) => time,
             _ => state.clock_now(),
@@ -351,7 +352,7 @@ impl DrmBackend {
                 tracing::error!(%error, "failed to reset the DRM compositor state");
             }
             self.compositor.reset_buffers();
-            self.pacer.force_redraw();
+            self.pacer.force_redraw(state);
             self.timer.reset_presentation();
             reset_keyboard_state(state);
             if let Err(error) = state.input_devices.reapply(&state.config.input) {
@@ -363,7 +364,7 @@ impl DrmBackend {
             self.libinput.suspend();
             self.drm.pause();
             // No vblank will arrive for an in-flight buffer once paused.
-            self.pacer.frame_presented();
+            self.pacer.frame_presented(state);
         }
     }
 

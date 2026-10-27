@@ -15,7 +15,7 @@ use smithay::{
             self,
             generic::Generic,
             timer::{TimeoutAction, Timer},
-            EventLoop, Interest, LoopHandle, Mode, PostAction,
+            EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
         },
         wayland_server::Display,
     },
@@ -39,7 +39,7 @@ struct FramePacer {
     redraw_pending: bool,
     frame_pending: bool,
     last_frame: Instant,
-    wakeup_at: Option<Instant>,
+    wakeup: Option<(Instant, RegistrationToken)>,
 }
 
 impl FramePacer {
@@ -49,7 +49,7 @@ impl FramePacer {
             redraw_pending: true,
             frame_pending: false,
             last_frame: Instant::now() - interval,
-            wakeup_at: None,
+            wakeup: None,
         }
     }
 
@@ -59,7 +59,10 @@ impl FramePacer {
             self.redraw_pending = true;
         }
         if self.frame_pending {
-            if self.last_frame.elapsed() < self.interval * MISSED_FRAME_INTERVALS {
+            let elapsed = self.last_frame.elapsed();
+            let timeout = self.interval * MISSED_FRAME_INTERVALS;
+            if elapsed < timeout {
+                self.schedule_wakeup(state, timeout - elapsed);
                 return false;
             }
             tracing::warn!("no presentation feedback for the queued frame, repainting anyway");
@@ -73,6 +76,7 @@ impl FramePacer {
             self.schedule_wakeup(state, self.interval - elapsed);
             return false;
         }
+        self.cancel_wakeup(state);
         self.redraw_pending = false;
         self.last_frame = Instant::now();
         true
@@ -93,37 +97,45 @@ impl FramePacer {
     }
 
     /// The display paced us, so the next repaint may start right away.
-    fn frame_presented(&mut self) {
+    fn frame_presented(&mut self, state: &BlairState) {
+        self.cancel_wakeup(state);
         self.frame_pending = false;
         self.last_frame = Instant::now() - self.interval;
     }
 
-    fn force_redraw(&mut self) {
+    fn force_redraw(&mut self, state: &BlairState) {
+        self.cancel_wakeup(state);
         self.redraw_pending = true;
         self.frame_pending = false;
         self.last_frame = Instant::now() - self.interval;
+    }
+
+    fn cancel_wakeup(&mut self, state: &BlairState) {
+        if let Some((_, token)) = self.wakeup.take() {
+            state.loop_handle.remove(token);
+        }
     }
 
     fn schedule_wakeup(&mut self, state: &mut BlairState, delay: Duration) {
         let now = Instant::now();
         let at = now + delay;
         if self
-            .wakeup_at
-            .is_some_and(|scheduled| scheduled > now && scheduled <= at)
+            .wakeup
+            .is_some_and(|(scheduled, _)| scheduled > now && scheduled <= at)
         {
             return;
         }
-        self.wakeup_at = Some(at);
+        self.cancel_wakeup(state);
         let result = state.loop_handle.insert_source(
-            Timer::from_duration(delay),
+            Timer::from_deadline(at),
             |_, _, state: &mut BlairState| {
                 state.request_redraw();
                 TimeoutAction::Drop
             },
         );
-        if let Err(error) = result {
-            tracing::warn!(%error, "failed to schedule the next repaint");
-            self.wakeup_at = None;
+        match result {
+            Ok(token) => self.wakeup = Some((at, token)),
+            Err(error) => tracing::warn!(%error, "failed to schedule the next repaint"),
         }
     }
 }
@@ -346,5 +358,91 @@ fn import_pending_dmabufs(state: &mut BlairState, renderer: &mut GlesRenderer) {
                 notifier.failed();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::tests::fixture;
+
+    #[test]
+    fn presentation_cancels_the_watchdog_without_an_idle_redraw() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut pacer = FramePacer::new(Duration::from_millis(1));
+        assert!(pacer.poll(&mut state));
+        pacer.frame_queued(&mut state);
+        let (_, token) = pacer.wakeup.unwrap();
+        pacer.frame_presented(&state);
+        assert!(state.loop_handle.update(&token).is_err());
+        event_loop
+            .dispatch(Duration::from_millis(20), &mut state)
+            .unwrap();
+        assert!(!pacer.poll(&mut state));
+    }
+
+    #[test]
+    fn an_earlier_repaint_cancels_the_previous_timer_and_fires_once() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut pacer = FramePacer::new(Duration::from_millis(1));
+        assert!(pacer.poll(&mut state));
+        pacer.schedule_wakeup(&mut state, Duration::from_secs(1));
+        let (_, token) = pacer.wakeup.unwrap();
+        pacer.schedule_wakeup(&mut state, Duration::ZERO);
+        assert!(state.loop_handle.update(&token).is_err());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        pacer.last_frame -= pacer.interval;
+        assert!(pacer.poll(&mut state));
+        assert!(pacer.wakeup.is_none());
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert!(!pacer.poll(&mut state));
+    }
+
+    #[test]
+    fn an_animation_wakeup_preserves_recovery_from_missing_presentation() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut pacer = FramePacer::new(Duration::from_secs(60));
+        assert!(pacer.poll(&mut state));
+        pacer.frame_queued(&mut state);
+        pacer.schedule_wakeup(&mut state, Duration::ZERO);
+        event_loop.dispatch(Duration::ZERO, &mut state).unwrap();
+        assert!(!pacer.poll(&mut state));
+        assert!(pacer.frame_pending);
+        let (_, token) = pacer.wakeup.unwrap();
+        assert!(state.loop_handle.update(&token).is_ok());
+        pacer.last_frame -= pacer.interval * MISSED_FRAME_INTERVALS;
+        assert!(pacer.poll(&mut state));
+        assert!(!pacer.frame_pending);
+        assert!(pacer.wakeup.is_none());
+    }
+
+    #[test]
+    fn missing_presentation_wakes_the_event_loop_and_retries_the_frame() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut pacer = FramePacer::new(Duration::from_millis(1));
+        assert!(pacer.poll(&mut state));
+        pacer.frame_queued(&mut state);
+        event_loop
+            .dispatch(Duration::from_millis(20), &mut state)
+            .unwrap();
+        assert!(pacer.poll(&mut state));
+        assert!(!pacer.frame_pending);
+        assert!(pacer.wakeup.is_none());
+    }
+
+    #[test]
+    fn forcing_a_repaint_cancels_an_obsolete_wakeup() {
+        let (_display, mut event_loop, mut state) = fixture();
+        let mut pacer = FramePacer::new(Duration::from_millis(1));
+        assert!(pacer.poll(&mut state));
+        pacer.frame_queued(&mut state);
+        let (_, token) = pacer.wakeup.unwrap();
+        pacer.force_redraw(&state);
+        assert!(state.loop_handle.update(&token).is_err());
+        assert!(pacer.poll(&mut state));
+        event_loop
+            .dispatch(Duration::from_millis(20), &mut state)
+            .unwrap();
+        assert!(!pacer.poll(&mut state));
     }
 }
