@@ -248,3 +248,7 @@ wayland_client::delegate_noop!(ClientEvents: ignore ext_session_lock_manager_v1:
 wayland_client::delegate_noop!(ClientEvents: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 wayland_client::delegate_noop!(ClientEvents: ignore xdg_positioner::XdgPositioner);
 wayland_client::delegate_noop!(ClientEvents: ignore xdg_toplevel::XdgToplevel);
+
+wayland_client::delegate_noop!(ClientEvents: ignore wayland_client::protocol::wl_region::WlRegion);
+wayland_client::delegate_noop!(ClientEvents: ignore blair_blur_protocol::client::blair_blur_manager_v1::BlairBlurManagerV1);
+wayland_client::delegate_noop!(ClientEvents: ignore blair_blur_protocol::client::blair_blur_v1::BlairBlurV1);

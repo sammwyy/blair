@@ -44,17 +44,19 @@ pub fn blur_of(surface: &WlSurface) -> Option<Blur> {
     })
 }
 
-fn set_blur(surface: &WlSurface, blur: Option<Blur>) {
-    with_states(surface, |states| {
-        states.data_map.insert_if_missing(SurfaceBlurState::default);
-        *states
-            .data_map
-            .get::<SurfaceBlurState>()
-            .expect("inserted above")
-            .0
-            .lock()
-            .expect("blur state lock poisoned") = blur;
+fn set_blur(state: &mut BlairState, surface: &WlSurface, blur: Option<Blur>) {
+    let changed = with_states(surface, |states| {
+        let data = states.data_map.get_or_insert(SurfaceBlurState::default);
+        let mut current = data.0.lock().expect("blur state lock poisoned");
+        if *current == blur {
+            return false;
+        }
+        *current = blur;
+        true
     });
+    if changed {
+        state.request_redraw();
+    }
 }
 
 /// Registers the `blair_blur_manager_v1` global.
@@ -84,7 +86,7 @@ impl GlobalDispatch<BlairBlurManagerV1, ()> for BlairState {
 
 impl Dispatch<BlairBlurManagerV1, ()> for BlairState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _manager: &BlairBlurManagerV1,
         request: blair_blur_manager_v1::Request,
@@ -102,7 +104,7 @@ impl Dispatch<BlairBlurManagerV1, ()> for BlairState {
                     },
                 );
             }
-            blair_blur_manager_v1::Request::Unset { surface } => set_blur(&surface, None),
+            blair_blur_manager_v1::Request::Unset { surface } => set_blur(state, &surface, None),
             _ => {}
         }
     }
@@ -110,7 +112,7 @@ impl Dispatch<BlairBlurManagerV1, ()> for BlairState {
 
 impl Dispatch<BlairBlurV1, BlurObjectData> for BlairState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _blur: &BlairBlurV1,
         request: blair_blur_v1::Request,
@@ -129,7 +131,7 @@ impl Dispatch<BlairBlurV1, BlurObjectData> for BlairState {
                     .lock()
                     .expect("blur state lock poisoned")
                     .clone();
-                set_blur(&data.surface, Some(region));
+                set_blur(state, &data.surface, Some(region));
             }
             _ => {}
         }
@@ -163,6 +165,54 @@ fn normalize_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protocol_blur_changes_request_a_repaint_without_a_surface_commit() {
+        use blair_blur_protocol::client::blair_blur_manager_v1::BlairBlurManagerV1;
+        use wayland_client::protocol::wl_compositor::WlCompositor;
+        let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+        let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+        let compositor = client.bind::<WlCompositor>(6);
+        let manager = client.bind::<BlairBlurManagerV1>(1);
+        let surface = compositor.create_surface(&client.handle(), ());
+        let blur = manager.get_blur(&surface, &client.handle(), ());
+        let region = compositor.create_region(&client.handle(), ());
+        region.add(10, 20, 100, 80);
+        blur.set_region(Some(&region));
+        state.take_redraw_request();
+        client.dispatch(&mut display, &mut state);
+        let surface = client.surface(&surface);
+        assert!(blur_of(&surface).is_none());
+        assert!(!state.take_redraw_request());
+
+        blur.commit();
+        client.dispatch(&mut display, &mut state);
+        assert_eq!(
+            blur_of(&surface),
+            Some(Blur(Some(vec![Rectangle::new(
+                (10, 20).into(),
+                (100, 80).into()
+            )])))
+        );
+        assert!(state.take_redraw_request());
+        blur.commit();
+        client.dispatch(&mut display, &mut state);
+        assert!(!state.take_redraw_request());
+
+        let client_surface = compositor.create_surface(&client.handle(), ());
+        let whole = manager.get_blur(&client_surface, &client.handle(), ());
+        whole.commit();
+        client.dispatch(&mut display, &mut state);
+        assert_eq!(blur_of(&client.surface(&client_surface)), Some(Blur(None)));
+        assert!(state.take_redraw_request());
+        manager.unset(&client_surface);
+        client.dispatch(&mut display, &mut state);
+        assert!(blur_of(&client.surface(&client_surface)).is_none());
+        assert!(state.take_redraw_request());
+        manager.unset(&client_surface);
+        client.dispatch(&mut display, &mut state);
+        assert!(!state.take_redraw_request());
+    }
+
     #[test]
     fn regions_preserve_gaps_holes_and_do_not_overlap() {
         let rect = |x, y, w, h| Rectangle::new((x, y).into(), (w, h).into());

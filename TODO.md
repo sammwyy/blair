@@ -91,6 +91,11 @@
   confirmations after `frame_submitted` succeeds. All active outputs must
   present; duplicate, discarded, and previous-lock frames cannot confirm a
   pending lock. Protocol tests cover these transitions and headless sessions.
+- [ ] Confirm nested session locks from host presentation feedback.
+  `src/backend/winit.rs` currently acknowledges a locked frame after
+  `WinitGraphicsBackend::submit`, which swaps EGL buffers but does not report
+  when the host compositor actually presents them. Use host presentation
+  feedback and account for hidden/minimized host windows.
 - [ ] Hold a logind sleep-delay inhibitor until the locker has confirmed the
   session lock. `monitor_sleep` in the D-Bus integration only queues a command
   on `PrepareForSleep(true)`, and `src/session_lock.rs::prepare_for_sleep`
@@ -117,10 +122,9 @@
   the preferred font without clearing decorations, while the key only tracks
   text, color, dimensions, alignment, and scale; unchanged titles keep glyphs
   from the previous font until another cache input changes.
-- [ ] Request redraws when blur state is committed or unset in `src/blur.rs`.
-  Both protocol handlers update surface state without notifying the repaint
-  scheduler, so a stationary surface can keep its previous blur until an
-  unrelated input event or surface commit triggers rendering.
+- [x] Request redraws when blur state is committed or unset. Protocol tests
+  verify repaint requests without a surface commit, pending-region isolation,
+  and suppression of redundant redraws for unchanged blur state.
 - [ ] Schedule throttled frame callbacks for hidden surfaces independently
   of output damage. `HIDDEN_FRAME_THROTTLE` in `src/render/mod.rs` only limits
   callbacks when `send_frame_callbacks` is already called during a repaint;
