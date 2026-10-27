@@ -297,7 +297,7 @@ impl BlairState {
         display_handle: DisplayHandle,
         loop_handle: LoopHandle<'static, BlairState>,
         loop_signal: LoopSignal,
-        config: CompositorConfig,
+        mut config: CompositorConfig,
         events: Arc<dyn EventChannel>,
     ) -> Self {
         let dh = &display_handle;
@@ -349,10 +349,17 @@ impl BlairState {
         };
         if let Err(error) = seat.add_keyboard(xkb, keyboard.repeat_delay, keyboard.repeat_rate) {
             tracing::error!(?error, layout = %keyboard.layout, "invalid keymap, falling back to us");
+            let repeat_delay = keyboard.repeat_delay;
+            let repeat_rate = keyboard.repeat_rate;
+            config.input.keyboard.layout = "us".into();
+            config.input.keyboard.variant.clear();
             seat.add_keyboard(
-                XkbConfig::default(),
-                keyboard.repeat_delay,
-                keyboard.repeat_rate,
+                XkbConfig {
+                    layout: "us",
+                    ..Default::default()
+                },
+                repeat_delay,
+                repeat_rate,
             )
             .expect("the default xkb keymap must compile");
         }
@@ -718,9 +725,48 @@ impl BlairState {
             tracing::info!("autostart changes will be used on the next compositor start");
         }
 
-        if self.config.input != next.input {
+        let keyboard_changed = self.config.input.keyboard != next.input.keyboard;
+        let keymap_changed = self.config.input.keyboard.layout != next.input.keyboard.layout
+            || self.config.input.keyboard.variant != next.input.keyboard.variant;
+        let keyboard = keyboard_changed
+            .then(|| {
+                self.seat
+                    .get_keyboard()
+                    .ok_or_else(|| "no keyboard is available to apply the configuration".to_owned())
+            })
+            .transpose()?;
+        let keymap = keymap_changed
+            .then(|| {
+                next.input
+                    .keyboard
+                    .compile_keymap()
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        let devices_changed = self.config.input.mouse != next.input.mouse
+            || self.config.input.touchpad != next.input.touchpad;
+        if devices_changed {
             self.input_devices
                 .configure(&next.input, &self.config.input)?;
+        }
+        if let (Some(keyboard), Some(keymap)) = (keyboard.as_ref(), keymap) {
+            if let Err(error) = keyboard.set_keymap_from_string(self, keymap) {
+                let error = format!(
+                    "could not apply keyboard layout '{}', variant '{}': {error}",
+                    next.input.keyboard.layout, next.input.keyboard.variant
+                );
+                if devices_changed {
+                    if let Err(rollback) = self
+                        .input_devices
+                        .configure(&self.config.input, &next.input)
+                    {
+                        return Err(format!(
+                            "{error}; could not restore input devices: {rollback}"
+                        ));
+                    }
+                }
+                return Err(error);
+            }
         }
         let previous = std::mem::replace(&mut self.config, next);
         if previous.power != self.config.power {
@@ -731,7 +777,7 @@ impl BlairState {
             self.schedule_idle_dim();
         }
         if (previous.accessibility.sticky_keys && !self.config.accessibility.sticky_keys)
-            || previous.input.keyboard != self.config.input.keyboard
+            || keymap_changed
         {
             crate::input::release_sticky_keys(self);
         }
@@ -753,8 +799,10 @@ impl BlairState {
             self.decorations.clear();
             tracing::info!(theme = ?self.config.appearance.icon_theme, "reloaded window icon theme");
         }
-        if previous.input.keyboard != self.config.input.keyboard {
-            self.apply_keyboard_config();
+        if let Some(keyboard) = keyboard {
+            let config = &self.config.input.keyboard;
+            keyboard.change_repeat_info(config.repeat_rate, config.repeat_delay);
+            tracing::info!(layout = %config.layout, variant = %config.variant, "keyboard configuration applied");
         }
         if previous.input != self.config.input {
             self.input_config_changed = true;
@@ -781,23 +829,6 @@ impl BlairState {
         self.request_redraw();
         self.emit(CompositorEvent::ConfigurationChanged);
         Ok(())
-    }
-
-    fn apply_keyboard_config(&mut self) {
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        let config = self.config.input.keyboard.clone();
-        let xkb = XkbConfig {
-            layout: &config.layout,
-            variant: &config.variant,
-            ..Default::default()
-        };
-        if let Err(error) = keyboard.set_xkb_config(self, xkb) {
-            tracing::warn!(?error, layout = %config.layout, "failed to apply keymap");
-        }
-        keyboard.change_repeat_info(config.repeat_rate, config.repeat_delay);
-        tracing::info!(layout = %config.layout, variant = %config.variant, "keyboard configuration applied");
     }
 
     fn apply_workspace_config(&mut self) {
@@ -2832,6 +2863,134 @@ pub(crate) mod tests {
         );
         state.idle_dimming = crate::idle_dim::IdleDimming::without_backlight();
         (display, event_loop, state)
+    }
+
+    fn keyboard_symbol(state: &mut BlairState) -> Vec<smithay::input::keyboard::Keysym> {
+        state
+            .seat
+            .get_keyboard()
+            .unwrap()
+            .with_xkb_state(state, |context| {
+                let xkb = context.xkb().lock().unwrap();
+                xkb.raw_syms_for_key_in_layout(29u32.into(), xkb.active_layout())
+                    .to_vec()
+            })
+    }
+
+    #[test]
+    fn the_startup_keymap_fallback_matches_the_effective_configuration() {
+        let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
+        let event_loop = smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
+        let mut config = CompositorConfig::default();
+        config.input.keyboard.layout = "blair_missing_layout".into();
+        config.input.keyboard.variant = "blair_missing_variant".into();
+        let mut state = BlairState::new(
+            display.handle(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            config,
+            Arc::new(TestEvents(std::sync::Mutex::new(Vec::new()))),
+        );
+        assert_eq!(state.config.input.keyboard.layout, "us");
+        assert!(state.config.input.keyboard.variant.is_empty());
+        let mut next = state.config.clone();
+        next.input.keyboard.layout = "de".into();
+        state.apply_config(next).unwrap();
+        assert_eq!(state.config.input.keyboard.layout, "de");
+    }
+
+    #[test]
+    fn invalid_keymaps_leave_configuration_keymap_and_repeat_info_unchanged() {
+        use wayland_client::protocol::wl_seat::WlSeat;
+        let (mut display, _event_loop, mut state) = fixture();
+        let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+        let _keyboard = client.bind::<WlSeat>(7).get_keyboard(&client.handle(), ());
+        client.dispatch(&mut display, &mut state);
+        let previous = state.config.clone();
+        let symbol = keyboard_symbol(&mut state);
+        let repeat = client.events.repeat_info.clone();
+        state.take_redraw_request();
+        for (layout, variant) in [
+            ("blair_missing_layout", ""),
+            ("us", "blair_missing_variant"),
+        ] {
+            let mut next = previous.clone();
+            next.input.keyboard.layout = layout.into();
+            next.input.keyboard.variant = variant.into();
+            next.input.keyboard.repeat_rate = 10;
+            next.decorations.corner_radius = 24;
+            crate::config::validate(&next).unwrap();
+            let error = state.apply_config(next).unwrap_err();
+            assert!(error.contains(layout));
+            assert!(error.contains(variant));
+            assert_eq!(state.config, previous);
+            assert_eq!(keyboard_symbol(&mut state), symbol);
+            assert!(!state.input_config_changed);
+            assert!(!state.take_redraw_request());
+            client.dispatch(&mut display, &mut state);
+            assert_eq!(client.events.keymaps, 1);
+            assert_eq!(client.events.repeat_info, repeat);
+        }
+    }
+
+    #[test]
+    fn a_device_failure_does_not_apply_a_prepared_keymap() {
+        use wayland_client::protocol::wl_seat::WlSeat;
+        let (mut display, _event_loop, mut state) = fixture();
+        let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+        let _keyboard = client.bind::<WlSeat>(7).get_keyboard(&client.handle(), ());
+        client.dispatch(&mut display, &mut state);
+        let previous = state.config.clone();
+        let symbol = keyboard_symbol(&mut state);
+        let mut next = previous.clone();
+        next.input.keyboard.layout = "de".into();
+        next.input.mouse.sensitivity = 0.5;
+        assert!(state.apply_config(next).is_err());
+        assert_eq!(state.config, previous);
+        assert_eq!(keyboard_symbol(&mut state), symbol);
+        client.dispatch(&mut display, &mut state);
+        assert_eq!(client.events.keymaps, 1);
+    }
+
+    #[test]
+    fn keyboard_layout_changes_apply_and_repeat_changes_preserve_sticky_modifiers() {
+        use wayland_client::protocol::wl_seat::WlSeat;
+        struct Hooks;
+        impl crate::input::InputHooks for Hooks {}
+        let (mut display, _event_loop, mut state) = fixture();
+        let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+        let _keyboard = client.bind::<WlSeat>(7).get_keyboard(&client.handle(), ());
+        client.dispatch(&mut display, &mut state);
+        let before = keyboard_symbol(&mut state);
+        let mut next = state.config.clone();
+        next.input.keyboard.layout = "de".into();
+        next.input.keyboard.variant = "nodeadkeys".into();
+        state.apply_config(next).unwrap();
+        assert_ne!(keyboard_symbol(&mut state), before);
+        client.dispatch(&mut display, &mut state);
+        assert_eq!(client.events.keymaps, 2);
+        state.config.accessibility.sticky_keys = true;
+        for pressed in [true, false] {
+            for event in state.sticky_keys.transform(50, pressed) {
+                crate::input::keyboard_transition(
+                    &mut state,
+                    event.code,
+                    event.pressed,
+                    0,
+                    &mut Hooks,
+                );
+            }
+        }
+        let keyboard = state.seat.get_keyboard().unwrap();
+        assert!(keyboard.modifier_state().shift);
+        let mut next = state.config.clone();
+        next.input.keyboard.repeat_rate = 12;
+        next.input.keyboard.repeat_delay = 500;
+        state.apply_config(next).unwrap();
+        assert!(keyboard.modifier_state().shift);
+        client.dispatch(&mut display, &mut state);
+        assert_eq!(client.events.keymaps, 2);
+        assert_eq!(client.events.repeat_info.last(), Some(&(12, 500)));
     }
 
     #[test]

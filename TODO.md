@@ -114,11 +114,11 @@
   decoration negotiation, or consistently relaying out workspaces. The file
   watcher then skips the identical configuration, leaving live behavior stale;
   failed saves also leave partially changed in-memory settings.
-- [ ] Reject invalid XKB layouts transactionally in `src/state.rs::apply_config`.
-  `apply_keyboard_config` only logs a failed `set_xkb_config` after replacing
-  `self.config`, so callers report success and may persist a layout that was
-  never applied. Compile/apply the keymap before committing configuration and
-  restore the previous state on failure.
+- [x] Reject invalid XKB layouts transactionally. Keymaps are compiled before
+  changing devices or configuration; failed preparation preserves keymaps and
+  repeat settings. Repeat-only updates keep sticky modifiers and avoid keymap
+  rebuilds. Startup fallback records the effective US layout, NUL bytes are
+  rejected before calling XKB, and protocol tests cover client notifications.
 - [ ] Include font identity/generation in the title bitmap cache key in
   `src/render/decoration.rs::update_title`. `reload_system_theme` can replace
   the preferred font without clearing decorations, while the key only tracks

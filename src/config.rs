@@ -372,6 +372,43 @@ pub struct TouchpadConfig {
     pub disable_while_typing: bool,
 }
 
+impl KeyboardConfig {
+    fn validate(&self) -> Result<()> {
+        if self.layout.trim().is_empty() {
+            anyhow::bail!("keyboard layout cannot be empty");
+        }
+        if self.layout.contains('\0') || self.variant.contains('\0') {
+            anyhow::bail!("keyboard layout and variant cannot contain NUL bytes");
+        }
+        if !(0..=2_000).contains(&self.repeat_delay) || !(1..=100).contains(&self.repeat_rate) {
+            anyhow::bail!("keyboard repeat_delay must be 0..=2000 and repeat_rate 1..=100");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn compile_keymap(&self) -> Result<String> {
+        use smithay::input::keyboard::xkb;
+        self.validate()?;
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_names(
+            &context,
+            "",
+            "",
+            self.layout.as_str(),
+            self.variant.as_str(),
+            None,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .with_context(|| {
+            format!(
+                "could not compile keyboard layout '{}', variant '{}'",
+                self.layout, self.variant
+            )
+        })?;
+        Ok(keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))
+    }
+}
+
 impl Default for KeyboardConfig {
     fn default() -> Self {
         Self {
@@ -404,14 +441,7 @@ impl Default for TouchpadConfig {
 
 impl InputConfig {
     fn validate(&self) -> Result<()> {
-        if self.keyboard.layout.trim().is_empty() {
-            anyhow::bail!("keyboard layout cannot be empty");
-        }
-        if !(0..=2_000).contains(&self.keyboard.repeat_delay)
-            || !(1..=100).contains(&self.keyboard.repeat_rate)
-        {
-            anyhow::bail!("keyboard repeat_delay must be 0..=2000 and repeat_rate 1..=100");
-        }
+        self.keyboard.validate()?;
         if !self.mouse.sensitivity.is_finite() || !(-1.0..=1.0).contains(&self.mouse.sensitivity) {
             anyhow::bail!("mouse sensitivity must be between -1.0 and 1.0");
         }
@@ -1386,12 +1416,10 @@ fn refresh_watches(
 fn reload(state: &mut BlairState) {
     match load_active() {
         Ok(next) if next == state.config => {}
-        Ok(next) => {
-            if let Err(error) = state.apply_config(next) {
-                tracing::warn!(%error, "configuration reload rejected");
-            }
-            tracing::info!("configuration reloaded");
-        }
+        Ok(next) => match state.apply_config(next) {
+            Ok(()) => tracing::info!("configuration reloaded"),
+            Err(error) => tracing::warn!(%error, "configuration reload rejected"),
+        },
         Err(error) => {
             tracing::error!(%error, "configuration reload failed; keeping previous configuration")
         }
@@ -1483,6 +1511,17 @@ pub fn save(config: &CompositorConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyboard_names_with_nul_bytes_are_rejected_before_xkb_compilation() {
+        for (layout, variant) in [("us\0de", ""), ("us", "basic\0other")] {
+            let mut config = CompositorConfig::default();
+            config.input.keyboard.layout = layout.into();
+            config.input.keyboard.variant = variant.into();
+            assert!(validate(&config).is_err());
+            assert!(config.input.keyboard.compile_keymap().is_err());
+        }
+    }
+
     #[test]
     fn watcher_discovers_configuration_directories_created_after_startup() {
         let root = std::env::temp_dir().join(format!("blair-watch-{}", std::process::id()));

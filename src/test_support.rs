@@ -25,6 +25,8 @@ use crate::state::{BlairState, ClientState};
 pub struct ClientEvents {
     pub globals: Vec<(u32, String, u32)>,
     pub keys: Vec<(u32, wl_keyboard::KeyState)>,
+    pub keymaps: usize,
+    pub repeat_info: Vec<(i32, i32)>,
     pub pointer: Vec<wl_pointer::Event>,
     pub touch: Vec<wl_touch::Event>,
     pub locks_confirmed: usize,
@@ -73,13 +75,15 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientEvents {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Key {
-            key,
-            state: key_state,
-            ..
-        } = event
-        {
-            state.keys.push((key, key_state.into_result().unwrap()));
+        match event {
+            wl_keyboard::Event::Key {
+                key,
+                state: key_state,
+                ..
+            } => state.keys.push((key, key_state.into_result().unwrap())),
+            wl_keyboard::Event::Keymap { .. } => state.keymaps += 1,
+            wl_keyboard::Event::RepeatInfo { rate, delay } => state.repeat_info.push((rate, delay)),
+            _ => {}
         }
     }
 }
