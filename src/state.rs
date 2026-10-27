@@ -91,6 +91,7 @@ use crate::{
     render::{from_rect, to_rect, WindowDecoration},
     rules::{AppliedWindowRule, RuleSet},
     screencopy::{self, ScreencopyRequest},
+    screenshot::Screenshots,
     shortcuts::{ActivatedShortcut, PhysicalMods, ShortcutRegistry},
     stats::RenderStats,
     window_integration,
@@ -109,14 +110,6 @@ impl ClientData for ClientState {
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         tracing::debug!(?client_id, ?reason, "wayland client disconnected");
     }
-}
-
-/// A screenshot queued by an integration, completed by the backend that owns
-/// the renderer.
-pub struct ScreenshotRequest {
-    pub output: Option<String>,
-    pub path: std::path::PathBuf,
-    pub reply: Box<dyn FnOnce(bool) + Send>,
 }
 
 pub struct ManagedWindow {
@@ -243,7 +236,7 @@ pub struct BlairState {
     pub decorations: HashMap<WindowId, WindowDecoration>,
     pub led_state: LedState,
     pub pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
-    pub pending_screenshots: Vec<ScreenshotRequest>,
+    pub screenshots: Screenshots,
     pub pending_captures: Vec<ScreencopyRequest>,
     pub input_config_changed: bool,
     pub input_devices: crate::input_devices::InputDevices,
@@ -439,7 +432,7 @@ impl BlairState {
             decorations: HashMap::new(),
             led_state: LedState::default(),
             pending_dmabuf_imports: Vec::new(),
-            pending_screenshots: Vec::new(),
+            screenshots: Screenshots::default(),
             pending_captures: Vec::new(),
             input_config_changed: false,
             input_devices: crate::input_devices::InputDevices::default(),
@@ -1196,25 +1189,20 @@ impl BlairState {
             .unwrap_or_default()
     }
 
-    /// Queues a screenshot; the reply is sent once the backend rendered it.
     pub fn request_screenshot(
         &mut self,
         output: &str,
         path: &str,
         reply: Box<dyn FnOnce(bool) + Send>,
     ) {
-        let path = std::path::PathBuf::from(path);
-        if !path.is_absolute() {
-            tracing::warn!(path = %path.display(), "screenshot path must be absolute");
-            reply(false);
-            return;
+        let output = if output.is_empty() {
+            self.focused_output()
+        } else {
+            self.output_by_name(output).cloned()
+        };
+        if self.screenshots.request(output, path, reply) {
+            self.request_redraw();
         }
-        self.pending_screenshots.push(ScreenshotRequest {
-            output: (!output.is_empty()).then(|| output.to_owned()),
-            path,
-            reply,
-        });
-        self.request_redraw();
     }
 
     pub fn outputs(&self) -> Vec<String> {

@@ -289,21 +289,26 @@ fn process_screenshots(
     output: &smithay::output::Output,
     shaders: Option<&crate::render::Shaders>,
 ) {
-    for request in std::mem::take(&mut state.pending_screenshots) {
-        if request
-            .output
-            .as_deref()
-            .is_some_and(|name| name != output.name())
-        {
-            tracing::warn!(output = ?request.output, "unknown screenshot output");
-            (request.reply)(false);
+    while let Some(request) = state.screenshots.next_for(output) {
+        if output.current_mode().map(|mode| mode.size) != Some(request.size) {
+            tracing::warn!(
+                output = output.name(),
+                "screenshot output mode changed before capture"
+            );
             continue;
         }
-        match crate::render::screenshot(renderer, state, output, shaders, &request.path) {
-            Ok(()) => (request.reply)(true),
+        match crate::render::capture_region(
+            renderer,
+            state,
+            output,
+            shaders,
+            smithay::utils::Rectangle::from_size(request.size),
+            crate::render::CursorMode::Composited,
+            smithay::backend::allocator::Fourcc::Abgr8888,
+        ) {
+            Ok(pixels) => state.screenshots.submit(request, pixels),
             Err(error) => {
-                tracing::warn!(%error, path = %request.path.display(), "screenshot failed");
-                (request.reply)(false);
+                tracing::warn!(%error, path = %request.path.display(), "screenshot capture failed");
             }
         }
     }
@@ -365,6 +370,78 @@ fn import_pending_dmabufs(state: &mut BlairState, renderer: &mut GlesRenderer) {
 mod tests {
     use super::*;
     use crate::state::tests::fixture;
+
+    #[test]
+    #[ignore = "requires an EGL device with OpenGL ES support"]
+    fn screenshots_complete_after_gpu_capture_and_reject_mode_changes() {
+        use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+
+        let (_display, _event_loop, mut state) = fixture();
+        let output = crate::test_support::add_output(&mut state, "capture", (0, 0), (64, 64));
+        let device = EGLDevice::enumerate().unwrap().next().unwrap();
+        let display = unsafe { EGLDisplay::new(device).unwrap() };
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let path = std::env::temp_dir().join(format!(
+            "blair-backend-screenshot-{}.png",
+            std::process::id()
+        ));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.request_screenshot(
+            "",
+            path.to_str().unwrap(),
+            Box::new(move |success| {
+                sender.send((success, std::thread::current().id())).unwrap();
+            }),
+        );
+        assert!(receiver.try_recv().is_err());
+        process_screenshots(&mut state, &mut renderer, &output, None);
+        let (success, worker) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(success);
+        assert_ne!(worker, std::thread::current().id());
+        let mut reader = png::Decoder::new(std::fs::File::open(&path).unwrap())
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (64, 64));
+        assert_eq!(info.buffer_size(), 64 * 64 * 4);
+        assert_eq!(&pixels[pixels.len() - 4..], &[20, 20, 31, 255]);
+        std::fs::remove_file(&path).unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.request_screenshot(
+            "capture",
+            path.to_str().unwrap(),
+            Box::new(move |success| {
+                sender.send(success).unwrap();
+            }),
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (32, 32).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            None,
+        );
+        process_screenshots(&mut state, &mut renderer, &output, None);
+        assert!(!receiver.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(!path.exists());
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.take_redraw_request();
+        state.request_screenshot(
+            "missing",
+            path.to_str().unwrap(),
+            Box::new(move |success| {
+                sender.send(success).unwrap();
+            }),
+        );
+        assert!(!receiver.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(!state.take_redraw_request());
+    }
 
     #[test]
     fn presentation_cancels_the_watchdog_without_an_idle_redraw() {

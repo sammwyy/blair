@@ -79,11 +79,11 @@
   `server.rs` adds another unbounded event queue. Slow signal delivery can
   accumulate memory, and sustained requests can starve input and rendering.
   Coalesce replaceable geometry/title events while preserving lifecycle order.
-- [ ] Move PNG compression and filesystem writes off the compositor thread
-  using a bounded worker queue. `src/backend/mod.rs::process_screenshots`
-  calls `src/render/capture.rs::screenshot` synchronously, so large captures
-  or slow storage block input, client dispatch, and presentation until the
-  entire file is written.
+- [x] Move PNG compression and filesystem writes off the compositor thread.
+  A lazy worker limits outstanding captures to two and reserves at most 128 MiB
+  of raw pixels plus paths before GPU readback. Replies follow PNG completion
+  and flushing; cancellation, saturation, worker recovery, and output mode
+  changes are covered by tests, including an EGL capture-to-file check.
 - [x] Enforce session-lock focus isolation. Layer and window focus paths use
   the lock policy; lock engagement dismisses popup grabs, finishes interactive
   grabs, and clears normal pointer/touch focus. Only the accepted locker may

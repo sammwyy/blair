@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use smithay::{
     backend::{
@@ -60,47 +58,4 @@ pub fn capture_region(
         .to_vec();
     drop(framebuffer);
     Ok(pixels)
-}
-
-/// Renders `output` and writes it as a PNG.
-pub fn screenshot(
-    renderer: &mut GlesRenderer,
-    state: &mut BlairState,
-    output: &Output,
-    shaders: Option<&Shaders>,
-    path: &Path,
-) -> Result<()> {
-    let size = output
-        .current_mode()
-        .context("the output has no current mode")?
-        .size;
-    let pixels = capture_region(
-        renderer,
-        state,
-        output,
-        shaders,
-        Rectangle::from_size(size),
-        CursorMode::Composited,
-        Fourcc::Abgr8888,
-    )?;
-    write_png(path, size.w as u32, size.h as u32, &pixels)
-}
-
-fn write_png(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .context("failed to write the PNG header")?
-        .write_image_data(pixels)
-        .context("failed to write the PNG data")?;
-    tracing::info!(path = %path.display(), width, height, "screenshot written");
-    Ok(())
 }

@@ -52,7 +52,7 @@ use crate::{
 };
 use blair_protocol::Rect;
 
-pub use capture::{capture_region, screenshot};
+pub use capture::capture_region;
 pub use clip::RoundedClip;
 pub use decoration::WindowDecoration;
 
