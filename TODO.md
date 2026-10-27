@@ -1,234 +1,128 @@
 # TODO
 
-- No output hotplug: both backends create exactly one output at startup.
-  `OutputAdded` is emitted once; `OutputRemoved` is defined in the protocol
-  but never emitted because neither backend tears down or adds outputs at
-  runtime.
-- DRM backend drives a single connector (the one with the most reliable
-  detected mode); extended/mirrored multi-monitor output is not implemented.
-- No Xwayland: `class`, `role`, and `type` window rules are parsed but never
-  match, and X11-only applications cannot run.
-- Tiled windows cannot be rearranged or resized interactively: the layout is
-  a master column plus a stack, ordered by window creation.
-- Window close and minimize animations are configurable but not implemented;
-  only the open and workspace-switch animations run.
-- `wlr-screencopy` re-renders the output offscreen for every captured frame
-  instead of reading back the frame that was just presented, so screen
-  recorders pay for a second render pass.
-- No session lock protocol (`ext-session-lock-v1`), so screen lockers cannot
-  run.
-- No output management protocol (`wlr-output-management-v1`): monitor layout
-  changes still require editing the configuration and restarting.
-- No tablet, pen, or on-screen keyboard protocols (`tablet-v2`,
-  `text-input-v3`, `input-method-v2`).
-- Direct scanout of client buffers is not enabled per surface: the DRM
-  backend advertises a single global dmabuf feedback tranche and never sends
+- [ ] Add output hotplug support. Both backends currently create exactly one
+  output at startup. `OutputAdded` is emitted once; `OutputRemoved` is defined
+  in the protocol but never emitted because neither backend tears down or adds
+  outputs at runtime.
+- [ ] Support multi-monitor output in the DRM backend. It currently drives a
+  single connector (the one with the most reliable detected mode); extended
+  and mirrored output are not implemented.
+- [ ] Add Xwayland support. `class`, `role`, and `type` window rules are parsed
+  but never match, and X11-only applications cannot run.
+- [ ] Allow tiled windows to be rearranged and resized interactively. The
+  current layout is a master column plus a stack, ordered by window creation.
+- [ ] Implement window close and minimize animations. They are configurable,
+  but only opening and workspace-switch animations currently run.
+- [ ] Avoid a second full render pass for `wlr-screencopy`. It currently
+  re-renders the output offscreen for every captured frame instead of reading
+  back the frame that was just presented.
+- [ ] Add `wlr-output-management-v1`, so monitor layout changes do not require
+  editing the configuration and restarting.
+- [ ] Add tablet, pen, and on-screen keyboard protocols: `tablet-v2`,
+  `text-input-v3`, and `input-method-v2`.
+- [ ] Enable per-surface direct scanout of client buffers. The DRM backend
+  advertises a single global dmabuf feedback tranche and never sends
   per-surface scanout feedback for fullscreen clients.
-- The titlebar icon only resolves PNG/JPEG icon files; SVG-only icon themes
-  (common for scalable hicolor entries) are not rasterized, so those windows
-  render with no icon even though one is installed.
-- Title and icon pixels are rasterized at a 1:1 pixel scale rather than the
-  output's scale factor, so they read slightly soft on fractional/HiDPI
-  outputs.
-- The reordering of decoration buttons (`decorations.buttons.layout`) has no
-  settings UI in `coconut`; only the button side and the fixed
-  minimize/maximize/close order are editable there.
-- `blair_blur_unstable_v1`'s backdrop capture (`render/blur.rs`) renders a
-  full-output-sized offscreen texture per blurred window per frame instead
-  of only the cropped blur region, and its single-pass 9x9-tap shader shows
-  faint tap-pattern aliasing at larger radii compared to a real two-pass
-  separable Gaussian. Blurred windows also don't recursively blur each
-  other's backdrop — a blurred window's backdrop capture renders windows
-  behind it without their own blur applied.
-
-## Coconut Settings compatibility
-
-Source review: 2026-10-15. Settings lives in `../coconut/apps/settings`,
-with system adapters in `../coconut/integrations/system`. Findings below
-come from code inspection, without a running desktop session.
-
-### Missing or incomplete Blair behavior
-
-- [x] Implement focus-follows-mouse and expose its policy to Settings.
-  `focus.policy = "sloppy"` focuses hovered windows without interrupting
-  pointer or keyboard grabs. Coconut exposes the live policy switch.
-  Sources: `src/config.rs` (`FocusPolicy`), `src/input.rs` (`move_pointer`),
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
-- [x] Implement configurable hot corners and an API Coconut can use for
-  corner actions. `[hot_corners]` supports per-corner workspace navigation,
-  show/restore desktop, commands, dwell time, and hit areas through the
-  existing configuration API. Settings exposes all controls. Event-loop
-  tests verify single activation and cancellation on pointer departure.
-  Sources: `src/hot_corners.rs`,
-  `../coconut/apps/settings/src/views/desktop/hot_corners.rs`.
-- [x] Implement desktop magnification and expose native `zoom` and
-  `zoom-factor` settings. The magnifier renders the complete scene to a
-  texture, preserving decoration/blur clipping, then enlarges a region
-  anchored to the pointer. Surface frame/presentation tracking uses the
-  underlying scene's render states. EGL pixel tests verify the enlarged
-  output; Coconut exposes the live toggle and factor slider (1–8).
-  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
-  `src/config.rs`, `src/render/mod.rs`, `src/render/magnify.rs`.
-- [x] Implement sticky modifier keys and expose `sticky-keys` to Settings.
-  Modifier taps latch for one chord; double taps lock until a third tap.
-  Ordinary held chords retain their behavior. Disabling the preference or
-  resetting input releases virtual modifiers. Tests exercise XKB state,
-  shortcut modifiers, latching, locking, and configuration changes.
-  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`), `src/input.rs`.
-- [x] Implement visual bell feedback and expose `visual-alerts` to Settings.
-  Blair advertises `xdg-system-bell-v1` and flashes a translucent overlay
-  for 160 ms when enabled. Requests are rate-limited during an active flash;
-  cleanup uses the event loop. Coconut reads/writes the native preference.
-  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`gnome_mapping`),
-  `src/accessibility.rs`, `src/render/mod.rs`.
-- [x] Apply workspace configuration changes at runtime. Count, dynamic
-  creation, wrapping, names, and output assignments now update live.
-  Reducing a fixed workspace set migrates its windows and active outputs
-  into the remaining set, preserves reachable focus, and emits workspace
-  events. Configuration readback now contains the applied workspace values.
-  Sources: `src/state.rs` (`apply_config`), `src/integrations.rs`
-  (`configuration`, `set_configuration`),
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_working_area`,
-  `Writer::save`).
-- [x] Complete shortcut registration feedback in Settings. The shared
-  `blair_protocol::ShortcutAccelerator` parser now maps Tab, navigation,
-  punctuation, function/media keys, and rejects unmapped characters before
-  registration. Settings validates with the same parser before saving.
-  Bare modifiers activate on release and do not fire during a chord.
-  Coconut exposes a live shortcut service, stages registrations on a fresh
-  connection, persists successful replacements, and retains the previous
-  generation on rejection. Settings displays startup and apply errors.
-  An isolated D-Bus test verifies replacement, rejection, persistence,
-  dispatch, and release of obsolete event subscriptions.
-  Sources: `src/shortcuts.rs`, `../coconut/crates/core/src/shortcuts.rs`,
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`ShortcutRecorder`),
-  `../coconut/apps/shell/src/shortcuts.rs` (`ShortcutListener::start`).
-- [x] Make enabling `general.hot_reload` effective after startup with it
-  disabled. The watcher stays installed while reload is disabled and tracks
-  ancestor directory creation so newly created config roots are watched.
-  Debounced callbacks recheck the flag before applying a queued reload.
-  Sources: `src/config.rs` (`watch`), `src/state.rs` (`apply_config`),
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_general`).
-- [x] Expose input-device and backend capabilities to Settings. Blair now
-  advertises the backend plus support for every connected device over D-Bus.
-  Settings disables unavailable mouse and touchpad controls with an
-  explanation, including nested Winit sessions. DRM applies input changes as
-  a transaction, restores all devices on failure, and reports native errors
-  back to Settings.
-  Sources: `src/input_devices.rs`, `src/backend/drm.rs`,
-  `crates/protocol/src/input.rs`,
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`build_mouse`,
-  `build_touchpad`).
-
-The close/minimize animation stubs, missing session-lock protocol, and
-X11-only rule selectors are already tracked above. Settings exposes
-`animations.window_close.duration` and `animations.minimize.duration`,
-although only opening and workspace animations run (`src/state.rs`:
-`window_opacity`, `animations_active`, `minimize_window`). Its raw rules
-editor also accepts the nonfunctional `class`, `role`, and `type` selectors
-(`src/rules.rs`: `CompiledRule::matches`).
-
-### Settings and desktop integration work
-
-- [x] Correct "Center new floating windows" in Coconut. The control now
-  edits Blair's live `window.center_new_windows` preference (default true).
-  Explicit rule positions still take precedence; disabling centering uses
-  the work area's padded upper-left corner.
-  Sources: `src/state.rs` (`map_window`),
-  `../coconut/apps/settings/src/views/windows/mod.rs` (`build`).
-- [x] Connect the cursor-theme picker to Blair's existing `[cursor].theme`
-  configuration. Settings applies the Blair preference in the background
-  before updating Coconut's shell configuration and reports rejected
-  writes. Its selection reflects the native preference when set.
-  Sources: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`
-  (`cursor_themes`), `src/cursor.rs` (`resolve_theme`, `reconfigure`),
-  `src/state.rs` (`apply_config`).
-- [x] Synchronize the selected icon theme with Blair's titlebar icons and
-  invalidate their cache when it changes. Settings updates Blair's live
-  `appearance.icon_theme` and then Coconut's shell resolvers. Unset themes
-  still use `delib::icons::system_icon_theme`. A fixture test switches two
-  real icon themes and verifies that cached pixels change.
-  Sources: `src/decorations/icons.rs`, `../delib/src/icons.rs`,
-  `../coconut/apps/settings/src/views/personalization/asset_packs.rs`,
-  `../coconut/apps/shell/src/lib.rs` (`RuntimeEvent::ShellConfig`).
-- [x] Provide shared accessibility preferences for high contrast (`contrast`)
-  and interface text scaling (`text-scale`). CreamUI persists them in
-  `cream/accessibility.toml` and applies an opaque contrast palette and
-  scaled typography when loading any selected theme. Coconut preserves
-  those tokens, updates Settings live, and publishes theme reloads for
-  the shell and Blair. Decoration text and titlebar geometry scale too.
-  Sources: `../coconut/apps/settings/src/views/accessibility.rs`,
-  `../coconut/apps/settings/src/views/personalization/fonts.rs`,
-  `../coconut/integrations/system/src/lib.rs` (`discover_preferences`).
-- [x] Connect "Require password after sleep" (`lock-after-sleep`) to a
-  session locker and suspend policy. Blair implements `ext-session-lock`,
-  renders a fail-closed black frame before confirming the lock, and sends
-  keyboard input only to the locker. It watches logind's suspend signal and
-  launches the configured locker without a shell. Settings enables the
-  preference only when it finds an executable `swaylock`, `gtklock`, or
-  `waylock`; otherwise it explains why the policy cannot be enabled.
-  Sources: `src/session_lock.rs`, `src/handlers.rs`,
-  `integrations/blair-integration-dbus/src/server.rs`,
-  `../coconut/integrations/system/src/blair.rs`.
-- [x] Provide an idle-dimming service and native `idle-dim` preference.
-  Blair now schedules dimming from user activity, respects idle inhibitors,
-  halves a writable kernel backlight after `power.idle_dim_timeout`, and
-  restores the exact saved level on activity or inhibition. Settings writes
-  the native policy and disables the control with an explanation when no
-  writable kernel backlight is available.
-  Sources: `src/idle_dim.rs`, `src/state.rs` (`note_input_activity`),
-  `../coconut/integrations/system/src/blair.rs`.
-- [x] Connect "Location services" (`location`) to the session's location
-  provider/permission policy. Coconut exports a standard per-session
-  GeoClue agent; every authorization consults the persisted `[location]`
-  policy at request time and denies requests while the setting is off.
-  Settings writes that native policy under Blair, rather than GNOME's
-  preference, and only enables the control when the administrator has
-  explicitly whitelisted `org.coconut.LocationAgent` in GeoClue.
-  Sources: `../coconut/apps/shell/src/location.rs`,
-  `../coconut/crates/core/src/lib.rs`,
-  `../coconut/integrations/system/src/blair.rs`.
-- [x] Complete Coconut's shortcut editor. Native capture records Tab,
-  function/media keys, and modifier-only chords while temporarily inhibiting
-  compositor shortcuts. Escape, focus loss, and navigation cancel capture.
-  Shared validation rejects unsupported keys, duplicates, missing commands,
-  and oversized sets. Shell edits apply live; a separate editor reads and
-  saves Blair's persistent `[[bindings]]` through its configuration API,
-  with all four actions and argument validation. Failed persistence leaves
-  the compositor's previous configuration intact.
-  Sources: `../coconut/apps/settings/src/views/windows/mod.rs`
-  (`ShortcutRecorder`, `ShortcutState::save`), `src/integrations.rs`
-  (`configured_shortcuts`, `set_configured_shortcuts`).
-
-### Coconut-only gaps and confirmed working paths
-
-- [x] Implement dock auto-hide in Coconut. A two-pixel edge strip reveals
-  the dock; leaving schedules a cancellable 350 ms hide timer. Open/pending
-  popups keep it visible. CreamUI reports native pointer presence and
-  updates layer-shell size/exclusive zones when panels resize.
-  Sources: `../coconut/apps/shell/src/auto_hide.rs`,
-  `../coconut/apps/settings/src/views/desktop/mod.rs`,
-  `../creamui/crates/platform/src/wayland/runtime.rs`.
-- [x] Connect Coconut's sound-theme picker to desktop sound playback.
-  The shell resolves notification and volume events using the current
-  theme, inheritance, and `.disabled` masks, then plays them off the UI
-  thread with `pw-play`/`paplay`. Notification sound names and suppression
-  hints are honored; tests record requests without producing real audio.
-  Source: `../coconut/apps/settings/src/views/personalization/asset_packs.rs`.
-
-Do not list resolution/refresh changes as missing: the DRM backend already
-implements mode preview, 15-second automatic rollback, confirmation, and
-persistence, and Coconut uses that API. Winit intentionally follows the
-host window size. Multi-monitor/hotplug limitations remain tracked above.
-
-"Reduce motion" already maps to Blair's `animations.enabled` when its
-configuration API is available. Layout/gaps, floating default size, focus
-toggles, decorations, keyboard layout/repeat, and DRM mouse/touchpad
-configuration also have implementations; they are not generic stubs.
-"Usage analytics" is disabled because Coconut has no telemetry service;
-it is not a missing Blair capability. Audio, backlight, networking,
-Bluetooth, printers, users, and system time use their own system services;
-a missing dependency there does not establish a compositor limitation.
+- [ ] Rasterize SVG titlebar icons. The icon resolver only handles PNG/JPEG, so
+  SVG-only icon themes can leave windows without an icon.
+- [ ] Expose decoration button reordering (`decorations.buttons.layout`) in
+  Coconut. Its settings UI currently only edits the side and fixed
+  minimize/maximize/close order.
+- [ ] Optimize `blair_blur_unstable_v1` backdrop capture in `render/blur.rs`:
+  render only the cropped blur region, use a two-pass separable Gaussian to
+  avoid large-radius tap-pattern aliasing, and support recursively blurred
+  backdrops.
+- [ ] Establish a reproducible release-build memory baseline for DRM and
+  Winit, both empty and with the shell loaded. Record RSS/PSS, anonymous
+  memory, shared mappings, output resolution/scale, and graphics buffers;
+  repeat window open/close and configuration changes to distinguish retained
+  allocations from the initial footprint. `src/stats.rs` only tracks frames.
+- [ ] Keep one cancellable idle-dimming timer in `src/state.rs`
+  (`note_input_activity`, `schedule_idle_dim`). With `power.idle_dim` enabled,
+  every input event registers another timer; generation checks ignore stale
+  callbacks but retain their allocations until the timeout, which defaults
+  to 300 seconds. Pending timers grow with input rate times timeout.
+- [ ] Lazily initialize the application-icon resolver and retain only the
+  desktop-entry fields needed for icons. `BlairState::new` constructs it
+  even when no window icons are drawn; `ApplicationIconResolver` in
+  `../delib/src/application_icons.rs` eagerly parses and retains every
+  installed desktop entry, including localized names and unrelated fields.
+- [ ] Add a byte/entry budget and eviction policy to `IconCache` in
+  `src/decorations/icons.rs`. Every distinct `(app_id, size)` retains decoded
+  pixels or a negative result until the icon theme changes; closing windows
+  never evicts entries, and clients can change their app IDs repeatedly.
+- [ ] Bound font-fallback file retention used by decoration titles.
+  `fallback_face` in `../creamui/crates/fonts/src/lib.rs` maps and caches
+  every font it tries, including candidates that do not cover the requested
+  character. Unsupported title characters can leave the whole installed
+  font set mapped; measure resident pages and release unsuccessful candidates.
+- [ ] Crop title bitmaps to their painted glyph bounds and share identical
+  button buffers across windows. `paint_glyphs` in `src/decorations/text.rs`
+  allocates the full available title rectangle even for a short title;
+  `WindowDecoration` retains separate CPU buffers and renderer textures per
+  window. The title allocation grows with the square of the buffer scale.
+- [ ] Reuse the magnifier texture, damage tracker, and render-element ID in
+  `src/render/magnify.rs`. Each zoomed repaint allocates an output-sized RGBA
+  texture, rebuilds the tracker with buffer age zero, and waits synchronously
+  for the GPU, forcing a full scene render and new allocation on every frame.
+- [ ] Cancel obsolete repaint/watchdog timers in `FramePacer`
+  (`src/backend/mod.rs`). `frame_presented` clears the pending-frame flag but
+  leaves its watchdog registered, so successful presentations still cause
+  later redraws. Scheduling an earlier wakeup also leaves the old timer alive.
+- [ ] Bound integration queues and limit commands processed per event-loop
+  iteration. `integrations/blair-integration-dbus/src/backend.rs` uses
+  unbounded command/event channels and drains commands until empty;
+  `server.rs` adds another unbounded event queue. Slow signal delivery can
+  accumulate memory, and sustained requests can starve input and rendering.
+  Coalesce replaceable geometry/title events while preserving lifecycle order.
+- [ ] Move PNG compression and filesystem writes off the compositor thread
+  using a bounded worker queue. `src/backend/mod.rs::process_screenshots`
+  calls `src/render/capture.rs::screenshot` synchronously, so large captures
+  or slow storage block input, client dispatch, and presentation until the
+  entire file is written.
+- [ ] Enforce session-lock focus isolation in every focus/grab path.
+  `src/state.rs::focus_interactive_layer_surface` calls `keyboard.set_focus`
+  directly on layer commits, bypassing the lock check in `set_keyboard_focus`;
+  an exclusive shell layer can regain keyboard focus while locked and receive
+  keys forwarded by `src/input.rs`. Guard popup grabs in `src/handlers.rs`
+  too, and cancel existing normal-client grabs when engaging the lock.
+- [ ] Confirm DRM session locks after the locked frame is presented.
+  `src/backend/drm.rs::render` calls `confirm_session_lock` immediately after
+  `queue_frame`, before `on_vblank`. `ext-session-lock-v1` requires the locked
+  frame to have reached every output before sending `locked`; otherwise a
+  locker that suspends on confirmation can race with the old visible frame.
+- [ ] Hold a logind sleep-delay inhibitor until the locker has confirmed the
+  session lock. `monitor_sleep` in the D-Bus integration only queues a command
+  on `PrepareForSleep(true)`, and `src/session_lock.rs::prepare_for_sleep`
+  merely spawns the locker. Suspend can therefore occur before it connects
+  or before a locked frame is presented. Provide this policy independently
+  of whether the optional shell D-Bus API is enabled.
+- [ ] Route pointer and touch input to session-lock surfaces. The locked
+  branch of `src/input.rs::process_input_event` forwards only keyboard events
+  and discards everything else, making lock-screen buttons and touch-based
+  authentication unusable. Lock-surface hit testing must exclude normal clients.
+- [ ] Apply the legacy D-Bus layout/window setters through the validated
+  configuration transaction in `src/integrations.rs`. They mutate
+  `self.config` before saving without rebuilding `decoration_theme`, refreshing
+  decoration negotiation, or consistently relaying out workspaces. The file
+  watcher then skips the identical configuration, leaving live behavior stale;
+  failed saves also leave partially changed in-memory settings.
+- [ ] Reject invalid XKB layouts transactionally in `src/state.rs::apply_config`.
+  `apply_keyboard_config` only logs a failed `set_xkb_config` after replacing
+  `self.config`, so callers report success and may persist a layout that was
+  never applied. Compile/apply the keymap before committing configuration and
+  restore the previous state on failure.
+- [ ] Include font identity/generation in the title bitmap cache key in
+  `src/render/decoration.rs::update_title`. `reload_system_theme` can replace
+  the preferred font without clearing decorations, while the key only tracks
+  text, color, dimensions, alignment, and scale; unchanged titles keep glyphs
+  from the previous font until another cache input changes.
+- [ ] Request redraws when blur state is committed or unset in `src/blur.rs`.
+  Both protocol handlers update surface state without notifying the repaint
+  scheduler, so a stationary surface can keep its previous blur until an
+  unrelated input event or surface commit triggers rendering.
+- [ ] Schedule throttled frame callbacks for hidden surfaces independently
+  of output damage. `HIDDEN_FRAME_THROTTLE` in `src/render/mod.rs` only limits
+  callbacks when `send_frame_callbacks` is already called during a repaint;
+  it does not schedule one. Hidden clients can wait indefinitely when the
+  visible workspace is idle despite the intended roughly one-second cadence.
