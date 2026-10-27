@@ -119,11 +119,9 @@
   repeat settings. Repeat-only updates keep sticky modifiers and avoid keymap
   rebuilds. Startup fallback records the effective US layout, NUL bytes are
   rejected before calling XKB, and protocol tests cover client notifications.
-- [ ] Include font identity/generation in the title bitmap cache key in
-  `src/render/decoration.rs::update_title`. `reload_system_theme` can replace
-  the preferred font without clearing decorations, while the key only tracks
-  text, color, dimensions, alignment, and scale; unchanged titles keep glyphs
-  from the previous font until another cache input changes.
+- [x] Include font identity and registry generation in the title bitmap cache
+  key. Font replacements and fallback-font registrations invalidate unchanged
+  titles; CPU-renderer tests verify invalidation and stable buffer reuse.
 - [x] Request redraws when blur state is committed or unset. Protocol tests
   verify repaint requests without a surface commit, pending-region isolation,
   and suppression of redundant redraws for unchanged blur state.

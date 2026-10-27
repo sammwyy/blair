@@ -299,7 +299,7 @@ impl WindowDecoration {
     }
 
     /// Rasterizes `text` into the title glyph cache when the cache key
-    /// (text, color, box, alignment, and scale) changed since the last call.
+    /// (font, registry generation, text, style, box, and scale) changed.
     /// `size`, `max_width` and `height` are logical; the bitmap is drawn at
     /// `buffer_scale` so it stays crisp on HiDPI outputs.
     #[allow(clippy::too_many_arguments)]
@@ -314,7 +314,9 @@ impl WindowDecoration {
         centered: bool,
         buffer_scale: i32,
     ) {
-        let key = format!("{text}|{size}|{color:?}|{max_width}|{height}|{centered}|{buffer_scale}");
+        let font_id = font.id();
+        let generation = creamui_fonts::registry_generation();
+        let key = format!("{font_id}|{generation}|{text}|{size}|{color:?}|{max_width}|{height}|{centered}|{buffer_scale}");
         if self.title.key.as_deref() == Some(key.as_str()) {
             return;
         }
@@ -727,6 +729,85 @@ pub fn mix(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn title_id(
+        decoration: &mut WindowDecoration,
+        renderer: &mut smithay::backend::renderer::pixman::PixmanRenderer,
+        font: &creamui_fonts::FontFace,
+    ) -> Id {
+        use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+        decoration.update_title(
+            font,
+            "Terminal",
+            14.0,
+            [255, 255, 255, 255],
+            200,
+            24,
+            false,
+            1,
+        );
+        let (buffer, _) = decoration.title_buffer().unwrap();
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .unwrap()
+        .id()
+        .clone()
+    }
+
+    #[test]
+    fn titles_reuse_the_bitmap_until_the_font_identity_changes() {
+        let font = creamui_fonts::resolve(
+            creamui_fonts::DEFAULT_FAMILY,
+            creamui_fonts::FontWeight::Regular,
+        );
+        let replacement = creamui_fonts::FontFace::from_bytes(font.font_ref().data).unwrap();
+        assert_ne!(font.id(), replacement.id());
+        let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
+        let mut decoration = WindowDecoration::default();
+        let first = title_id(&mut decoration, &mut renderer, &font);
+        assert_eq!(title_id(&mut decoration, &mut renderer, &font), first);
+        let second = title_id(&mut decoration, &mut renderer, &replacement);
+        assert_ne!(second, first);
+        assert_eq!(
+            title_id(&mut decoration, &mut renderer, &replacement),
+            second
+        );
+    }
+
+    #[test]
+    fn title_bitmaps_notice_registry_changes_without_a_new_primary_font() {
+        let font = creamui_fonts::resolve(
+            creamui_fonts::DEFAULT_FAMILY,
+            creamui_fonts::FontWeight::Regular,
+        );
+        let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
+        let mut decoration = WindowDecoration::default();
+        let first = title_id(&mut decoration, &mut renderer, &font);
+        creamui_fonts::register_bytes(
+            "Blair Title Cache Test",
+            creamui_fonts::FontWeight::Regular,
+            font.font_ref().data,
+        )
+        .unwrap();
+        assert_eq!(
+            creamui_fonts::resolve(
+                creamui_fonts::DEFAULT_FAMILY,
+                creamui_fonts::FontWeight::Regular
+            )
+            .id(),
+            font.id()
+        );
+        let second = title_id(&mut decoration, &mut renderer, &font);
+        assert_ne!(second, first);
+        assert_eq!(title_id(&mut decoration, &mut renderer, &font), second);
+    }
 
     #[test]
     fn button_is_a_disc_with_a_glyph_and_empty_corners() {
