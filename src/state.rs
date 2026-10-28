@@ -224,8 +224,7 @@ pub struct BlairState {
     pub sticky_keys: crate::accessibility::StickyKeys,
     pub visual_bell_until: Option<Instant>,
     pub visual_bell_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer,
-    pub zoom_render_states:
-        HashMap<String, smithay::backend::renderer::element::RenderElementStates>,
+    pub magnifiers: HashMap<Output, crate::render::Magnifier>,
     /// The cursor last requested by the focused client.
     pub client_cursor: CursorImageStatus,
     /// A cursor the compositor shows instead of the client's, over its own
@@ -420,7 +419,7 @@ impl BlairState {
             hot_corners: crate::hot_corners::HotCornerState::default(),
             sticky_keys: crate::accessibility::StickyKeys::default(),
             visual_bell_until: None,
-            zoom_render_states: HashMap::new(),
+            magnifiers: HashMap::new(),
             visual_bell_buffer: smithay::backend::renderer::element::solid::SolidColorBuffer::new(
                 (1, 1),
                 smithay::backend::renderer::Color32F::new(0.18, 0.18, 0.18, 0.18),
@@ -571,6 +570,12 @@ impl BlairState {
     pub fn refresh(&mut self) {
         profiling::scope!("state_refresh");
         self.space.refresh();
+        if self.config.accessibility.zoom && self.config.accessibility.zoom_factor > 1.0 {
+            self.magnifiers
+                .retain(|output, _| self.space.outputs().any(|mapped| mapped == output));
+        } else {
+            self.magnifiers.clear();
+        }
         self.popup_manager.cleanup();
         if self
             .active_popup_grab

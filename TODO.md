@@ -65,10 +65,11 @@
   window. The title allocation grows with the square of the buffer scale.
   Replace formatted title/button/icon cache keys with typed state so cache
   hits do not allocate temporary strings on every rendered frame.
-- [ ] Reuse the magnifier texture, damage tracker, and render-element ID in
-  `src/render/magnify.rs`. Each zoomed repaint allocates an output-sized RGBA
-  texture, rebuilds the tracker with buffer age zero, and waits synchronously
-  for the GPU, forcing a full scene render and new allocation on every frame.
+- [x] Reuse magnifier resources per output. The retained texture, damage
+  tracker, and element ID preserve scene damage and skip unchanged frames
+  without an explicit CPU wait. Mode, scale, and renderer changes replace
+  the cache; disabling zoom or removing an output releases it. EGL tests
+  verify partial updates, panning, clearing, reuse, and invalidation.
 - [x] Cancel obsolete repaint/watchdog timers in `FramePacer`. Presentation,
   forced redraws, and mode changes remove pending wakeups; earlier deadlines
   replace old timers. Event-loop tests also cover missing presentation feedback

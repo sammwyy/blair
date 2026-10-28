@@ -4,7 +4,7 @@ mod clip;
 mod decoration;
 mod magnify;
 
-use std::time::Duration;
+use std::{collections::hash_map::Entry, time::Duration};
 
 use smithay::{
     backend::renderer::{
@@ -55,6 +55,7 @@ use blair_protocol::Rect;
 pub use capture::capture_region;
 pub use clip::RoundedClip;
 pub use decoration::WindowDecoration;
+pub use magnify::Magnifier;
 
 use clip::ClippedSurfaceElement;
 use decoration::{
@@ -185,24 +186,35 @@ pub fn output_elements(
     cursor_mode: CursorMode,
 ) -> Vec<OutputRenderElement> {
     let elements = scene_elements(renderer, state, output, shaders, cursor_mode);
-    state.zoom_render_states.remove(&output.name());
     if !state.config.accessibility.zoom || state.config.accessibility.zoom_factor <= 1.0 {
+        state.magnifiers.clear();
         return elements;
     }
     let Some(geometry) = state.space.output_geometry(output) else {
+        state.magnifiers.remove(output);
         return elements;
     };
     let scale = output.current_scale().fractional_scale();
     let size = geometry.size.to_physical_precise_round(scale);
     let pointer = (state.pointer_location() - geometry.loc.to_f64()).to_physical(scale);
     let source = magnify::source_rect(size, pointer, state.config.accessibility.zoom_factor);
-    match magnify::render(renderer, &elements, size, geometry.size, scale, source) {
-        Ok((element, states)) => {
-            state.zoom_render_states.insert(output.name(), states);
-            vec![element.into()]
-        }
+    let result = (|| {
+        let magnifier = match state.magnifiers.entry(output.clone()) {
+            Entry::Occupied(mut entry) => {
+                if !entry.get().matches(renderer, size, scale) {
+                    entry.insert(Magnifier::new(renderer, size, scale)?);
+                }
+                entry.into_mut()
+            }
+            Entry::Vacant(entry) => entry.insert(Magnifier::new(renderer, size, scale)?),
+        };
+        magnifier.render(renderer, &elements, geometry.size, source)
+    })();
+    match result {
+        Ok(element) => vec![element.into()],
         Err(error) => {
-            tracing::warn!(%error, "desktop magnification failed");
+            state.magnifiers.remove(output);
+            tracing::warn!(error = ?error, "desktop magnification failed");
             elements
         }
     }
@@ -1457,8 +1469,9 @@ pub fn update_primary_scanout_output(
     render_states: &RenderElementStates,
 ) {
     let render_states = state
-        .zoom_render_states
-        .get(&output.name())
+        .magnifiers
+        .get(output)
+        .map(|magnifier| &magnifier.states)
         .unwrap_or(render_states);
     for_each_surface_root(state, |root| {
         with_surfaces_surface_tree(root, |surface, states| {
@@ -1492,8 +1505,9 @@ pub fn take_presentation_feedback(
     render_states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
     let render_states = state
-        .zoom_render_states
-        .get(&output.name())
+        .magnifiers
+        .get(output)
+        .map(|magnifier| &magnifier.states)
         .unwrap_or(render_states);
     let mut feedback = OutputPresentationFeedback::new(output);
     for_each_surface_root(state, |root| {
