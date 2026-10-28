@@ -1,9 +1,9 @@
-use std::{
-    sync::{mpsc, Arc},
-    thread::JoinHandle,
-};
+use std::{sync::Arc, thread::JoinHandle};
 
-use blair_integration::{CompositorApi, EventChannel, Transport};
+use blair_integration::{
+    events::{self, EventSender, SendResult},
+    CompositorApi, EventChannel, Transport,
+};
 use blair_protocol::{Rect, WindowId};
 use tokio::sync::mpsc::Receiver;
 
@@ -19,11 +19,13 @@ pub struct DbusIntegration {
     _thread: JoinHandle<()>,
 }
 
-struct DbusEventChannel(std::sync::mpsc::Sender<blair_protocol::CompositorEvent>);
+struct DbusEventChannel(EventSender);
 
 impl EventChannel for DbusEventChannel {
     fn publish(&self, event: blair_protocol::CompositorEvent) {
-        let _ = self.0.send(event);
+        if self.0.send(event) == SendResult::Reset {
+            tracing::warn!("D-Bus event queue overflowed; resetting subscribers");
+        }
     }
 }
 
@@ -32,7 +34,7 @@ impl DbusIntegration {
     /// loop picks it up without polling.
     pub fn start(wake: Arc<dyn Fn() + Send + Sync>, environment: Vec<(String, String)>) -> Self {
         let (commands_tx, commands) = CommandSender::channel(wake.clone());
-        let (events_tx, events_rx) = mpsc::channel();
+        let (events_tx, events_rx) = events::channel();
         let thread = crate::server::serve(commands_tx, events_rx, environment);
         Self {
             commands,

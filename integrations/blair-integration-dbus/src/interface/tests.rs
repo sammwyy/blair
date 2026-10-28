@@ -1,21 +1,8 @@
 use super::*;
 use crate::command::{CommandSender, QueuedCommand};
-use std::{
-    io::{BufRead, BufReader},
-    process::{Child, Command as ProcessCommand, Stdio},
-    sync::Arc,
-    time::Duration,
-};
+use crate::test_support::Bus;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
-
-struct Bus(Child);
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 async fn fixture() -> (
     Bus,
@@ -24,29 +11,16 @@ async fn fixture() -> (
     CommandSender,
     mpsc::Receiver<QueuedCommand>,
 ) {
-    let child = ProcessCommand::new("dbus-daemon")
-        .args(["--session", "--nofork", "--print-address=1"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut bus = Bus(child);
-    let mut address = String::new();
-    BufReader::new(bus.0.stdout.take().unwrap())
-        .read_line(&mut address)
-        .unwrap();
+    let bus = Bus::default();
     let (sender, receiver) = CommandSender::channel(Arc::new(|| {}));
-    let server = zbus::connection::Builder::address(address.trim())
-        .unwrap()
+    let server = bus
+        .builder()
         .serve_at(crate::OBJECT_PATH, CompositorInterface::new(sender.clone()))
         .unwrap()
         .build()
         .await
         .unwrap();
-    let client = zbus::connection::Builder::address(address.trim())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
+    let client = bus.builder().build().await.unwrap();
     (bus, server, client, sender, receiver)
 }
 

@@ -464,6 +464,22 @@ impl BlairState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn coalescing_geometry_events_allocates_nothing_after_initialization() {
+        let (sender, _receiver) = blair_integration::events::channel();
+        let event = blair_protocol::CompositorEvent::WindowGeometryChanged {
+            id: blair_protocol::WindowId(1),
+            geometry: Default::default(),
+        };
+        sender.send(event.clone());
+        let allocations = crate::test_support::count_allocations(|| {
+            for _ in 0..10_000 {
+                sender.send(event.clone());
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
     use super::*;
     use crate::{state::tests::fixture, test_support::isolated_config_test};
     use std::fs;

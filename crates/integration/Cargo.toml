@@ -10,3 +10,4 @@ repository.workspace = true
 
 [dependencies]
 blair-protocol.workspace = true
+tokio.workspace = true

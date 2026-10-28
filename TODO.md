@@ -96,13 +96,18 @@
   waiting tasks. Overload and shutdown produce explicit errors; internal
   cleanup/theme/sleep commands await capacity. Private-bus and event-loop tests
   cover errors, memory release, FIFO ordering, backpressure, and fair wakeups.
-- [ ] Bound integration event queues. The D-Bus backend and `server.rs` still
-  use unbounded event queues; slow signal delivery can accumulate memory.
-  Coalesce replaceable geometry/title events while preserving lifecycle order,
-  and explicitly reset the signal stream if lifecycle events exhaust its bounds.
-- [ ] Bound client event forwarding in `crates/client/src/events.rs`. Its
-  unbounded channel can retain events indefinitely for a slow consumer; preserve
-  lifecycle ordering and make overflow/reconnection visible to callers.
+- [x] Bound integration event queues to 512 events and 8 MiB of accounted
+  storage, with a 1 MiB event limit and one signal in flight. Shared queues
+  coalesce title, app-ID, geometry, and work-area updates within lifecycle
+  barriers. Overflow releases the backlog and emits `EventsReset` before new
+  events resume. The blocking bridge is removed; service monitors are cancelled
+  on shutdown. Tests cover stalled emission, real signals, byte/count limits,
+  lifecycle ordering, and allocation-free warm geometry coalescing.
+- [x] Bound client event forwarding with the shared queue. `next_result()`
+  reports local overflow, server reset, and service disconnection; legacy
+  `next()` ends and exposes `error()`. Subscriptions follow one authenticated
+  service owner and release forwarding tasks on consumer drop. Private-bus
+  tests cover overflow, resets, resubscription, owner loss, and forged signals.
 - [x] Move PNG compression and filesystem writes off the compositor thread.
   A lazy worker limits outstanding captures to two and reserves at most 128 MiB
   of raw pixels plus paths before GPU readback. Replies follow PNG completion

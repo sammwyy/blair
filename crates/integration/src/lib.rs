@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+pub mod events;
+
 use blair_protocol::{
     CompositorEvent, Rect, RenderStats, ShortcutBinding, WindowId, WindowInfo, WorkspaceInfo,
 };

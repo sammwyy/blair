@@ -100,7 +100,7 @@ Keep multiple renderers within the same guard when testing context changes.
 
 See [PERFORMANCE.md](PERFORMANCE.md) for release-build memory sampling.
 
-## D-Bus request limits
+## D-Bus queue limits
 
 The compositor admits at most 128 pending D-Bus commands and 8 MiB of retained
 command storage, including string/vector capacities. A command may retain up
@@ -114,6 +114,21 @@ calls through that connection. Cleanup, theme, and sleep monitors await queue
 capacity without blocking the compositor. Command batches yield after 16
 requests or 2 ms, then wake the event loop again; an individual command can
 exceed the time slice while executing.
+
+The server event queue and each client subscription retain at most 512 events
+and 8 MiB of accounted event storage, including string capacities. Each event
+may retain up to 1 MiB. Queue bookkeeping, D-Bus transport buffers, and the
+server's single in-flight signal are separate. Title, app-ID, geometry, and
+work-area updates coalesce between lifecycle barriers; opening, closing, focus,
+and visibility changes preserve their order.
+
+Server overflow releases queued events and sends `EventsReset` before emitting
+new events. `Events::next_result()` reports `EventStreamError::Reset`,
+`Overflow`, or `Disconnected` and ends that subscription. The legacy `next()`
+returns `None`; `error()` retains the reason. Subscribe again before refreshing
+window, workspace, output, and configuration snapshots. Raw signal consumers
+must also handle `EventsReset`. Subscriptions accept signals from their initial
+service owner and end when ownership changes.
 
 The D-Bus integration tests launch isolated `dbus-daemon` session buses and
 terminate them on completion. They require `dbus-daemon` on `PATH` and do not

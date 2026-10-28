@@ -29,6 +29,10 @@ pub struct CommandSender {
 }
 
 impl CommandSender {
+    pub(crate) async fn closed(&self) {
+        self.commands.closed().await;
+    }
+
     pub(crate) fn channel(
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> (Self, mpsc::Receiver<QueuedCommand>) {

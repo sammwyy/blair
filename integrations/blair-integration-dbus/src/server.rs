@@ -1,4 +1,6 @@
-use std::{sync::mpsc::Receiver, thread::JoinHandle};
+use std::{future::Future, thread::JoinHandle};
+
+use blair_integration::events::{EventItem, EventReceiver};
 
 use blair_protocol::CompositorEvent;
 use futures_util::StreamExt;
@@ -18,7 +20,7 @@ use creamui_theme_watch::{
 /// D-Bus activated services inherit the session variables.
 pub fn serve(
     commands: CommandSender,
-    events: Receiver<CompositorEvent>,
+    events: EventReceiver,
     environment: Vec<(String, String)>,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
@@ -34,7 +36,14 @@ pub fn serve(
                     return;
                 }
             };
-            if let Err(err) = runtime.block_on(run(commands, events, environment)) {
+            let stopped = commands.clone();
+            let result = runtime.block_on(async move {
+                tokio::select! {
+                    _ = stopped.closed() => Ok(()),
+                    result = run(commands, events, environment) => result,
+                }
+            });
+            if let Err(err) = result {
                 tracing::error!(%err, "D-Bus service exited");
             }
         })
@@ -43,7 +52,7 @@ pub fn serve(
 
 async fn run(
     commands: CommandSender,
-    events: Receiver<CompositorEvent>,
+    mut events: EventReceiver,
     environment: Vec<(String, String)>,
 ) -> zbus::Result<()> {
     let interface = CompositorInterface::new(commands.clone());
@@ -69,18 +78,11 @@ async fn run(
         update_activation_environment(&connection, &environment).await;
     }
 
-    let (forward_tx, mut forward_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::task::spawn_blocking(move || {
-        while let Ok(event) = events.recv() {
-            if forward_tx.send(event).is_err() {
-                break;
-            }
-        }
-    });
+    let mut monitors = tokio::task::JoinSet::new();
 
     let disconnect_commands = commands.clone();
     let disconnect_connection = connection.clone();
-    tokio::spawn(async move {
+    monitors.spawn(async move {
         let rule = match MatchRule::builder()
             .msg_type(MessageType::Signal)
             .interface("org.freedesktop.DBus")
@@ -123,7 +125,7 @@ async fn run(
 
     let theme_commands = commands.clone();
     let theme_connection = connection.clone();
-    tokio::spawn(async move {
+    monitors.spawn(async move {
         let rule = match MatchRule::builder()
             .msg_type(MessageType::Signal)
             .interface(THEME_INTERFACE)
@@ -153,18 +155,32 @@ async fn run(
     });
 
     let sleep_commands = commands.clone();
-    tokio::spawn(async move {
+    monitors.spawn(async move {
         if let Err(error) = monitor_sleep(sleep_commands).await {
             tracing::warn!(%error, "could not monitor logind sleep preparation");
         }
     });
 
-    while let Some(event) = forward_rx.recv().await {
-        if let Err(err) = emit(&iface_ref, event).await {
-            tracing::warn!(%err, "failed to emit D-Bus signal");
-        }
+    let result = forward_events(&mut events, |item| emit_item(&iface_ref, item));
+    let result = tokio::select! {
+        result = result => result,
+        _ = connection.closed() => Err(zbus::Error::Failure("D-Bus connection closed".into())),
+    };
+    monitors.shutdown().await;
+    if let Err(error) = connection.close().await {
+        tracing::debug!(%error, "could not close D-Bus connection");
     }
+    result
+}
 
+async fn forward_events<F, Fut>(events: &mut EventReceiver, mut emit: F) -> zbus::Result<()>
+where
+    F: FnMut(EventItem) -> Fut,
+    Fut: Future<Output = zbus::Result<()>>,
+{
+    while let Some(item) = events.recv().await {
+        emit(item).await?;
+    }
     Ok(())
 }
 
@@ -274,3 +290,16 @@ async fn emit(
         }
     }
 }
+
+async fn emit_item(
+    iface_ref: &zbus::object_server::InterfaceRef<CompositorInterface>,
+    item: EventItem,
+) -> zbus::Result<()> {
+    match item {
+        EventItem::Event(event) => emit(iface_ref, event).await,
+        EventItem::Reset => iface_ref.events_reset().await,
+    }
+}
+
+#[cfg(test)]
+mod tests;

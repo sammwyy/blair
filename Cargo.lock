@@ -212,6 +212,7 @@ dependencies = [
 name = "blair-client"
 version = "0.1.0"
 dependencies = [
+ "blair-integration",
  "blair-integration-dbus",
  "blair-protocol",
  "futures-util",
@@ -225,6 +226,7 @@ name = "blair-integration"
 version = "0.1.0"
 dependencies = [
  "blair-protocol",
+ "tokio",
 ]
 
 [[package]]

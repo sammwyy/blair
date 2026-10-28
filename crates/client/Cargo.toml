@@ -10,8 +10,12 @@ repository.workspace = true
 
 [dependencies]
 blair-protocol.workspace = true
+blair-integration.workspace = true
 blair-integration-dbus.workspace = true
 zbus.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+blair-integration-dbus = { workspace = true, features = ["test-support"] }

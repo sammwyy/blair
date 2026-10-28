@@ -4,6 +4,10 @@ mod interface;
 mod server;
 mod wire;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
+
 pub use backend::DbusIntegration;
 pub use interface::{CompositorInterface, CompositorProxy};
 pub use server::serve;

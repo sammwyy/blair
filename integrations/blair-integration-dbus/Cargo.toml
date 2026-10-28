@@ -8,6 +8,9 @@ description = "D-Bus interface for the Blair Wayland compositor"
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 blair-protocol.workspace = true
 blair-integration.workspace = true

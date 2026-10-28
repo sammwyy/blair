@@ -331,6 +331,10 @@ impl CompositorInterface {
         self.commands.send(Command::Quit)
     }
 
+    /// Subscribers must resubscribe and refresh snapshots after queued events are lost.
+    #[zbus(signal)]
+    pub async fn events_reset(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     #[zbus(signal)]
     pub async fn window_opened(
         emitter: &SignalEmitter<'_>,
