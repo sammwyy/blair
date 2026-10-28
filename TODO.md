@@ -35,11 +35,13 @@
   Coconut. Its settings UI currently only edits the side and fixed
   minimize/maximize/close order.
 - [ ] Optimize `blair_blur_unstable_v1` backdrop capture in `render/blur.rs`:
-  use a two-pass separable Gaussian to avoid large-radius tap-pattern aliasing,
-  and support recursively blurred backdrops. Captures now render only the blur
+  support recursively blurred backdrops. Captures now render only the blur
   rectangle plus filter padding, clamped to the output. EGL tests compare
   cropped and full-output backdrops at integer/fractional scales and output
   edges; region captures also preserve rounded surface clips and decorations.
+  A two-pass separable Gaussian uses paired bilinear taps and discards horizontal
+  padding after its first pass. GPU tests compare dense CPU convolution at
+  radii 1, 4, 16, and 64, including a checkerboard that aliased at large radii.
 - [ ] Establish a reproducible release-build memory baseline for DRM and
   Winit, both empty and with the shell loaded. Record RSS/PSS, anonymous
   memory, shared mappings, output resolution/scale, and graphics buffers;

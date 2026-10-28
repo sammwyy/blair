@@ -5,12 +5,18 @@
 Backdrop blur allocates only its physical rectangle plus `ceil(4 * radius) + 1`
 pixels of filter padding on each side, intersected with the output. The extra
 pixel preserves bilinear filtering. Shader taps clamp to edge texel centers,
-including at output boundaries. Region screenshots and screencopy allocate
+including at output boundaries. The separable Gaussian filters horizontally
+into a second buffer that omits horizontal padding, then vertically during
+composition. The source capture is released after the horizontal pass. Paired
+bilinear taps cover every pixel of the Gaussian support; coefficient recurrence
+avoids an exponential calculation per tap. Region screenshots and screencopy allocate
 only their requested physical region. Full-output captures retain full-size buffers.
 
 For a 1920×1080 output, the previous RGBA backdrop buffer required 8,294,400
 bytes per blur element. A 200×32 physical titlebar with radius 8 now requires
-266×98×4 = 104,272 bytes when away from output edges (98.7% fewer pixel bytes).
+266×98×4 = 104,272 source bytes and 200×98×4 = 78,400 intermediate bytes when
+away from output edges (97.8% fewer simultaneous pixel bytes). Only the 78,400
+intermediate bytes remain referenced by the blur element after filtering.
 A 320×200 region capture needs 256,000 bytes instead of 8,294,400 (96.9% fewer).
 These are texture storage calculations, not measured RSS/PSS or driver residency;
 driver padding, allocation reuse, and concurrent buffers affect actual savings.
@@ -20,6 +26,10 @@ Offscreen EGL regressions compare full and cropped blur pixels across three
 scales, three radii, and three output positions, including edges. A protocol
 fixture compares captured subregions with the full decorated Wayland scene,
 including rounded surface clips, at scales 1, 1.25, and 2.
+The Gaussian also matches a dense CPU convolution within two channel values at
+radii 1, 4, 16, and 64. Dense filtering removes the previous widely spaced tap
+pattern; its sample count grows with radius and should be profiled separately
+from the buffer savings.
 
 ## Empty nested session
 

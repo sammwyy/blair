@@ -13,7 +13,7 @@ use smithay::{
             UniformType, UniformValue,
         },
         utils::{CommitCounter, DamageSet, OpaqueRegions},
-        Renderer,
+        Renderer, Texture,
     },
     desktop::Window,
     output::Output,
@@ -36,6 +36,7 @@ varying vec2 v_coords;
 
 uniform vec2 texel;
 uniform float spread;
+uniform vec2 direction;
 uniform mat3 clip_from_ndc;
 uniform vec2 viewport;
 uniform vec2 clip_size;
@@ -53,18 +54,28 @@ float coverage(vec2 p) {
 }
 
 void main() {
-    vec4 sum = vec4(0.0);
-    float total = 0.0;
-    for (int x = -4; x <= 4; x++) {
-        for (int y = -4; y <= 4; y++) {
-            float fx = float(x);
-            float fy = float(y);
-            float weight = exp(-(fx * fx + fy * fy) / 18.0);
-            vec2 sample_coords = clamp(v_coords + vec2(fx, fy) * texel * spread,
-                texel * 0.5, vec2(1.0) - texel * 0.5);
-            sum += texture2D(tex, sample_coords) * weight;
-            total += weight;
-        }
+    vec2 low = texel * 0.5;
+    vec2 high = vec2(1.0) - low;
+    vec4 sum = texture2D(tex, clamp(v_coords, low, high));
+    float total = 1.0;
+    float sigma = max(3.0 * spread, 0.001);
+    float ratio = exp(-0.5 / (sigma * sigma));
+    float step_ratio = ratio * ratio;
+    float weight = 1.0;
+    float support = ceil(4.0 * spread);
+    for (int i = 1; i <= 256; i += 2) {
+        if (float(i) > support) break;
+        weight *= ratio;
+        ratio *= step_ratio;
+        float next_weight = float(i + 1) <= support ? weight * ratio : 0.0;
+        float pair_weight = weight + next_weight;
+        float offset = float(i) + next_weight / pair_weight;
+        vec2 delta = direction * texel * offset;
+        sum += (texture2D(tex, clamp(v_coords + delta, low, high))
+            + texture2D(tex, clamp(v_coords - delta, low, high))) * pair_weight;
+        total += 2.0 * pair_weight;
+        weight *= ratio;
+        ratio *= step_ratio;
     }
     vec2 ndc = gl_FragCoord.xy / viewport * 2.0 - 1.0;
     gl_FragColor = (sum / total) * alpha
@@ -78,6 +89,7 @@ pub fn compile(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError>
         &[
             UniformName::new("texel", UniformType::_2f),
             UniformName::new("spread", UniformType::_1f),
+            UniformName::new("direction", UniformType::_2f),
             UniformName::new("clip_from_ndc", UniformType::Matrix3x3),
             UniformName::new("viewport", UniformType::_2f),
             UniformName::new("clip_size", UniformType::_2f),
@@ -151,12 +163,20 @@ pub(super) fn push_backdrop(
         }
     };
 
-    let texel = (1.0 / capture.size.w as f32, 1.0 / capture.size.h as f32);
+    let columns = Rectangle::new(
+        (frame_rect_physical.loc.x - capture.loc.x, 0).into(),
+        (frame_rect_physical.size.w, capture.size.h).into(),
+    );
+    let target = match horizontal_blur(renderer, target, &shaders.blur, radius, columns) {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(%error, "failed to filter blur backdrop");
+            return;
+        }
+    };
+    let texel = (1.0 / columns.size.w as f32, 1.0 / columns.size.h as f32);
     let src = Rectangle::<f64, Logical>::new(
-        Point::from((
-            (frame_rect_physical.loc.x - capture.loc.x) as f64,
-            (frame_rect_physical.loc.y - capture.loc.y) as f64,
-        )),
+        Point::from((0.0, (frame_rect_physical.loc.y - capture.loc.y) as f64)),
         (
             frame_rect_physical.size.w as f64,
             frame_rect_physical.size.h as f64,
@@ -195,6 +215,46 @@ pub(super) fn push_backdrop(
     );
 }
 
+fn horizontal_blur(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    program: &GlesTexProgram,
+    radius: f32,
+    columns: Rectangle<i32, Physical>,
+) -> anyhow::Result<GlesTexture> {
+    let size = texture
+        .size()
+        .to_logical(1, Transform::Normal)
+        .to_physical(1);
+    let inner = TextureRenderElement::from_static_texture(
+        Id::new(),
+        renderer.context_id(),
+        (0.0, 0.0),
+        texture,
+        1,
+        Transform::Normal,
+        None,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    );
+    let mut element = BlurredBackdropElement::new(
+        inner,
+        program.clone(),
+        (1.0 / size.w as f32, 1.0 / size.h as f32),
+        radius,
+        vec![Rectangle::from_size(size)],
+        RoundedClip {
+            rect: Rectangle::from_size(size),
+            radii: [0.0; 4],
+            viewport: size,
+        },
+    );
+    element.direction = (1.0, 0.0);
+    super::capture::render_region(renderer, vec![element.into()], columns, 1.0)
+}
+
 fn backdrop_region(
     frame: Rectangle<i32, Physical>,
     viewport: smithay::utils::Size<i32, Physical>,
@@ -213,6 +273,7 @@ pub struct BlurredBackdropElement {
     program: GlesTexProgram,
     texel: (f32, f32),
     spread: f32,
+    direction: (f32, f32),
     coverage: Vec<Rectangle<i32, Physical>>,
     clip: RoundedClip,
 }
@@ -236,6 +297,7 @@ impl BlurredBackdropElement {
             program,
             texel,
             spread,
+            direction: (0.0, 1.0),
             coverage,
             clip,
         }
@@ -312,6 +374,7 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
         let uniforms = vec![
             Uniform::new("texel", self.texel),
             Uniform::new("spread", self.spread),
+            Uniform::new("direction", self.direction),
             Uniform::new(
                 "clip_from_ndc",
                 UniformValue::Matrix3x3 {
@@ -426,6 +489,13 @@ mod tests {
                         .unwrap();
                         assert_eq!(target.size().w, capture.size.w);
                         assert_eq!(target.size().h, capture.size.h);
+                        let columns = Rectangle::new(
+                            (frame.loc.x - capture.loc.x, 0).into(),
+                            (frame.size.w, capture.size.h).into(),
+                        );
+                        let target =
+                            horizontal_blur(&mut renderer, target, &program, radius, columns)
+                                .unwrap();
                         let inner = TextureRenderElement::from_static_texture(
                             Id::new(),
                             renderer.context_id(),
@@ -435,7 +505,7 @@ mod tests {
                             Transform::Normal,
                             None,
                             Some(Rectangle::new(
-                                (frame.loc - capture.loc).to_f64().to_logical(1.0),
+                                Point::from((0.0, (frame.loc.y - capture.loc.y) as f64)),
                                 frame.size.to_f64().to_logical(1.0),
                             )),
                             Some(frame.size.to_f64().to_logical(scale).to_i32_round()),
@@ -445,7 +515,7 @@ mod tests {
                         let element = BlurredBackdropElement::new(
                             inner,
                             program.clone(),
-                            (1.0 / capture.size.w as f32, 1.0 / capture.size.h as f32),
+                            (1.0 / columns.size.w as f32, 1.0 / columns.size.h as f32),
                             radius,
                             vec![Rectangle::from_size(frame.size)],
                             RoundedClip {
@@ -489,6 +559,114 @@ mod tests {
 
     #[test]
     #[ignore = "requires an EGL device with OpenGL ES support"]
+    fn separable_gaussian_matches_dense_reference_at_small_and_large_radii() {
+        let egl = crate::test_support::EglTest::new();
+        let mut renderer = egl.renderer();
+        let program = compile(&mut renderer).unwrap();
+        let size = (64, 48).into();
+        let pixels: Vec<u8> = (0..48)
+            .flat_map(|y| {
+                (0..64).flat_map(move |x| {
+                    let value = if (x / 8 + y / 8) % 2 == 0 { 0 } else { 255 };
+                    [value, 255 - value, value, 255]
+                })
+            })
+            .collect();
+        for radius in [1.0_f32, 4.0, 16.0, 64.0] {
+            let texture = renderer
+                .import_memory(&pixels, Fourcc::Abgr8888, (64, 48).into(), false)
+                .unwrap();
+            let texture = horizontal_blur(
+                &mut renderer,
+                texture,
+                &program,
+                radius,
+                Rectangle::from_size(size),
+            )
+            .unwrap();
+            let inner = TextureRenderElement::from_static_texture(
+                Id::new(),
+                renderer.context_id(),
+                (0.0, 0.0),
+                texture,
+                1,
+                Transform::Normal,
+                None,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+            let element = BlurredBackdropElement::new(
+                inner,
+                program.clone(),
+                (1.0 / 64.0, 1.0 / 48.0),
+                radius,
+                vec![Rectangle::from_size(size)],
+                RoundedClip {
+                    rect: Rectangle::from_size(size),
+                    radii: [0.0; 4],
+                    viewport: size,
+                },
+            );
+            let mut rendered = super::super::capture::render_region(
+                &mut renderer,
+                vec![element.into()],
+                Rectangle::from_size(size),
+                1.0,
+            )
+            .unwrap();
+            let framebuffer = renderer.bind(&mut rendered).unwrap();
+            let mapping = renderer
+                .copy_framebuffer(
+                    &framebuffer,
+                    Rectangle::from_size((64, 48).into()),
+                    Fourcc::Abgr8888,
+                )
+                .unwrap();
+            let result = renderer.map_texture(&mapping).unwrap();
+            let support = (4.0 * radius).ceil() as i32;
+            let weights: Vec<_> = (-support..=support)
+                .map(|i| (-(i as f64).powi(2) / (18.0 * (radius as f64).powi(2))).exp())
+                .collect();
+            let total: f64 = weights.iter().sum();
+            let mut reference = pixels.clone();
+            for (dx, dy) in [(1, 0), (0, 1)] {
+                let mut filtered = reference.clone();
+                for y in 0..48 {
+                    for x in 0..64 {
+                        for channel in 0..3 {
+                            let sum: f64 = (-support..=support)
+                                .zip(&weights)
+                                .map(|(offset, weight)| {
+                                    let sx = (x + dx * offset).clamp(0, 63);
+                                    let sy = (y + dy * offset).clamp(0, 47);
+                                    reference[((sy * 64 + sx) * 4 + channel) as usize] as f64
+                                        * weight
+                                })
+                                .sum();
+                            filtered[((y * 64 + x) * 4 + channel) as usize] =
+                                (sum / total).round() as u8;
+                        }
+                    }
+                }
+                reference = filtered;
+            }
+            let difference = result
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(difference <= 2, "radius={radius}, difference={difference}");
+            if radius >= 16.0 {
+                assert!((120..=135).contains(&result[(24 * 64 + 32) * 4]));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an EGL device with OpenGL ES support"]
     fn popup_blur_softens_the_backdrop_and_preserves_rounded_corners() {
         let egl = crate::test_support::EglTest::new();
         let mut renderer = egl.renderer();
@@ -504,6 +682,14 @@ mod tests {
         let texture = renderer
             .import_memory(&pixels, Fourcc::Abgr8888, (64, 64).into(), false)
             .unwrap();
+        let texture = horizontal_blur(
+            &mut renderer,
+            texture,
+            &program,
+            2.0,
+            Rectangle::from_size(viewport),
+        )
+        .unwrap();
         let inner = TextureRenderElement::from_static_texture(
             Id::new(),
             renderer.context_id(),
