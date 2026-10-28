@@ -343,18 +343,13 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smithay::backend::{
-        egl::{EGLContext, EGLDevice, EGLDisplay},
-        renderer::{Color32F, ExportMem, ImportMem},
-    };
+    use smithay::backend::renderer::{Color32F, ExportMem, ImportMem};
 
     #[test]
     #[ignore = "requires an EGL device with OpenGL ES support"]
     fn popup_blur_softens_the_backdrop_and_preserves_rounded_corners() {
-        let device = EGLDevice::enumerate().unwrap().next().unwrap();
-        let display = unsafe { EGLDisplay::new(device).unwrap() };
-        let context = EGLContext::new(&display).unwrap();
-        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let egl = crate::test_support::EglTest::new();
+        let mut renderer = egl.renderer();
         let program = compile(&mut renderer).unwrap();
         let viewport: smithay::utils::Size<i32, Physical> = (64, 64).into();
         let mut pixels = Vec::new();

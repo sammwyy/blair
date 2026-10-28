@@ -178,15 +178,12 @@ fn weak_index_stays_bounded_and_eviction_preserves_live_buffers() {
 fn shared_buttons_keep_independent_damage_and_disappear_without_ghosts() {
     use smithay::backend::{
         allocator::Fourcc,
-        egl::{EGLContext, EGLDevice, EGLDisplay},
         renderer::{
             damage::OutputDamageTracker, gles::GlesTexture, Bind, Color32F, ExportMem, Offscreen,
         },
     };
-    let device = EGLDevice::enumerate().unwrap().next().unwrap();
-    let display = unsafe { EGLDisplay::new(device).unwrap() };
-    let context = EGLContext::new(&display).unwrap();
-    let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+    let egl = crate::test_support::EglTest::new();
+    let mut renderer = egl.renderer();
     let mut buffers = ButtonBuffers::default();
     let key = ButtonKey {
         size: 24,

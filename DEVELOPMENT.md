@@ -87,6 +87,17 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+Run the offscreen GPU tests on a machine with an EGL device and OpenGL ES:
+
+```bash
+cargo test --workspace -- --include-ignored
+```
+
+These tests share an `EglTest` guard to serialize driver setup, rendering,
+and teardown while other tests run in parallel. Declare the guard before
+fixtures and GPU resources, and create renderers through `guard.renderer()`.
+Keep multiple renderers within the same guard when testing context changes.
+
 See [PERFORMANCE.md](PERFORMANCE.md) for release-build memory sampling.
 
 ## Local installation

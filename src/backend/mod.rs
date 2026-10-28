@@ -374,14 +374,10 @@ mod tests {
     #[test]
     #[ignore = "requires an EGL device with OpenGL ES support"]
     fn screenshots_complete_after_gpu_capture_and_reject_mode_changes() {
-        use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
-
+        let egl = crate::test_support::EglTest::new();
         let (_display, _event_loop, mut state) = fixture();
         let output = crate::test_support::add_output(&mut state, "capture", (0, 0), (64, 64));
-        let device = EGLDevice::enumerate().unwrap().next().unwrap();
-        let display = unsafe { EGLDisplay::new(device).unwrap() };
-        let context = EGLContext::new(&display).unwrap();
-        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let mut renderer = egl.renderer();
         let path = std::env::temp_dir().join(format!(
             "blair-backend-screenshot-{}.png",
             std::process::id()

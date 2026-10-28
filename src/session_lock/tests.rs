@@ -931,18 +931,10 @@ fn clicking_a_lock_surface_selects_its_output_and_preserves_that_keyboard_focus(
 #[test]
 #[ignore = "requires an EGL device with OpenGL ES support"]
 fn the_locked_scene_keeps_the_composited_pointer_cursor_visible() {
-    use smithay::backend::{
-        egl::{EGLContext, EGLDevice, EGLDisplay},
-        renderer::{
-            element::{Element, Kind},
-            gles::GlesRenderer,
-        },
-    };
+    use smithay::backend::renderer::element::{Element, Kind};
+    let egl = crate::test_support::EglTest::new();
     let mut f = InputFixture::new();
-    let device = EGLDevice::enumerate().unwrap().next().unwrap();
-    let display = unsafe { EGLDisplay::new(device).unwrap() };
-    let context = EGLContext::new(&display).unwrap();
-    let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+    let mut renderer = egl.renderer();
     let elements = crate::render::output_elements(
         &mut renderer,
         &mut f.state,

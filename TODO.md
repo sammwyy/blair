@@ -167,7 +167,9 @@
   Smithay's `PopupKeyboardGrab` ignores the exclusive-layer target passed by
   `set_keyboard_focus`; dismiss or suspend the popup grab before giving a
   newly committed exclusive layer keyboard focus.
-- [ ] Make parallel offscreen EGL tests reliable on Mesa. An all-tests run
-  stalled while `GlesRenderer::new` enabled the debug callback, waiting inside
-  Mesa's `util_queue_finish` before magnifier rendering. Isolate
-  or serialize EGL contexts in the test harness and retain GPU coverage.
+- [x] Serialize offscreen EGL tests with a shared `EglTest` guard held through
+  resource teardown. All eight tests use the common renderer factory, including
+  the multi-context magnifier check. This avoids overlapping driver setup and
+  teardown that stalled Mesa's debug callback. The full suite passes with
+  parallel execution, as do 25 repeated runs of all eight GPU tests with 16
+  test threads. `DEVELOPMENT.md` documents the GPU test command and guard usage.

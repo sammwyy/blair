@@ -327,17 +327,11 @@ fn unsetting_hybrid_mode_reconciles_policy_and_schedules_a_redraw() {
 #[test]
 #[ignore = "requires an EGL device with OpenGL ES support"]
 fn policy_cleanup_releases_sampled_textures_and_keeps_empty_titles_uncached() {
-    use smithay::backend::{
-        allocator::Fourcc,
-        egl::{EGLContext, EGLDevice, EGLDisplay},
-        renderer::Offscreen,
-    };
+    use smithay::backend::{allocator::Fourcc, renderer::Offscreen};
+    let egl = crate::test_support::EglTest::new();
     let mut fixture = Fixture::new();
     fixture.seed_buffers();
-    let device = EGLDevice::enumerate().unwrap().next().unwrap();
-    let display = unsafe { EGLDisplay::new(device).unwrap() };
-    let context = EGLContext::new(&display).unwrap();
-    let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+    let mut renderer = egl.renderer();
     let mut texture =
         Offscreen::<GlesTexture>::create_buffer(&mut renderer, Fourcc::Abgr8888, (400, 1).into())
             .unwrap();

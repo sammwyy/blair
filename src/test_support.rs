@@ -1,5 +1,7 @@
 mod allocations;
+mod egl;
 pub use allocations::count_allocations;
+pub use egl::EglTest;
 
 pub mod input;
 

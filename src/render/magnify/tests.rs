@@ -18,14 +18,6 @@ fn magnification_keeps_the_pointer_anchored_and_the_source_inside_the_output() {
     }
 }
 
-fn renderer() -> GlesRenderer {
-    use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
-    let device = EGLDevice::enumerate().unwrap().next().unwrap();
-    let display = unsafe { EGLDisplay::new(device).unwrap() };
-    let context = EGLContext::new(&display).unwrap();
-    unsafe { GlesRenderer::new(context).unwrap() }
-}
-
 fn texture_id(magnifier: &mut Magnifier) -> u32 {
     let mut id = 0;
     magnifier
@@ -69,7 +61,8 @@ fn pixels(renderer: &mut GlesRenderer, target: &mut GlesTexture) -> Vec<u8> {
 fn magnifier_reuses_resources_and_tracks_scene_damage_and_panning() {
     use smithay::backend::renderer::element::{solid::SolidColorRenderElement, Element, Id};
 
-    let mut renderer = renderer();
+    let egl = crate::test_support::EglTest::new();
+    let mut renderer = egl.renderer();
     let size = Size::from((64, 64));
     let colors = [
         [1.0, 0.0, 0.0, 1.0],
@@ -214,12 +207,13 @@ fn magnifier_cache_follows_output_modes_renderer_contexts_and_configuration() {
         output::{Mode, Scale},
     };
 
+    let egl = crate::test_support::EglTest::new();
     let (_display, _event_loop, mut state) = crate::state::tests::fixture();
     let output = crate::test_support::add_output(&mut state, "first", (0, 0), (64, 64));
     let second = crate::test_support::add_output(&mut state, "second", (64, 0), (64, 64));
     state.config.accessibility.zoom = true;
     state.config.accessibility.zoom_factor = 2.0;
-    let mut first_renderer = renderer();
+    let mut first_renderer = egl.renderer();
     let elements = output_elements(
         &mut first_renderer,
         &mut state,
@@ -291,7 +285,7 @@ fn magnifier_cache_follows_output_modes_renderer_contexts_and_configuration() {
     );
     assert_eq!(elements[0].id(), &scaled_id);
 
-    let mut second_renderer = renderer();
+    let mut second_renderer = egl.renderer();
     let elements = output_elements(
         &mut second_renderer,
         &mut state,

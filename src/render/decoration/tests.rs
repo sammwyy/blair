@@ -71,14 +71,11 @@ fn cropped_titles_align_to_the_buffer_scale_without_losing_pixels() {
 #[test]
 #[ignore = "requires an EGL device with OpenGL ES support"]
 fn cropped_titles_match_full_bitmaps_after_output_scaling() {
-    use smithay::backend::{
-        egl::{EGLContext, EGLDevice, EGLDisplay},
-        renderer::{element::memory::MemoryRenderBufferRenderElement, Bind, ExportMem, Offscreen},
+    use smithay::backend::renderer::{
+        element::memory::MemoryRenderBufferRenderElement, Bind, ExportMem, Offscreen,
     };
-    let device = EGLDevice::enumerate().unwrap().next().unwrap();
-    let display = unsafe { EGLDisplay::new(device).unwrap() };
-    let context = EGLContext::new(&display).unwrap();
-    let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+    let egl = crate::test_support::EglTest::new();
+    let mut renderer = egl.renderer();
     let font = creamui_fonts::resolve(
         creamui_fonts::DEFAULT_FAMILY,
         creamui_fonts::FontWeight::Regular,
