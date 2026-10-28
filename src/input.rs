@@ -32,6 +32,7 @@ use crate::{
     config::{DecorationButton, FocusPolicy, WindowLayout},
     decorations::{hit_test_frame, hit_test_overlay_controls, DecorationPart, RESIZE_OUTSET},
     grabs::ResizeEdges,
+    popup_grabs::InputKind,
     render::{to_rect, window_frame, z_ordered_windows},
     shortcuts::physical_vt_from_keycode,
     state::BlairState,
@@ -382,16 +383,28 @@ pub fn process_input_event<B: InputBackend>(
             };
             if let Some(touch) = state.seat.get_touch() {
                 state.touch_points.insert(event.slot(), location);
+                let serial = SERIAL_COUNTER.next_serial();
+                let recordable = !state.session_locked
+                    && touch
+                        .with_grab(|_, grab| grab.is::<touch::TouchDownGrab<BlairState>>())
+                        .unwrap_or(true);
                 touch.down(
                     state,
                     under,
                     &touch::DownEvent {
                         slot: event.slot(),
                         location,
-                        serial: SERIAL_COUNTER.next_serial(),
+                        serial,
                         time: event.time_msec(),
                     },
                 );
+                if recordable {
+                    let focus = touch
+                        .grab_start_data()
+                        .and_then(|start| start.focus)
+                        .map(|(surface, _)| surface);
+                    state.record_popup_input(InputKind::Touch, serial, focus.as_ref());
+                }
             }
         }
         InputEvent::TouchMotion { event } => {
@@ -441,6 +454,7 @@ pub fn process_input_event<B: InputBackend>(
 }
 
 pub(crate) fn cancel_touch_input(state: &mut BlairState) {
+    state.popup_input.revoke(InputKind::Touch);
     let points = std::mem::take(&mut state.touch_points);
     if let Some(touch) = state.seat.get_touch() {
         touch.unset_grab(state);
@@ -544,11 +558,16 @@ pub(crate) fn keyboard_transition(
         Vec::new()
     };
 
+    let serial = SERIAL_COUNTER.next_serial();
+    let recordable = pressed
+        && keyboard
+            .with_grab(|_, grab| grab.is::<smithay::desktop::PopupKeyboardGrab<BlairState>>())
+            .unwrap_or(true);
     let action = keyboard.input(
         state,
         keycode,
         key_state,
-        SERIAL_COUNTER.next_serial(),
+        serial,
         time,
         |state, _mods, keysym| {
             if !pressed {
@@ -588,6 +607,14 @@ pub(crate) fn keyboard_transition(
         },
     );
 
+    if recordable && action.is_none() {
+        state.record_popup_input(
+            InputKind::Keyboard,
+            serial,
+            keyboard.current_focus().as_ref(),
+        );
+    }
+
     match action {
         Some(KeyAction::Shortcuts(shortcuts)) => {
             tracing::debug!(count = shortcuts.len(), "shortcut activated");
@@ -616,6 +643,7 @@ fn shortcuts_inhibited(state: &BlairState) -> bool {
 }
 
 pub fn reset_keyboard_state(state: &mut BlairState) {
+    state.popup_input.clear();
     release_sticky_keys(state);
     state.hot_corners.cancel();
     state.physical_mods = Default::default();
@@ -857,6 +885,14 @@ fn pointer_button(state: &mut BlairState, button: u32, button_state: ButtonState
             return;
         }
     }
+    let recordable = button_state == ButtonState::Pressed
+        && !state.session_locked
+        && pointer
+            .with_grab(|_, grab| {
+                grab.is::<smithay::input::pointer::ClickGrab<BlairState>>()
+                    || grab.is::<smithay::desktop::PopupPointerGrab<BlairState>>()
+            })
+            .unwrap_or(true);
     pointer.button(
         state,
         &ButtonEvent {
@@ -866,6 +902,9 @@ fn pointer_button(state: &mut BlairState, button: u32, button_state: ButtonState
             time,
         },
     );
+    if recordable {
+        state.record_popup_input(InputKind::Pointer, serial, pointer.current_focus().as_ref());
+    }
     pointer.frame(state);
 }
 

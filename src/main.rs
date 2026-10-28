@@ -13,6 +13,7 @@ mod input_devices;
 mod integrations;
 mod logging;
 mod outputs;
+mod popup_grabs;
 mod render;
 mod rules;
 mod screencopy;

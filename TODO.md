@@ -152,7 +152,22 @@
   titlebar sampling parameters into `TitlebarSampleParams`. Both rendering
   helpers now use explicit context/options types without argument-count lint
   suppressions.
-- [ ] Validate initial `xdg_popup.grab` requests against an input serial from
-  the focused client. `src/handlers.rs` checks existing grab serials, but with
-  no active grab it accepts arbitrary serials and can focus an unfocused app's
-  popup. Cover pointer- and keyboard-triggered popups and nested grabs.
+- [x] Validate `xdg_popup.grab` before changing focus or the popup stack.
+  A bounded, expiring history records delivered key/button presses and touch
+  downs. Requests must match the receiving client, seat, and active parent;
+  denied popups are dismissed without replacing existing grabs. Protocol
+  tests cover forged, foreign, released, replayed, and cancelled serials,
+  nested menus, focus restoration, exclusive layers, and interactive grabs.
+  Warm input-history updates allocate nothing.
+- [ ] Route touch sequences through the active popup grab policy. After an
+  implicit touch grab ends, `src/input.rs` can deliver a new touch to another
+  client while a popup owns the keyboard/pointer grabs. Restrict touch
+  recipients and dismiss the popup on an outside touch.
+- [ ] Arbitrate active popup grabs when a keyboard-exclusive layer appears.
+  Smithay's `PopupKeyboardGrab` ignores the exclusive-layer target passed by
+  `set_keyboard_focus`; dismiss or suspend the popup grab before giving a
+  newly committed exclusive layer keyboard focus.
+- [ ] Make parallel offscreen EGL tests reliable on Mesa. An all-tests run
+  stalled while `GlesRenderer::new` enabled the debug callback, waiting inside
+  Mesa's `util_queue_finish` before magnifier rendering. Isolate
+  or serialize EGL contexts in the test harness and retain GPU coverage.

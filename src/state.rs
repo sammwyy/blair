@@ -218,6 +218,7 @@ pub struct BlairState {
     pub suppressed_keys: HashSet<u32>,
 
     pub seat: Seat<Self>,
+    pub popup_input: crate::popup_grabs::PopupInput,
     pub focused_window: Option<WindowId>,
     pub hovered_button: Option<(WindowId, crate::config::DecorationButton)>,
     pub hot_corners: crate::hot_corners::HotCornerState,
@@ -415,6 +416,7 @@ impl BlairState {
             physical_mods: PhysicalMods::default(),
             suppressed_keys: HashSet::new(),
             seat,
+            popup_input: crate::popup_grabs::PopupInput::default(),
             focused_window: None,
             hovered_button: None,
             hot_corners: crate::hot_corners::HotCornerState::default(),
@@ -603,13 +605,7 @@ impl BlairState {
             self.magnifiers.clear();
         }
         self.popup_manager.cleanup();
-        if self
-            .active_popup_grab
-            .as_ref()
-            .is_some_and(PopupGrab::has_ended)
-        {
-            self.active_popup_grab = None;
-        }
+        self.refresh_popup_grab();
         self.layer_surfaces.retain(|layer| layer.alive());
         self.idle_inhibitors.retain(|surface| surface.alive());
         self.prune_finished_animations();
@@ -1584,7 +1580,7 @@ impl BlairState {
             .collect()
     }
 
-    fn exclusive_layer_surface(&self) -> Option<WlSurface> {
+    pub(crate) fn exclusive_layer_surface(&self) -> Option<WlSurface> {
         self.layer_surfaces
             .iter()
             .filter(|layer| matches!(layer.layer(), Layer::Top | Layer::Overlay))
@@ -1613,6 +1609,10 @@ impl BlairState {
             return;
         }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        // Smithay only reports focus changes when the new focus is present.
+        if keyboard.current_focus().is_none() {
+            self.popup_input.focus_changed(None);
+        }
     }
 
     pub fn focus_window(&mut self, window: &Window) -> bool {

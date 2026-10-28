@@ -10,13 +10,10 @@ use smithay::{
     delegate_presentation, delegate_primary_selection, delegate_relative_pointer, delegate_seat,
     delegate_session_lock, delegate_shm, delegate_single_pixel_buffer, delegate_viewporter,
     delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{
-        find_popup_root_surface, layer_map_for_output, LayerSurface as DesktopLayerSurface,
-        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy,
-    },
+    desktop::{layer_map_for_output, LayerSurface as DesktopLayerSurface, PopupKind},
     input::{
         keyboard::LedState,
-        pointer::{CursorImageStatus, Focus, PointerHandle},
+        pointer::{CursorImageStatus, PointerHandle},
         Seat, SeatHandler, SeatState,
     },
     output::Output,
@@ -175,50 +172,7 @@ impl XdgShellHandler for BlairState {
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
-        if self.session_locked {
-            surface.send_popup_done();
-            return;
-        }
-        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
-            return;
-        };
-        let kind = PopupKind::Xdg(surface);
-        let Ok(root) = find_popup_root_surface(&kind) else {
-            return;
-        };
-        let mut grab = match self.popup_manager.grab_popup(root, kind, &seat, serial) {
-            Ok(grab) => grab,
-            Err(error) => {
-                tracing::debug!(?error, "popup grab rejected");
-                return;
-            }
-        };
-        if let Some(keyboard) = seat.get_keyboard() {
-            if keyboard.is_grabbed()
-                && !(keyboard.has_grab(serial)
-                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
-            {
-                grab.ungrab(PopupUngrabStrategy::All);
-                return;
-            }
-        }
-        if let Some(pointer) = seat.get_pointer() {
-            if pointer.is_grabbed()
-                && !(pointer.has_grab(serial)
-                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
-            {
-                grab.ungrab(PopupUngrabStrategy::All);
-                return;
-            }
-        }
-        if let Some(keyboard) = seat.get_keyboard() {
-            keyboard.set_focus(self, grab.current_grab(), serial);
-            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
-        }
-        if let Some(pointer) = seat.get_pointer() {
-            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
-        }
-        self.active_popup_grab = Some(grab);
+        self.grab_popup(surface, seat, serial);
     }
 
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
@@ -425,6 +379,7 @@ impl SeatHandler for BlairState {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        self.popup_input.focus_changed(focused);
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
         set_primary_focus(&self.display_handle, seat, client);

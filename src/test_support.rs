@@ -31,6 +31,7 @@ use crate::state::{BlairState, ClientState};
 pub struct ClientEvents {
     pub globals: Vec<(u32, String, u32)>,
     pub keys: Vec<(u32, wl_keyboard::KeyState)>,
+    pub key_serials: Vec<u32>,
     pub keymaps: usize,
     pub repeat_info: Vec<(i32, i32)>,
     pub decoration_modes: Vec<zxdg_toplevel_decoration_v1::Mode>,
@@ -84,10 +85,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientEvents {
     ) {
         match event {
             wl_keyboard::Event::Key {
+                serial,
                 key,
                 state: key_state,
                 ..
-            } => state.keys.push((key, key_state.into_result().unwrap())),
+            } => {
+                state.keys.push((key, key_state.into_result().unwrap()));
+                state.key_serials.push(serial);
+            }
             wl_keyboard::Event::Keymap { .. } => state.keymaps += 1,
             wl_keyboard::Event::RepeatInfo { rate, delay } => state.repeat_info.push((rate, delay)),
             _ => {}
