@@ -1092,7 +1092,7 @@ impl BlairState {
 
     pub fn output_changed(&mut self, output: &Output) {
         let previous = layer_map_for_output(output).non_exclusive_zone();
-        let changed = layer_map_for_output(output).arrange();
+        let changed = self.arrange_layers(output);
         if changed || layer_map_for_output(output).non_exclusive_zone() != previous {
             self.emit_work_area_changed(output);
         }

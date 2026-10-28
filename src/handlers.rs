@@ -5,11 +5,11 @@ use smithay::{
     delegate_alpha_modifier, delegate_compositor, delegate_cursor_shape, delegate_data_control,
     delegate_data_device, delegate_dmabuf, delegate_foreign_toplevel_list,
     delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
-    delegate_kde_decoration, delegate_keyboard_shortcuts_inhibit, delegate_layer_shell,
-    delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
-    delegate_presentation, delegate_primary_selection, delegate_relative_pointer, delegate_seat,
-    delegate_session_lock, delegate_shm, delegate_single_pixel_buffer, delegate_viewporter,
-    delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_kde_decoration, delegate_keyboard_shortcuts_inhibit, delegate_output,
+    delegate_pointer_constraints, delegate_pointer_gestures, delegate_presentation,
+    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_single_pixel_buffer, delegate_viewporter, delegate_xdg_activation,
+    delegate_xdg_decoration, delegate_xdg_shell,
     desktop::PopupKind,
     input::{
         keyboard::LedState,
@@ -326,8 +326,6 @@ impl WlrLayerShellHandler for BlairState {
         self.remove_layer_surface(surface.wl_surface());
     }
 }
-
-delegate_layer_shell!(BlairState);
 
 impl ShmHandler for BlairState {
     fn shm_state(&self) -> &ShmState {

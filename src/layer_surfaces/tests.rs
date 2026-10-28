@@ -2,6 +2,7 @@ use super::*;
 use smithay::{
     backend::input::InputEvent,
     reexports::{calloop::EventLoop, wayland_server::Display},
+    wayland::shell::wlr_layer::{Anchor, ExclusiveZone},
 };
 use wayland_client::{
     protocol::{wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_surface, wl_touch},
@@ -14,6 +15,8 @@ use crate::test_support::{
     input::{TestEvent, TestInputBackend},
     TestClient, TestPopup,
 };
+
+mod layout;
 
 struct Hooks;
 impl crate::input::InputHooks for Hooks {}
@@ -109,7 +112,8 @@ impl Fixture {
             .last()
             .copied()
             .unwrap_or((0, 800, 30));
-        self.viewport.set_destination(width as i32, height as i32);
+        self.viewport
+            .set_destination(width.max(1) as i32, height.max(1) as i32);
         self.surface.attach(Some(&self.buffer), 0, 0);
         self.surface.damage_buffer(0, 0, 1, 1);
         self.surface.commit();

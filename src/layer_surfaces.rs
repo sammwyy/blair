@@ -9,14 +9,17 @@ use smithay::{
     wayland::{
         compositor::{add_pre_commit_hook, with_states, BufferAssignment, SurfaceAttributes},
         shell::wlr_layer::{
-            Anchor, ExclusiveZone, Layer, LayerSurface, LayerSurfaceCachedState,
-            LayerSurfaceConfigure, LayerSurfaceData,
+            Layer, LayerSurface, LayerSurfaceCachedState, LayerSurfaceConfigure, LayerSurfaceData,
         },
     },
 };
 use wayland_server::{protocol::wl_surface::WlSurface, Resource};
 
 use crate::state::{send_scale_to_surface, BlairState};
+
+mod dispatch;
+mod layout;
+use layout::Layout;
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
@@ -32,6 +35,8 @@ struct Lifecycle {
     output: WeakOutput,
     initial_layer: Layer,
     phase: Cell<Phase>,
+    // Output changes must preserve committed requests without applying uncommitted setters.
+    requested: Cell<LayerSurfaceCachedState>,
 }
 
 struct CommitHook;
@@ -50,56 +55,38 @@ pub(crate) fn owns_surface(layer: &DesktopLayerSurface, surface: &WlSurface) -> 
     found
 }
 
-// Unmapped layers must not reserve space while negotiating their initial size.
-fn configure_size(
-    state: &BlairState,
-    layer: &DesktopLayerSurface,
-    output: &Output,
-) -> Size<i32, Logical> {
-    let data = layer.cached_state();
-    let mut available = if data.exclusive_zone == ExclusiveZone::DontCare {
-        state.space.output_geometry(output).unwrap_or_default().size
-    } else {
-        layer_map_for_output(output).non_exclusive_zone().size
-    };
-    for (anchor, margin) in [
-        (Anchor::LEFT, data.margin.left),
-        (Anchor::RIGHT, data.margin.right),
-    ] {
-        if data.anchor.contains(anchor) {
-            available.w = available.w.saturating_sub(margin);
-        }
-    }
-    for (anchor, margin) in [
-        (Anchor::TOP, data.margin.top),
-        (Anchor::BOTTOM, data.margin.bottom),
-    ] {
-        if data.anchor.contains(anchor) {
-            available.h = available.h.saturating_sub(margin);
-        }
-    }
-    available.w = available.w.max(1);
-    available.h = available.h.max(1);
-    let mut size = data.size;
-    size.w = size.w.min(available.w);
-    size.h = size.h.min(available.h);
-    if size.w == 0 {
-        size.w = available.w / 2;
-    }
-    if size.h == 0 {
-        size.h = available.h / 2;
-    }
-    if data.anchor.anchored_horizontally() {
-        size.w = available.w;
-    }
-    if data.anchor.anchored_vertically() {
-        size.h = available.h;
-    }
+fn output_layout(state: &BlairState, output: &Output) -> Layout {
+    // LayerMap rounds logical sizes, while Space rounds them up.
+    let size = output
+        .current_mode()
+        .map(|mode| {
+            let size = mode
+                .size
+                .to_f64()
+                .to_logical(output.current_scale().fractional_scale())
+                .to_i32_round();
+            output.current_transform().transform_size(size)
+        })
+        .unwrap_or_default();
+    let origin = state.space.output_geometry(output).unwrap_or_default().loc;
+    Layout::new(Rectangle::new(origin, size))
+}
+
+fn project(layer: &DesktopLayerSurface, layout: &mut Layout) -> Size<i32, Logical> {
+    let (effective, size) = layout.project(lifecycle(layer).requested.get());
+    with_states(layer.wl_surface(), |states| {
+        *states
+            .cached_state
+            .get::<LayerSurfaceCachedState>()
+            .current() = effective;
+    });
     size
 }
 
 fn configure(state: &BlairState, layer: &DesktopLayerSurface, output: &Output) -> Option<Serial> {
-    let size = configure_size(state, layer, output);
+    let mut layout = output_layout(state, output);
+    layout.remaining = layer_map_for_output(output).non_exclusive_zone();
+    let size = project(layer, &mut layout);
     layer
         .layer_surface()
         .with_pending_state(|pending| pending.size = Some(size));
@@ -127,6 +114,7 @@ fn reset(layer: &DesktopLayerSurface) {
             layer: lifecycle.initial_layer,
             ..Default::default()
         };
+        lifecycle.requested.set(initial);
         *cache.pending() = initial;
         *cache.current() = initial;
     });
@@ -147,6 +135,27 @@ fn validate_buffer(layer: &DesktopLayerSurface) -> bool {
 }
 
 impl BlairState {
+    pub(crate) fn arrange_layers(&self, output: &Output) -> bool {
+        self.prepare_layer_layout(output, None, None);
+        layer_map_for_output(output).arrange()
+    }
+
+    fn prepare_layer_layout(
+        &self,
+        output: &Output,
+        extra: Option<&DesktopLayerSurface>,
+        omitted: Option<&DesktopLayerSurface>,
+    ) {
+        let mut layout = output_layout(self, output);
+        let map = layer_map_for_output(output);
+        for layer in map.layers().filter(|layer| Some(*layer) != omitted) {
+            project(layer, &mut layout);
+        }
+        if let Some(layer) = extra {
+            project(layer, &mut layout);
+        }
+    }
+
     pub(crate) fn register_layer_surface(
         &mut self,
         surface: LayerSurface,
@@ -176,6 +185,10 @@ impl BlairState {
             output: output.downgrade(),
             initial_layer: layer,
             phase: Cell::new(Phase::Initial),
+            requested: Cell::new(LayerSurfaceCachedState {
+                layer,
+                ..Default::default()
+            }),
         });
         let install_hook = with_states(desktop.wl_surface(), |states| {
             states.data_map.insert_if_missing(|| CommitHook)
@@ -192,15 +205,21 @@ impl BlairState {
                         Some(BufferAssignment::NewBuffer(_))
                     )
                 });
-                if !attaches_buffer {
-                    return;
-                }
                 if let Some(layer) = state
                     .layer_surfaces
                     .iter()
                     .find(|layer| layer.wl_surface() == surface)
                 {
-                    validate_buffer(layer);
+                    let requested = with_states(surface, |states| {
+                        *states
+                            .cached_state
+                            .get::<LayerSurfaceCachedState>()
+                            .pending()
+                    });
+                    lifecycle(layer).requested.set(requested);
+                    if attaches_buffer {
+                        validate_buffer(layer);
+                    }
                 }
             });
         }
@@ -295,6 +314,7 @@ impl BlairState {
             .and_then(|start| start.focus)
             .is_some_and(|(focus, _)| owns_surface(layer, &focus));
         let previous = layer_map_for_output(output).non_exclusive_zone();
+        self.prepare_layer_layout(output, None, Some(layer));
         layer_map_for_output(output).unmap_layer(layer);
         self.release_layer_focus(layer.wl_surface());
         for (popup, _) in PopupManager::popups_for_surface(layer.wl_surface()).filter(|(popup, _)| {
@@ -365,6 +385,7 @@ impl BlairState {
             }
             Phase::Ready if has_buffer => {
                 let previous = layer_map_for_output(&output).non_exclusive_zone();
+                self.prepare_layer_layout(&output, Some(&layer), None);
                 if let Err(error) = layer_map_for_output(&output).map_layer(&layer) {
                     tracing::warn!(?error, "layer mapping failed");
                     lifecycle(&layer).phase.set(Phase::Closed);
@@ -388,7 +409,7 @@ impl BlairState {
             }
             Phase::Mapped => {
                 let previous = layer_map_for_output(&output).non_exclusive_zone();
-                layer_map_for_output(&output).arrange();
+                self.arrange_layers(&output);
                 self.layer_layout_changed(&output, previous);
                 self.focus_interactive_layer_surface(surface);
             }

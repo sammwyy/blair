@@ -180,10 +180,13 @@
   acknowledgement from the current mapping cycle. Protocol and EGL tests cover
   stale/wrapping serials, pending output changes, work-area events, repeated cycles,
   input cleanup, output assignment, and removal without visual remnants.
-- [ ] Validate layer-shell sizes, margins, and exclusive zones before calling
-  `LayerMap::arrange`. Smithay 0.7 uses unchecked signed arithmetic; oversized
-  client values or accumulated reservations can overflow or produce negative
-  output areas. Bound layout inputs and test adversarial combinations.
+- [x] Bound layer-shell layout inputs before Smithay arrangement. Reject sizes
+  beyond signed coordinates before Smithay's request-time conversion, constrain
+  margins and accumulated reservations, and ignore exclusive zones for unsupported
+  anchor combinations. Preserve committed requests across output changes without
+  applying uncommitted setters. Protocol tests cover all 16 anchor combinations
+  with extreme margins and zones, overlapping reservations, resize recovery,
+  negative margins, and fractional-scale rounding.
 - [x] Serialize offscreen EGL tests with a shared `EglTest` guard held through
   resource teardown. All eight tests use the common renderer factory, including
   the multi-context magnifier check. This avoids overlapping driver setup and
