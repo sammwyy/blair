@@ -89,12 +89,20 @@
   forced redraws, and mode changes remove pending wakeups; earlier deadlines
   replace old timers. Event-loop tests also cover missing presentation feedback
   after an animation wakeup.
-- [ ] Bound integration queues and limit commands processed per event-loop
-  iteration. `integrations/blair-integration-dbus/src/backend.rs` uses
-  unbounded command/event channels and drains commands until empty;
-  `server.rs` adds another unbounded event queue. Slow signal delivery can
-  accumulate memory, and sustained requests can starve input and rendering.
-  Coalesce replaceable geometry/title events while preserving lifecycle order.
+- [x] Bound D-Bus command admission and processing. The queue retains at most
+  128 requests and 8 MiB, with a 1 MiB per-request limit. Batches yield after
+  16 commands or a 2 ms time slice and wake the next iteration; one command's
+  execution cannot be preempted. Method dispatch does not spawn unlimited
+  waiting tasks. Overload and shutdown produce explicit errors; internal
+  cleanup/theme/sleep commands await capacity. Private-bus and event-loop tests
+  cover errors, memory release, FIFO ordering, backpressure, and fair wakeups.
+- [ ] Bound integration event queues. The D-Bus backend and `server.rs` still
+  use unbounded event queues; slow signal delivery can accumulate memory.
+  Coalesce replaceable geometry/title events while preserving lifecycle order,
+  and explicitly reset the signal stream if lifecycle events exhaust its bounds.
+- [ ] Bound client event forwarding in `crates/client/src/events.rs`. Its
+  unbounded channel can retain events indefinitely for a slow consumer; preserve
+  lifecycle ordering and make overflow/reconnection visible to callers.
 - [x] Move PNG compression and filesystem writes off the compositor thread.
   A lazy worker limits outstanding captures to two and reserves at most 128 MiB
   of raw pixels plus paths before GPU readback. Replies follow PNG completion

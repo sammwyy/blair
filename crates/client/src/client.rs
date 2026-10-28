@@ -34,19 +34,22 @@ impl BlairClient {
     }
 
     pub async fn focus_window(&self, id: WindowId) -> zbus::Result<bool> {
-        self.proxy.focus_window(id.0).await
+        self.proxy.focus_window(id.0).await.map_err(Into::into)
     }
 
     pub async fn close_window(&self, id: WindowId) -> zbus::Result<bool> {
-        self.proxy.close_window(id.0).await
+        self.proxy.close_window(id.0).await.map_err(Into::into)
     }
 
     pub async fn minimize_window(&self, id: WindowId) -> zbus::Result<bool> {
-        self.proxy.minimize_window(id.0).await
+        self.proxy.minimize_window(id.0).await.map_err(Into::into)
     }
 
     pub async fn toggle_maximize_window(&self, id: WindowId) -> zbus::Result<bool> {
-        self.proxy.toggle_maximize_window(id.0).await
+        self.proxy
+            .toggle_maximize_window(id.0)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn move_resize_window(&self, id: WindowId, geometry: Rect) -> zbus::Result<bool> {
@@ -59,6 +62,7 @@ impl BlairClient {
                 geometry.height,
             )
             .await
+            .map_err(Into::into)
     }
 
     /// Returns the work area; an empty name selects the first output.
@@ -73,7 +77,7 @@ impl BlairClient {
     }
 
     pub async fn outputs(&self) -> zbus::Result<Vec<String>> {
-        self.proxy.outputs().await
+        self.proxy.outputs().await.map_err(Into::into)
     }
 
     pub async fn display_info(&self) -> zbus::Result<Vec<blair_protocol::DisplayInfo>> {
@@ -116,7 +120,7 @@ impl BlairClient {
     }
 
     pub async fn switch_workspace(&self, id: u64) -> zbus::Result<bool> {
-        self.proxy.switch_workspace(id).await
+        self.proxy.switch_workspace(id).await.map_err(Into::into)
     }
 
     pub async fn move_window_to_workspace(
@@ -127,11 +131,15 @@ impl BlairClient {
         self.proxy
             .move_window_to_workspace(window.0, workspace)
             .await
+            .map_err(Into::into)
     }
 
     /// Writes a PNG screenshot of `output` (empty selects the focused one).
     pub async fn screenshot(&self, output: &str, path: &str) -> zbus::Result<bool> {
-        self.proxy.screenshot(output, path).await
+        self.proxy
+            .screenshot(output, path)
+            .await
+            .map_err(Into::into)
     }
 
     /// Frame timings of the compositor's most recent reporting interval.
@@ -150,7 +158,7 @@ impl BlairClient {
     }
 
     pub async fn window_settings(&self) -> zbus::Result<(i32, i32, i32, bool)> {
-        self.proxy.window_settings().await
+        self.proxy.window_settings().await.map_err(Into::into)
     }
 
     pub async fn set_window_settings(
@@ -168,14 +176,18 @@ impl BlairClient {
                 server_side_decorations,
             )
             .await
+            .map_err(Into::into)
     }
 
     pub async fn configuration(&self) -> zbus::Result<String> {
-        self.proxy.configuration().await
+        self.proxy.configuration().await.map_err(Into::into)
     }
 
     pub async fn set_configuration(&self, configuration: &str) -> zbus::Result<bool> {
-        self.proxy.set_configuration(configuration).await
+        self.proxy
+            .set_configuration(configuration)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn configured_shortcuts(&self) -> zbus::Result<Vec<ShortcutBinding>> {
@@ -212,19 +224,23 @@ impl BlairClient {
                     .collect(),
             )
             .await
+            .map_err(Into::into)
     }
 
     /// Registers `accelerator` and identifies activations with `id`.
     pub async fn bind_shortcut(&self, id: &str, accelerator: &str) -> zbus::Result<bool> {
-        self.proxy.bind_shortcut(id, accelerator).await
+        self.proxy
+            .bind_shortcut(id, accelerator)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn unbind_shortcut(&self, id: &str) -> zbus::Result<()> {
-        self.proxy.unbind_shortcut(id).await
+        self.proxy.unbind_shortcut(id).await.map_err(Into::into)
     }
 
     pub async fn quit(&self) -> zbus::Result<()> {
-        self.proxy.quit().await
+        self.proxy.quit().await.map_err(Into::into)
     }
 
     /// Subscribes to compositor events.

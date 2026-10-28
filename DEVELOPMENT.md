@@ -100,6 +100,25 @@ Keep multiple renderers within the same guard when testing context changes.
 
 See [PERFORMANCE.md](PERFORMANCE.md) for release-build memory sampling.
 
+## D-Bus request limits
+
+The compositor admits at most 128 pending D-Bus commands and 8 MiB of retained
+command storage, including string/vector capacities. A command may retain up
+to 1 MiB. Saturation and oversized commands return
+`org.freedesktop.DBus.Error.LimitsExceeded`; stopped compositor receivers return
+`org.freedesktop.DBus.Error.Failed`. Invalid settings still return `false`.
+
+The service dispatches methods sequentially so waiting replies cannot create
+an unbounded task backlog. Interface methods must not make dependent D-Bus
+calls through that connection. Cleanup, theme, and sleep monitors await queue
+capacity without blocking the compositor. Command batches yield after 16
+requests or 2 ms, then wake the event loop again; an individual command can
+exceed the time slice while executing.
+
+The D-Bus integration tests launch isolated `dbus-daemon` session buses and
+terminate them on completion. They require `dbus-daemon` on `PATH` and do not
+change the desktop session's bus address.
+
 ## Local installation
 
 ```bash

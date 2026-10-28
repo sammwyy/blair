@@ -233,6 +233,7 @@ version = "0.1.0"
 dependencies = [
  "blair-integration",
  "blair-protocol",
+ "calloop 0.14.4",
  "creamui-theme-watch",
  "futures-util",
  "serde",

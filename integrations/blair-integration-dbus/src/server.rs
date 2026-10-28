@@ -111,7 +111,13 @@ async fn run(
             if !args.name().as_str().starts_with(':') || args.new_owner().is_some() {
                 continue;
             }
-            disconnect_commands.send(Command::ClientDisconnected(args.name().to_string()));
+            if let Err(error) = disconnect_commands
+                .send_control(Command::ClientDisconnected(args.name().to_string()))
+                .await
+            {
+                tracing::warn!(%error, "could not queue D-Bus client cleanup");
+                break;
+            }
         }
     });
 
@@ -139,7 +145,10 @@ async fn run(
             }
         };
         while let Some(Ok(_)) = stream.next().await {
-            theme_commands.send(Command::ThemeChanged);
+            if let Err(error) = theme_commands.send_control(Command::ThemeChanged).await {
+                tracing::warn!(%error, "could not queue theme reload");
+                break;
+            }
         }
     });
 
@@ -175,7 +184,10 @@ async fn monitor_sleep(commands: CommandSender) -> zbus::Result<()> {
             continue;
         };
         if suspending {
-            commands.send(Command::PrepareForSleep);
+            commands
+                .send_control(Command::PrepareForSleep)
+                .await
+                .map_err(zbus::Error::from)?;
         }
     }
     Ok(())
