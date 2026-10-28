@@ -1,3 +1,6 @@
+mod touch_input;
+pub(crate) use touch_input::cancel_touch_input;
+
 use blair_protocol::Point as CorePoint;
 use smithay::{
     backend::input::{
@@ -15,7 +18,6 @@ use smithay::{
             GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, MotionEvent,
             RelativeMotionEvent,
         },
-        touch,
     },
     output::Output,
     utils::{Logical, Point, SERIAL_COUNTER},
@@ -362,86 +364,17 @@ pub fn process_input_event<B: InputBackend>(
             );
         }),
         InputEvent::TouchDown { event } => {
-            let Some(location) = touch_location::<B, _>(state, &event) else {
-                return;
-            };
-            let under = match pointer_target(state, location) {
-                Some(PointerTarget::Lock { surface, origin }) => {
-                    state.set_keyboard_focus(Some(surface.clone()));
-                    Some((surface, origin))
-                }
-                Some(PointerTarget::Window {
-                    window, surface, ..
-                }) => {
-                    state.focus_window(&window);
-                    surface
-                }
-                Some(PointerTarget::Layer {
-                    surface, origin, ..
-                }) => Some((surface, origin)),
-                None => None,
-            };
-            if let Some(touch) = state.seat.get_touch() {
-                state.touch_points.insert(event.slot(), location);
-                let serial = SERIAL_COUNTER.next_serial();
-                let recordable = !state.session_locked
-                    && touch
-                        .with_grab(|_, grab| grab.is::<touch::TouchDownGrab<BlairState>>())
-                        .unwrap_or(true);
-                touch.down(
-                    state,
-                    under,
-                    &touch::DownEvent {
-                        slot: event.slot(),
-                        location,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                if recordable {
-                    let focus = touch
-                        .grab_start_data()
-                        .and_then(|start| start.focus)
-                        .map(|(surface, _)| surface);
-                    state.record_popup_input(InputKind::Touch, serial, focus.as_ref());
-                }
+            if let Some(location) = touch_location::<B, _>(state, &event) {
+                touch_input::down(state, event.slot(), location, event.time_msec());
             }
         }
         InputEvent::TouchMotion { event } => {
-            if !state.touch_points.contains_key(&event.slot()) {
-                return;
-            }
-            let Some(location) = touch_location::<B, _>(state, &event) else {
-                return;
-            };
-            state.touch_points.insert(event.slot(), location);
-            let under = surface_under(state, location);
-            if let Some(touch) = state.seat.get_touch() {
-                touch.motion(
-                    state,
-                    under,
-                    &touch::MotionEvent {
-                        slot: event.slot(),
-                        location,
-                        time: event.time_msec(),
-                    },
-                );
+            if let Some(location) = touch_location::<B, _>(state, &event) {
+                touch_input::motion(state, event.slot(), location, event.time_msec());
             }
         }
         InputEvent::TouchUp { event } => {
-            if state.touch_points.remove(&event.slot()).is_none() {
-                return;
-            }
-            if let Some(touch) = state.seat.get_touch() {
-                touch.up(
-                    state,
-                    &touch::UpEvent {
-                        slot: event.slot(),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-            }
+            touch_input::up(state, event.slot(), event.time_msec());
         }
         InputEvent::TouchCancel { .. } => cancel_touch_input(state),
         InputEvent::TouchFrame { .. } => {
@@ -450,27 +383,6 @@ pub fn process_input_event<B: InputBackend>(
             }
         }
         _ => {}
-    }
-}
-
-pub(crate) fn cancel_touch_input(state: &mut BlairState) {
-    state.popup_input.revoke(InputKind::Touch);
-    let points = std::mem::take(&mut state.touch_points);
-    if let Some(touch) = state.seat.get_touch() {
-        touch.unset_grab(state);
-        // Smithay cancels only slots with events pending since the last touch frame.
-        for (slot, location) in points {
-            touch.motion(
-                state,
-                None,
-                &touch::MotionEvent {
-                    slot,
-                    location,
-                    time: state.clock_now().as_millis() as u32,
-                },
-            );
-        }
-        touch.cancel(state);
     }
 }
 

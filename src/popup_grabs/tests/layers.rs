@@ -321,3 +321,63 @@ fn disabling_or_destroying_a_layer_dismisses_its_menu_and_restores_window_focus(
         assert!(!f.state.seat.get_pointer().unwrap().is_grabbed());
     }
 }
+
+#[test]
+fn outside_touch_dismisses_an_exclusive_layer_menu_without_taking_keyboard_focus() {
+    let mut f = Fixture::new();
+    let mut app = App::new(&mut f, 20);
+    let mut shell = ShellLayer::new(
+        &mut f,
+        zwlr_layer_shell_v1::Layer::Overlay,
+        zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
+    );
+    shell.map(&mut f);
+    shell.popup(&mut f);
+    app.touch_down(&mut f, 0);
+    shell.dispatch(&mut f);
+    app.dispatch(&mut f);
+    f.assert_focus(&shell.root());
+    assert_eq!(shell.client.events.popups_dismissed, 1);
+    assert!(f.state.active_popup_grab.is_none());
+    let serial = app.touch_serial();
+    let rejected = app.popup(&app.shell);
+    app.request(&mut f, &rejected, serial);
+    assert_eq!(app.client.events.popups_dismissed, 1);
+    assert!(!f.state.seat.get_keyboard().unwrap().is_grabbed());
+    f.assert_focus(&shell.root());
+}
+
+#[test]
+fn outside_touch_dismisses_window_menus_and_focuses_an_on_demand_layer() {
+    let mut f = Fixture::new();
+    let mut app = App::new(&mut f, 20);
+    f.focus(&app);
+    let serial = app.key(&mut f, true);
+    let menu = app.popup(&app.shell);
+    app.request(&mut f, &menu, serial);
+    let mut shell = ShellLayer::new(
+        &mut f,
+        zwlr_layer_shell_v1::Layer::Overlay,
+        zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
+    );
+    let _touch = shell.seat.get_touch(&shell.client.handle(), ());
+    shell.map(&mut f);
+    let origin = crate::input::surface_origin(&f.state, &shell.root()).unwrap();
+    f.event(InputEvent::TouchDown {
+        event: TestEvent {
+            x: (origin.x + 10.0) / 800.0,
+            y: (origin.y + 10.0) / 600.0,
+            ..Default::default()
+        },
+    });
+    f.event(InputEvent::TouchFrame {
+        event: TestEvent::default(),
+    });
+    shell.dispatch(&mut f);
+    app.dispatch(&mut f);
+    assert_eq!(app.client.events.popups_dismissed, 1);
+    assert!(f.state.active_popup_grab.is_none());
+    f.assert_focus(&shell.root());
+    assert!(shell.client.events.touch.iter().any(|event| matches!(event,
+        wl_touch::Event::Down { surface, .. } if surface == &shell.surface)));
+}

@@ -159,10 +159,13 @@
   tests cover forged, foreign, released, replayed, and cancelled serials,
   nested menus, focus restoration, exclusive layers, and interactive grabs.
   Warm input-history updates allocate nothing.
-- [ ] Route touch sequences through the active popup grab policy. After an
-  implicit touch grab ends, `src/input.rs` can deliver a new touch to another
-  client while a popup owns the keyboard/pointer grabs. Restrict touch
-  recipients and dismiss the popup on an outside touch.
+- [x] Route touch sequences through the active popup grab policy. Outside
+  touches dismiss nested menus before reaching another client; implicit
+  sequences retain their first recipient and skip repeated scene hit tests.
+  Accepted popup grabs cancel foreign touch streams after completed frames;
+  requests during explicit touch drags are rejected. Protocol tests cover owner
+  windows/popups, dead receivers, background touches, layer focus, cancelled
+  contacts, duplicate downs, and authorization of the new recipient.
 - [x] Arbitrate popup grabs against mapped keyboard-exclusive layers.
   Overlay layers take precedence over top layers; competing menus are dismissed
   before keyboard focus changes. The selected layer's own popups survive

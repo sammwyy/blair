@@ -1,4 +1,5 @@
 mod layers;
+mod touch;
 
 use super::*;
 use smithay::{
@@ -108,6 +109,24 @@ impl App {
         let keyboard = seat.get_keyboard(&client.handle(), ());
         let pointer = seat.get_pointer(&client.handle(), ());
         let touch = seat.get_touch(&client.handle(), ());
+        let (surface, shell) = Self::toplevel(f, &mut client, x);
+        Self {
+            client,
+            seat,
+            surface,
+            shell,
+            origin: (x, 100).into(),
+            _keyboard: keyboard,
+            _pointer: pointer,
+            _touch: touch,
+        }
+    }
+
+    fn toplevel(
+        f: &mut Fixture,
+        client: &mut TestClient,
+        x: i32,
+    ) -> (wl_surface::WlSurface, xdg_surface::XdgSurface) {
         let surface = client
             .bind::<wl_compositor::WlCompositor>(6)
             .create_surface(&client.handle(), ());
@@ -127,18 +146,8 @@ impl App {
             .unwrap()
             .window
             .clone();
-        let origin = (x, 100).into();
-        f.state.space.map_element(window, origin, false);
-        Self {
-            client,
-            seat,
-            surface,
-            shell,
-            origin,
-            _keyboard: keyboard,
-            _pointer: pointer,
-            _touch: touch,
-        }
+        f.state.space.map_element(window, (x, 100), false);
+        (surface, shell)
     }
 
     fn root(&self) -> WlSurface {

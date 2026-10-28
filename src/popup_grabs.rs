@@ -7,6 +7,7 @@ use smithay::{
     },
     input::{
         pointer::{ClickGrab, Focus},
+        touch::TouchDownGrab,
         Seat,
     },
     utils::{Serial, SERIAL_COUNTER},
@@ -107,6 +108,20 @@ fn active_grab(grab: &PopupGrab<BlairState>) -> bool {
 }
 
 impl BlairState {
+    pub(crate) fn popup_touch_down(&mut self, focus: Option<&WlSurface>) {
+        self.refresh_popup_grab();
+        let outside = self
+            .active_popup_grab
+            .as_ref()
+            .and_then(|grab| grab.current_grab())
+            .is_some_and(|popup| {
+                !focus.is_some_and(|focus| popup.id().same_client_as(&focus.id()))
+            });
+        if outside {
+            self.dismiss_popup_grab();
+        }
+    }
+
     pub(crate) fn dismiss_popup_grab(&mut self) {
         let Some(grab) = self.active_popup_grab.as_mut() else {
             return;
@@ -281,6 +296,13 @@ impl BlairState {
         }) {
             return Err("pointer has an unrelated grab");
         }
+        if seat.get_touch().is_some_and(|touch| {
+            touch
+                .with_grab(|_, grab| !grab.is::<TouchDownGrab<Self>>())
+                .unwrap_or(false)
+        }) {
+            return Err("touch has an unrelated grab");
+        }
         Ok(Authorization {
             root,
             nested: active.is_some(),
@@ -332,6 +354,26 @@ impl BlairState {
                 return;
             }
         };
+        if seat.get_touch().is_some_and(|touch| {
+            touch
+                .with_grab(|_, touch_grab| {
+                    !touch_grab
+                        .start_data()
+                        .focus
+                        .as_ref()
+                        .is_some_and(|(focus, _)| {
+                            focus.is_alive()
+                                && grab
+                                    .keyboard_grab_start_data()
+                                    .focus
+                                    .as_ref()
+                                    .is_some_and(|root| root.id().same_client_as(&focus.id()))
+                        })
+                })
+                .unwrap_or(false)
+        }) {
+            crate::input::cancel_touch_input(self);
+        }
         // Replacing a popup pointer grab can unset its paired keyboard grab.
         if let Some(pointer) = seat.get_pointer() {
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
