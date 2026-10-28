@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use smithay::{
     backend::{
         egl::EGLDevice,
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma, ImportEgl},
+        renderer::{
+            damage::OutputDamageTracker, gles::GlesRenderer, Frame, ImportDma, ImportEgl, Renderer,
+        },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     input::pointer::CursorImageStatus,
@@ -109,6 +111,7 @@ impl WinitData {
         let session_lock_frame = state.pending_session_lock_frame(&self.output);
 
         let render_start = Instant::now();
+        let size = self.backend.window_size();
         let age = self.age;
         let (renderer, mut framebuffer) = match self.backend.bind() {
             Ok(bound) => bound,
@@ -125,6 +128,26 @@ impl WinitData {
             &elements,
             CLEAR_COLOR,
         );
+        if result.is_ok() && !state.pending_captures.is_empty() {
+            super::process_frame_captures(
+                state,
+                renderer,
+                &self.output,
+                &framebuffer,
+                Transform::Flipped180,
+                CursorMode::HostNamed,
+            );
+            // Mapping readback switches EGL to surfaceless; swap requires the host surface current.
+            if let Err(error) = renderer
+                .render(&mut framebuffer, size, Transform::Flipped180)
+                .and_then(|frame| frame.finish())
+            {
+                tracing::warn!(%error, "failed to restore the host surface after capture");
+                self.age = 0;
+                self.pacer.keep_awake(state, true);
+                return;
+            }
+        }
         drop(framebuffer);
 
         let (damage, states) = match result {
@@ -297,10 +320,11 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         } = &mut *data;
         super::import_pending_dmabufs(state, backend.renderer());
         super::process_screenshots(state, backend.renderer(), output, shaders.as_ref());
-        super::process_captures(state, backend.renderer(), output, shaders.as_ref());
         state.refresh();
         data.sync_host_cursor(state);
         data.dispatch_redraw(state);
+        let WinitData { backend, output, shaders, .. } = &mut *data;
+        super::process_captures(state, backend.renderer(), output, shaders.as_ref());
         if let Err(error) = state.display_handle.flush_clients() {
             tracing::warn!(%error, "failed to flush clients");
         }

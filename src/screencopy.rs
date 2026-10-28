@@ -15,13 +15,16 @@ use smithay::{
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
-    utils::{Physical, Rectangle},
+    utils::{Physical, Rectangle, Size, Transform},
     wayland::shm,
 };
 
 use crate::state::BlairState;
 
 const VERSION: u32 = 3;
+
+#[cfg(test)]
+mod tests;
 
 /// Registers the `zwlr_screencopy_manager_v1` global.
 pub fn register<D>(display: &DisplayHandle)
@@ -49,30 +52,37 @@ impl ScreencopyRequest {
     /// Writes `pixels` (tightly packed, `region` sized) into the client's
     /// buffer and completes the capture.
     pub fn submit(self, pixels: &[u8], time: std::time::Duration) {
-        let width = self.region.size.w as usize;
-        let height = self.region.size.h as usize;
+        self.submit_transformed(pixels, Transform::Normal, time);
+    }
+
+    pub fn submit_transformed(
+        self,
+        pixels: &[u8],
+        transform: Transform,
+        time: std::time::Duration,
+    ) {
+        let width = self.region.size.w;
+        let height = self.region.size.h;
         let copied = shm::with_buffer_contents_mut(&self.buffer, |ptr, len, data| {
-            let stride = data.stride as usize;
+            if data.width != width
+                || data.height != height
+                || data.format != wl_shm::Format::Xrgb8888
+                || data.offset < 0
+                || data.stride < 0
+                || data.offset as usize > len
+            {
+                return false;
+            }
             let offset = data.offset as usize;
-            if data.width as usize != width || data.height as usize != height {
-                return false;
-            }
-            if offset + stride * height > len {
-                return false;
-            }
-            for row in 0..height {
-                let source = &pixels[row * width * 4..(row + 1) * width * 4];
-                // SAFETY: the destination range was bounds-checked above and
-                // the pool stays mapped for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        source.as_ptr(),
-                        ptr.add(offset + row * stride),
-                        width * 4,
-                    );
-                }
-            }
-            true
+            // SAFETY: the pool remains mapped during the closure and offset is within it.
+            let target = unsafe { std::slice::from_raw_parts_mut(ptr.add(offset), len - offset) };
+            copy_pixels(
+                pixels,
+                target,
+                data.stride as usize,
+                self.region.size,
+                transform,
+            )
         });
         match copied {
             Ok(true) => {
@@ -98,6 +108,61 @@ impl ScreencopyRequest {
     pub fn fail(self) {
         self.frame.failed();
     }
+}
+
+fn copy_pixels(
+    source: &[u8],
+    target: &mut [u8],
+    stride: usize,
+    size: Size<i32, Physical>,
+    transform: Transform,
+) -> bool {
+    if size.is_empty() {
+        return false;
+    }
+    let width = size.w as usize;
+    let height = size.h as usize;
+    let Some(row_bytes) = width.checked_mul(4) else {
+        return false;
+    };
+    let Some(source_bytes) = row_bytes.checked_mul(height) else {
+        return false;
+    };
+    let Some(target_bytes) = (height - 1)
+        .checked_mul(stride)
+        .and_then(|bytes| bytes.checked_add(row_bytes))
+    else {
+        return false;
+    };
+    if stride < row_bytes || source.len() < source_bytes || target.len() < target_bytes {
+        return false;
+    }
+    match transform {
+        Transform::Normal | Transform::Flipped180 => {
+            for y in 0..height {
+                let sy = if transform == Transform::Normal {
+                    y
+                } else {
+                    height - 1 - y
+                };
+                target[y * stride..y * stride + row_bytes]
+                    .copy_from_slice(&source[sy * row_bytes..(sy + 1) * row_bytes]);
+            }
+        }
+        _ => {
+            let source_width = transform.transform_size(size).w as usize;
+            for y in 0..height {
+                for x in 0..width {
+                    let pixel = Rectangle::new((x as i32, y as i32).into(), (1, 1).into());
+                    let loc = transform.transform_rect_in(pixel, &size).loc;
+                    let start = (loc.y as usize * source_width + loc.x as usize) * 4;
+                    let dest = y * stride + x * 4;
+                    target[dest..dest + 4].copy_from_slice(&source[start..start + 4]);
+                }
+            }
+        }
+    }
+    true
 }
 
 #[derive(Default)]

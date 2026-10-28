@@ -15,9 +15,13 @@
 - [ ] Implement window close and minimize animations. They are configurable,
   but only opening and workspace-switch animations currently run.
 - [ ] Avoid a second full render pass for `wlr-screencopy`. It currently
-  re-renders the output offscreen for every captured frame instead of reading
-  back the frame that was just presented. Region captures now allocate and
-  render only the requested region, preserving rounded clips and decorations.
+  reads the composed framebuffer directly in Winit and from DRM swapchain
+  buffers when cursor inclusion matches and no overlay planes are active.
+  Mapped readback pixels copy directly into client SHM, with output transforms
+  normalized during copying. Cursor mismatches, direct scanout, overlay planes,
+  readback failures, and captures before a scheduled repaint still use offscreen
+  rendering; reuse those paths too. Region fallback captures allocate and render
+  only the requested region, preserving rounded clips and decorations.
 - [ ] Add `wlr-output-management-v1`, so monitor layout changes do not require
   editing the configuration and restarting.
 - [ ] Add tablet, pen, and on-screen keyboard protocols: `tablet-v2`,

@@ -41,6 +41,30 @@ blur does not recursively reconstruct the lower window stack. Each blur element
 still retains its own filtered texture for the frame. This removes repeated
 scene allocations, but its RSS/PSS impact has not been measured separately.
 
+## Screencopy framebuffer reuse
+
+Winit reads compatible captures from the composed host back buffer before swap.
+DRM reads the swapchain buffer after its render fence when no overlay planes
+are active and cursor inclusion matches. The readback covers only the requested
+region. Its mapping copies directly to client SHM without an intermediate
+`Vec<u8>`; row order, rotation, mirroring, destination stride, and pool offset
+are preserved. Output transforms normalize to canonical pixels, so capture flags
+remain uninverted. GPU tests verify all eight output transforms and cropped
+readbacks; a Wayland protocol test checks SHM pixels, padding, completion,
+damage, and fallback admission.
+Nested Winit smoke checks with `grim`, `grim -g`, and `grim -c` passed with
+framebuffer-reuse trace events. The host surface is made current again after
+mapping readback, before swap; this restores EGL state without redrawing the
+scene. A following cursor-free capture matched the initial PNG byte for byte.
+
+This path avoids one offscreen RGBA scene texture and one region-sized pixel
+vector per compatible capture. For full-output 1920×1080 capture this removes
+16,588,800 bytes of pixel storage, excluding the readback PBO and client SHM
+which are still required. These are allocation sizes, not measured RSS/PSS.
+Cursor mismatches, hardware overlay planes, direct scanout, failed readback,
+and requests handled before a scheduled repaint retain the offscreen fallback.
+DRM hardware capture behavior and actual recording memory still need measurement.
+
 ## Empty nested session
 
 Build the release compositor and run the sampler from an existing graphical

@@ -42,6 +42,10 @@ impl blair_integration::EventChannel for TestEvents {
 
 #[derive(Default)]
 pub struct ClientEvents {
+    pub screencopy: Vec<(
+        u32,
+        wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::Event,
+    )>,
     pub globals: Vec<(u32, String, u32)>,
     pub keys: Vec<(u32, wl_keyboard::KeyState)>,
     pub key_serials: Vec<u32>,

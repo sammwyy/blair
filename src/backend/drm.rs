@@ -18,6 +18,7 @@ use smithay::reexports::input::{Device as LibinputDevice, Libinput};
 use smithay::{
     backend::{
         allocator::{
+            dmabuf::AsDmabuf,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
             Fourcc,
         },
@@ -30,7 +31,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::{Device as InputDevice, DeviceCapability, InputEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma, ImportEgl},
+        renderer::{gles::GlesRenderer, Bind, ImportDma, ImportEgl, Renderer},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::UdevBackend,
     },
@@ -289,6 +290,37 @@ impl DrmBackend {
             if let PrimaryPlaneElement::Swapchain(element) = &frame.primary_element {
                 if let Err(error) = element.sync.wait() {
                     tracing::warn!(%error, "waiting for the render fence failed");
+                }
+            }
+        }
+        if !state.pending_captures.is_empty() && frame.overlay_elements.is_empty() {
+            if let PrimaryPlaneElement::Swapchain(primary) = &frame.primary_element {
+                let result = (|| -> Result<()> {
+                    self.renderer
+                        .wait(&primary.sync)
+                        .context("wait for capture source")?;
+                    let mut dmabuf = primary.buffer().export().context("export capture source")?;
+                    let framebuffer = self
+                        .renderer
+                        .bind(&mut dmabuf)
+                        .context("bind capture source")?;
+                    let cursor = if frame.cursor_element.is_some() {
+                        CursorMode::Hidden
+                    } else {
+                        CursorMode::Composited
+                    };
+                    super::process_frame_captures(
+                        state,
+                        &mut self.renderer,
+                        &self.output,
+                        &framebuffer,
+                        primary.transform,
+                        cursor,
+                    );
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    tracing::debug!(%error, "DRM output readback unavailable; capturing offscreen");
                 }
             }
         }
@@ -561,12 +593,6 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             &backend.output,
             backend.shaders.as_ref(),
         );
-        super::process_captures(
-            state,
-            &mut backend.renderer,
-            &backend.output,
-            backend.shaders.as_ref(),
-        );
         state.refresh();
         if std::mem::take(&mut state.input_config_changed) {
             if let Err(error) = state.input_devices.reapply(&state.config.input) {
@@ -574,6 +600,12 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             }
         }
         backend.dispatch_redraw(state);
+        super::process_captures(
+            state,
+            &mut backend.renderer,
+            &backend.output,
+            backend.shaders.as_ref(),
+        );
         if let Err(error) = state.display_handle.flush_clients() {
             tracing::warn!(%error, "failed to flush clients");
         }

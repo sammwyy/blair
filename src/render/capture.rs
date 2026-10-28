@@ -5,18 +5,42 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::utils::{Relocate, RelocateRenderElement},
-            gles::{GlesRenderer, GlesTexture},
+            gles::{GlesMapping, GlesRenderer, GlesTarget, GlesTexture},
             Bind, ExportMem, Offscreen,
         },
     },
     output::Output,
-    utils::{Physical, Rectangle, Transform},
+    utils::{Physical, Rectangle, Size, Transform},
 };
 
 use crate::{
     render::{output_elements, CursorMode, OutputRenderElement, Shaders, CLEAR_COLOR},
     state::BlairState,
 };
+
+pub fn read_framebuffer(
+    renderer: &mut GlesRenderer,
+    framebuffer: &GlesTarget<'_>,
+    size: Size<i32, Physical>,
+    region: Rectangle<i32, Physical>,
+    transform: Transform,
+) -> Result<GlesMapping> {
+    anyhow::ensure!(
+        !region.is_empty() && region.intersection(Rectangle::from_size(size)) == Some(region),
+        "the capture region is outside the framebuffer"
+    );
+    let region = transform
+        .transform_rect_in(region, &size)
+        .to_logical(1)
+        .to_buffer(
+            1,
+            Transform::Normal,
+            &transform.transform_size(size).to_logical(1),
+        );
+    renderer
+        .copy_framebuffer(framebuffer, region, Fourcc::Xrgb8888)
+        .context("failed to read the output framebuffer")
+}
 
 pub(super) fn render_region(
     renderer: &mut GlesRenderer,

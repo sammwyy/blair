@@ -1,6 +1,9 @@
 mod drm;
 mod winit;
 
+#[cfg(test)]
+mod capture_tests;
+
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -315,6 +318,76 @@ fn process_screenshots(
 }
 
 /// Completes `wlr-screencopy` captures queued since the last iteration.
+fn process_frame_captures(
+    state: &mut BlairState,
+    renderer: &mut GlesRenderer,
+    output: &smithay::output::Output,
+    framebuffer: &smithay::backend::renderer::gles::GlesTarget<'_>,
+    transform: smithay::utils::Transform,
+    cursor_mode: crate::render::CursorMode,
+) {
+    use crate::render::CursorMode;
+    use smithay::input::pointer::CursorImageStatus;
+    use smithay::{backend::renderer::ExportMem, utils::IsAlive};
+
+    if state.pending_captures.is_empty() {
+        return;
+    }
+
+    let Some(mode) = output.current_mode() else {
+        return;
+    };
+    let size = output.current_transform().transform_size(mode.size);
+    let pointer_inside = state
+        .space
+        .output_geometry(output)
+        .is_some_and(|geometry| geometry.to_f64().contains(state.pointer_location()));
+    let cursor = state.pointer_cursor();
+    let visible_cursor = pointer_inside && cursor != CursorImageStatus::Hidden;
+    let frame_has_cursor = visible_cursor
+        && match cursor_mode {
+            CursorMode::Composited => true,
+            CursorMode::Hidden => false,
+            CursorMode::HostNamed => {
+                matches!(cursor, CursorImageStatus::Surface(ref surface) if surface.alive())
+            }
+        };
+    let time = state.clock_now();
+    for request in std::mem::take(&mut state.pending_captures) {
+        if request.output != *output
+            || frame_has_cursor != (visible_cursor && request.overlay_cursor)
+        {
+            state.pending_captures.push(request);
+            continue;
+        }
+        let mapping = match crate::render::read_framebuffer(
+            renderer,
+            framebuffer,
+            size,
+            request.region,
+            transform,
+        ) {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                tracing::debug!(%error, "output readback unavailable; capturing offscreen");
+                state.pending_captures.push(request);
+                continue;
+            }
+        };
+        match renderer.map_texture(&mapping) {
+            Ok(pixels) => {
+                tracing::trace!(output = output.name(), region = ?request.region, "screencopy reused output framebuffer");
+                request.submit_transformed(pixels, transform, time);
+            }
+            Err(error) => {
+                tracing::debug!(%error, "output mapping unavailable; capturing offscreen");
+                state.pending_captures.push(request);
+            }
+        }
+    }
+}
+
+/// Captures requests that could not reuse the output framebuffer.
 fn process_captures(
     state: &mut BlairState,
     renderer: &mut GlesRenderer,
