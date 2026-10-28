@@ -4,20 +4,16 @@
 //! behind the window's own (typically translucent) content.
 
 use smithay::{
-    backend::{
-        allocator::Fourcc,
-        renderer::{
-            damage::OutputDamageTracker,
-            element::{
-                texture::TextureRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage,
-            },
-            gles::{
-                GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
-                UniformName, UniformType, UniformValue,
-            },
-            utils::{CommitCounter, DamageSet, OpaqueRegions},
-            Bind, Offscreen, Renderer,
+    backend::renderer::{
+        element::{
+            texture::TextureRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage,
         },
+        gles::{
+            GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+            UniformType, UniformValue,
+        },
+        utils::{CommitCounter, DamageSet, OpaqueRegions},
+        Renderer,
     },
     desktop::Window,
     output::Output,
@@ -27,7 +23,7 @@ use smithay::{
 
 use super::{
     clip::local_from_ndc, layer_elements, window_elements, FrameContext, OutputRenderElement,
-    RoundedClip, Shaders, WindowRenderContext, CLEAR_COLOR,
+    RoundedClip, Shaders, WindowRenderContext,
 };
 use crate::state::BlairState;
 
@@ -64,7 +60,9 @@ void main() {
             float fx = float(x);
             float fy = float(y);
             float weight = exp(-(fx * fx + fy * fy) / 18.0);
-            sum += texture2D(tex, v_coords + vec2(fx, fy) * texel * spread) * weight;
+            vec2 sample_coords = clamp(v_coords + vec2(fx, fy) * texel * spread,
+                texel * 0.5, vec2(1.0) - texel * 0.5);
+            sum += texture2D(tex, sample_coords) * weight;
             total += weight;
         }
     }
@@ -143,30 +141,21 @@ pub(super) fn push_backdrop(
         &mut backdrop,
     );
 
-    let Ok(mut target) = Offscreen::<GlesTexture>::create_buffer(
-        renderer,
-        Fourcc::Abgr8888,
-        ctx.viewport.to_logical(1).to_buffer(1, Transform::Normal),
-    ) else {
-        return;
-    };
-    {
-        let Ok(mut framebuffer) = renderer.bind(&mut target) else {
-            return;
-        };
-        if OutputDamageTracker::new(ctx.viewport, ctx.scale, Transform::Normal)
-            .render_output(renderer, &mut framebuffer, 0, &backdrop, CLEAR_COLOR)
-            .is_err()
-        {
+    // Keep every shader tap and its bilinear filtering footprint inside the capture.
+    let capture = backdrop_region(frame_rect_physical, ctx.viewport, radius);
+    let target = match super::capture::render_region(renderer, backdrop, capture, ctx.scale) {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(%error, "failed to capture blur backdrop");
             return;
         }
-    }
+    };
 
-    let texel = (1.0 / ctx.viewport.w as f32, 1.0 / ctx.viewport.h as f32);
+    let texel = (1.0 / capture.size.w as f32, 1.0 / capture.size.h as f32);
     let src = Rectangle::<f64, Logical>::new(
         Point::from((
-            frame_rect_physical.loc.x as f64,
-            frame_rect_physical.loc.y as f64,
+            (frame_rect_physical.loc.x - capture.loc.x) as f64,
+            (frame_rect_physical.loc.y - capture.loc.y) as f64,
         )),
         (
             frame_rect_physical.size.w as f64,
@@ -206,6 +195,19 @@ pub(super) fn push_backdrop(
     );
 }
 
+fn backdrop_region(
+    frame: Rectangle<i32, Physical>,
+    viewport: smithay::utils::Size<i32, Physical>,
+    radius: f32,
+) -> Rectangle<i32, Physical> {
+    let padding = (radius * 4.0).ceil() as i32 + 1;
+    let left = (frame.loc.x - padding).max(0);
+    let top = (frame.loc.y - padding).max(0);
+    let right = (frame.loc.x + frame.size.w + padding).min(viewport.w);
+    let bottom = (frame.loc.y + frame.size.h + padding).min(viewport.h);
+    Rectangle::new((left, top).into(), (right - left, bottom - top).into())
+}
+
 pub struct BlurredBackdropElement {
     inner: TextureRenderElement<GlesTexture>,
     program: GlesTexProgram,
@@ -216,6 +218,11 @@ pub struct BlurredBackdropElement {
 }
 
 impl BlurredBackdropElement {
+    pub(super) fn relocate_clip(&mut self, region: Rectangle<i32, Physical>) {
+        self.clip.rect.loc -= region.loc;
+        self.clip.viewport = region.size;
+    }
+
     fn new(
         inner: TextureRenderElement<GlesTexture>,
         program: GlesTexProgram,
@@ -343,7 +350,142 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smithay::backend::renderer::{Color32F, ExportMem, ImportMem};
+    use smithay::backend::{
+        allocator::Fourcc,
+        renderer::{damage::OutputDamageTracker, Bind, Color32F, ExportMem, ImportMem, Offscreen},
+    };
+
+    #[test]
+    fn backdrop_capture_includes_filter_padding_and_clamps_to_output() {
+        let viewport = (1920, 1080).into();
+        let frame = Rectangle::new((500, 400).into(), (200, 32).into());
+        let capture = backdrop_region(frame, viewport, 8.0);
+        assert_eq!(capture, Rectangle::new((467, 367).into(), (266, 98).into()));
+        assert!(capture.size.w * capture.size.h * 4 < 105_000);
+        assert_eq!(
+            backdrop_region(Rectangle::from_size(viewport), viewport, 64.0),
+            Rectangle::from_size(viewport)
+        );
+        assert_eq!(
+            backdrop_region(
+                Rectangle::new((1900, 1070).into(), (20, 10).into()),
+                viewport,
+                8.0
+            ),
+            Rectangle::new((1867, 1037).into(), (53, 43).into())
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an EGL device with OpenGL ES support"]
+    fn cropped_backdrops_match_full_output_with_padding_and_relocated_clips() {
+        use smithay::backend::renderer::Texture;
+
+        let egl = crate::test_support::EglTest::new();
+        let mut renderer = egl.renderer();
+        let program = compile(&mut renderer).unwrap();
+        let viewport = (240, 160).into();
+        let pixels: Vec<u8> = (0..160)
+            .flat_map(|y| {
+                (0..240).flat_map(move |x| {
+                    let value = if (x / 7 + y / 11) % 2 == 0 { 16 } else { 240 };
+                    [value, 255 - value, value, 255]
+                })
+            })
+            .collect();
+        let texture = renderer
+            .import_memory(&pixels, Fourcc::Abgr8888, (240, 160).into(), false)
+            .unwrap();
+
+        for scale in [1.0, 1.25, 2.0] {
+            for radius in [0.75, 2.0, 8.0] {
+                for location in [(80, 60), (0, 0), (200, 130)] {
+                    let frame = Rectangle::new(location.into(), (40, 30).into());
+                    let crop = backdrop_region(frame, viewport, radius);
+                    let mut results = Vec::new();
+                    for capture in [Rectangle::from_size(viewport), crop] {
+                        let backdrop = TextureRenderElement::from_static_texture(
+                            Id::new(),
+                            renderer.context_id(),
+                            (0.0, 0.0),
+                            texture.clone(),
+                            1,
+                            Transform::Normal,
+                            None,
+                            None,
+                            Some(viewport.to_f64().to_logical(scale).to_i32_round()),
+                            None,
+                            Kind::Unspecified,
+                        );
+                        let target = super::super::capture::render_region(
+                            &mut renderer,
+                            vec![backdrop.into()],
+                            capture,
+                            scale,
+                        )
+                        .unwrap();
+                        assert_eq!(target.size().w, capture.size.w);
+                        assert_eq!(target.size().h, capture.size.h);
+                        let inner = TextureRenderElement::from_static_texture(
+                            Id::new(),
+                            renderer.context_id(),
+                            frame.loc.to_f64(),
+                            target,
+                            1,
+                            Transform::Normal,
+                            None,
+                            Some(Rectangle::new(
+                                (frame.loc - capture.loc).to_f64().to_logical(1.0),
+                                frame.size.to_f64().to_logical(1.0),
+                            )),
+                            Some(frame.size.to_f64().to_logical(scale).to_i32_round()),
+                            None,
+                            Kind::Unspecified,
+                        );
+                        let element = BlurredBackdropElement::new(
+                            inner,
+                            program.clone(),
+                            (1.0 / capture.size.w as f32, 1.0 / capture.size.h as f32),
+                            radius,
+                            vec![Rectangle::from_size(frame.size)],
+                            RoundedClip {
+                                rect: frame,
+                                radii: [9.0; 4],
+                                viewport,
+                            },
+                        );
+                        // Cropping the final draw also exercises clips in nested offscreen passes.
+                        let mut rendered = super::super::capture::render_region(
+                            &mut renderer,
+                            vec![element.into()],
+                            frame,
+                            scale,
+                        )
+                        .unwrap();
+                        let framebuffer = renderer.bind(&mut rendered).unwrap();
+                        let mapping = renderer
+                            .copy_framebuffer(
+                                &framebuffer,
+                                Rectangle::from_size(
+                                    frame.size.to_logical(1).to_buffer(1, Transform::Normal),
+                                ),
+                                Fourcc::Abgr8888,
+                            )
+                            .unwrap();
+                        results.push(renderer.map_texture(&mapping).unwrap().to_vec());
+                    }
+                    let difference = results[0]
+                        .iter()
+                        .zip(&results[1])
+                        .map(|(a, b)| a.abs_diff(*b))
+                        .max()
+                        .unwrap();
+                    assert!(difference <= 2,
+                        "crop differs by {difference}: scale={scale}, radius={radius}, frame={frame:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires an EGL device with OpenGL ES support"]

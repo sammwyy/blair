@@ -16,7 +16,8 @@
   but only opening and workspace-switch animations currently run.
 - [ ] Avoid a second full render pass for `wlr-screencopy`. It currently
   re-renders the output offscreen for every captured frame instead of reading
-  back the frame that was just presented.
+  back the frame that was just presented. Region captures now allocate and
+  render only the requested region, preserving rounded clips and decorations.
 - [ ] Add `wlr-output-management-v1`, so monitor layout changes do not require
   editing the configuration and restarting.
 - [ ] Add tablet, pen, and on-screen keyboard protocols: `tablet-v2`,
@@ -34,9 +35,11 @@
   Coconut. Its settings UI currently only edits the side and fixed
   minimize/maximize/close order.
 - [ ] Optimize `blair_blur_unstable_v1` backdrop capture in `render/blur.rs`:
-  render only the cropped blur region, use a two-pass separable Gaussian to
-  avoid large-radius tap-pattern aliasing, and support recursively blurred
-  backdrops.
+  use a two-pass separable Gaussian to avoid large-radius tap-pattern aliasing,
+  and support recursively blurred backdrops. Captures now render only the blur
+  rectangle plus filter padding, clamped to the output. EGL tests compare
+  cropped and full-output backdrops at integer/fractional scales and output
+  edges; region captures also preserve rounded surface clips and decorations.
 - [ ] Establish a reproducible release-build memory baseline for DRM and
   Winit, both empty and with the shell loaded. Record RSS/PSS, anonymous
   memory, shared mappings, output resolution/scale, and graphics buffers;

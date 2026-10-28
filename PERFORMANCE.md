@@ -1,5 +1,26 @@
 # Performance measurements
 
+## Cropped offscreen buffers
+
+Backdrop blur allocates only its physical rectangle plus `ceil(4 * radius) + 1`
+pixels of filter padding on each side, intersected with the output. The extra
+pixel preserves bilinear filtering. Shader taps clamp to edge texel centers,
+including at output boundaries. Region screenshots and screencopy allocate
+only their requested physical region. Full-output captures retain full-size buffers.
+
+For a 1920×1080 output, the previous RGBA backdrop buffer required 8,294,400
+bytes per blur element. A 200×32 physical titlebar with radius 8 now requires
+266×98×4 = 104,272 bytes when away from output edges (98.7% fewer pixel bytes).
+A 320×200 region capture needs 256,000 bytes instead of 8,294,400 (96.9% fewer).
+These are texture storage calculations, not measured RSS/PSS or driver residency;
+driver padding, allocation reuse, and concurrent buffers affect actual savings.
+The change does not reduce the graphics stack's empty-session footprint.
+
+Offscreen EGL regressions compare full and cropped blur pixels across three
+scales, three radii, and three output positions, including edges. A protocol
+fixture compares captured subregions with the full decorated Wayland scene,
+including rounded surface clips, at scales 1, 1.25, and 2.
+
 ## Empty nested session
 
 Build the release compositor and run the sampler from an existing graphical

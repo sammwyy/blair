@@ -141,9 +141,14 @@ pub struct ClippedSurfaceElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     program: GlesTexProgram,
     clip: RoundedClip,
+    offscreen_region: Option<Rectangle<i32, Physical>>,
 }
 
 impl ClippedSurfaceElement {
+    pub(super) fn relocate_clip(&mut self, region: Rectangle<i32, Physical>) {
+        self.offscreen_region = Some(region);
+    }
+
     pub fn new(
         inner: WaylandSurfaceRenderElement<GlesRenderer>,
         program: GlesTexProgram,
@@ -153,11 +158,17 @@ impl ClippedSurfaceElement {
             inner,
             program,
             clip,
+            offscreen_region: None,
         }
     }
 
     fn uniforms(&self, projection: &[f32; 9]) -> Vec<Uniform<'static>> {
-        let clip_from_ndc = local_from_ndc(self.clip.rect, projection);
+        let mut clip = self.clip;
+        if let Some(region) = self.offscreen_region {
+            clip.rect.loc -= region.loc;
+            clip.viewport = region.size;
+        }
+        let clip_from_ndc = local_from_ndc(clip.rect, projection);
         let [tl, tr, br, bl] = self.clip.radii;
         vec![
             Uniform::new(
@@ -167,10 +178,7 @@ impl ClippedSurfaceElement {
                     transpose: false,
                 },
             ),
-            Uniform::new(
-                "viewport",
-                (self.clip.viewport.w as f32, self.clip.viewport.h as f32),
-            ),
+            Uniform::new("viewport", (clip.viewport.w as f32, clip.viewport.h as f32)),
             Uniform::new(
                 "clip_size",
                 (self.clip.rect.size.w as f32, self.clip.rect.size.h as f32),

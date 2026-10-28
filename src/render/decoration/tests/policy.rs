@@ -175,6 +175,92 @@ impl Fixture {
 }
 
 #[test]
+#[ignore = "requires an EGL device with OpenGL ES support"]
+fn cropped_captures_preserve_decorations_and_rounded_surface_clips() {
+    use crate::render::{
+        capture_region, output_elements, CursorMode, OutputRenderElement, Shaders,
+    };
+    use smithay::backend::allocator::Fourcc;
+
+    let egl = crate::test_support::EglTest::new();
+    let mut f = Fixture::new();
+    f.configure(|config| config.animations.enabled = false);
+    let mut renderer = egl.renderer();
+    let shaders = Shaders::compile(&mut renderer).unwrap();
+    for scale in [1.0, 1.25, 2.0] {
+        f.output.change_current_state(
+            None,
+            None,
+            Some(smithay::output::Scale::Fractional(scale)),
+            None,
+        );
+        f.state.output_changed(&f.output);
+        let elements = output_elements(
+            &mut renderer,
+            &mut f.state,
+            &f.output,
+            Some(&shaders),
+            CursorMode::Hidden,
+        );
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, OutputRenderElement::Clipped(_))));
+        let full = capture_region(
+            &mut renderer,
+            &mut f.state,
+            &f.output,
+            Some(&shaders),
+            Rectangle::from_size((800, 600).into()),
+            CursorMode::Hidden,
+            Fourcc::Abgr8888,
+        )
+        .unwrap();
+        for region in [
+            Rectangle::new((101, 79).into(), (499, 401).into()),
+            Rectangle::new((0, 0).into(), (300, 200).into()),
+            Rectangle::new((650, 480).into(), (150, 120).into()),
+        ] {
+            let crop = capture_region(
+                &mut renderer,
+                &mut f.state,
+                &f.output,
+                Some(&shaders),
+                region,
+                CursorMode::Hidden,
+                Fourcc::Abgr8888,
+            )
+            .unwrap();
+            let mut expected = Vec::new();
+            for y in region.loc.y..region.loc.y + region.size.h {
+                let start = (y * 800 + region.loc.x) as usize * 4;
+                expected.extend_from_slice(&full[start..start + region.size.w as usize * 4]);
+            }
+            let difference = crop
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert_eq!(crop.len(), expected.len());
+            assert!(
+                difference <= 2,
+                "scale={scale}, region={region:?}, difference={difference}"
+            );
+        }
+        assert!(capture_region(
+            &mut renderer,
+            &mut f.state,
+            &f.output,
+            Some(&shaders),
+            Rectangle::new((-1, 0).into(), (1, 1).into()),
+            CursorMode::Hidden,
+            Fourcc::Abgr8888,
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn configuration_prunes_inactive_buffers_without_discarding_valid_parts() {
     let mut fixture = Fixture::new();
     fixture.seed_buffers();
