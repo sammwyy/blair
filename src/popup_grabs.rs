@@ -3,7 +3,7 @@ use std::{collections::VecDeque, time::Duration};
 use smithay::{
     desktop::{
         find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
-        PopupPointerGrab,
+        PopupPointerGrab, PopupUngrabStrategy,
     },
     input::{
         pointer::{ClickGrab, Focus},
@@ -107,6 +107,16 @@ fn active_grab(grab: &PopupGrab<BlairState>) -> bool {
 }
 
 impl BlairState {
+    pub(crate) fn dismiss_popup_grab(&mut self) {
+        let Some(grab) = self.active_popup_grab.as_mut() else {
+            return;
+        };
+        grab.ungrab(PopupUngrabStrategy::All);
+        self.refresh_popup_grab();
+        self.request_redraw();
+        self.mark_pointer_focus_dirty();
+    }
+
     pub(crate) fn refresh_popup_grab(&mut self) {
         let Some(grab) = self.active_popup_grab.as_ref() else {
             return;
@@ -192,14 +202,14 @@ impl BlairState {
         if self.popup_manager.find_popup(owner).is_none() {
             return Err("popup is no longer tracked");
         }
+        let root = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
+            .map_err(|_| "popup has no live root")?;
         if self
             .exclusive_layer_surface()
-            .is_some_and(|layer| !layer.id().same_client_as(&owner.id()))
+            .is_some_and(|layer| layer != root)
         {
             return Err("an exclusive layer owns keyboard focus");
         }
-        let root = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
-            .map_err(|_| "popup has no live root")?;
         let active = self
             .active_popup_grab
             .as_ref()

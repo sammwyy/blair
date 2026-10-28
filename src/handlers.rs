@@ -327,6 +327,8 @@ impl WlrLayerShellHandler for BlairState {
 
     fn new_popup(&mut self, _parent: LayerSurface, popup: PopupSurface) {
         self.unconstrain_popup(&popup);
+        // The layer supplies the parent before the popup's initial commit.
+        self.popup_manager.commit(popup.wl_surface());
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
@@ -350,7 +352,7 @@ impl WlrLayerShellHandler for BlairState {
                 self.output_changed(output);
             }
         }
-        self.layer_surface_removed(&wl_surface);
+        self.release_layer_focus(&wl_surface);
     }
 }
 

@@ -95,7 +95,7 @@ fn exclusive_layer_commits_cannot_receive_keys_during_a_session_lock() {
     layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive);
     surface.commit();
     shell.dispatch(&mut display, &mut state);
-    surface.commit();
+    shell.paint_surface(&surface, 800, 600);
     shell.dispatch(&mut display, &mut state);
     assert_eq!(
         state.seat.get_keyboard().unwrap().current_focus(),

@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use smithay::{
     backend::renderer::{element::solid::SolidColorBuffer, Color32F},
-    desktop::PopupUngrabStrategy,
     input::pointer::{CursorImageStatus, MotionEvent},
     output::Output,
     reexports::wayland_server::{
@@ -44,9 +43,7 @@ pub fn background_buffer() -> SolidColorBuffer {
 
 impl BlairState {
     fn cancel_client_input(&mut self) {
-        if let Some(mut grab) = self.active_popup_grab.take() {
-            grab.ungrab(PopupUngrabStrategy::All);
-        }
+        self.dismiss_popup_grab();
         if let Some(pointer) = self.seat.get_pointer() {
             let serial = SERIAL_COUNTER.next_serial();
             let time = self.clock_now().as_millis() as u32;

@@ -163,10 +163,18 @@
   implicit touch grab ends, `src/input.rs` can deliver a new touch to another
   client while a popup owns the keyboard/pointer grabs. Restrict touch
   recipients and dismiss the popup on an outside touch.
-- [ ] Arbitrate active popup grabs when a keyboard-exclusive layer appears.
-  Smithay's `PopupKeyboardGrab` ignores the exclusive-layer target passed by
-  `set_keyboard_focus`; dismiss or suspend the popup grab before giving a
-  newly committed exclusive layer keyboard focus.
+- [x] Arbitrate popup grabs against mapped keyboard-exclusive layers.
+  Overlay layers take precedence over top layers; competing menus are dismissed
+  before keyboard focus changes. The selected layer's own popups survive
+  commits, while unmapping, destruction, or disabled keyboard interactivity
+  releases their grabs and restores focus. Protocol tests cover nested menus,
+  same-client unrelated windows, priority changes, actual key delivery, and
+  popups dismissed before their initial commit.
+- [ ] Implement the complete layer-surface unmap/remap lifecycle.
+  `commit_layer` retains configure state and keeps bufferless surfaces in
+  `LayerMap`, which can continue reserving their exclusive zones. Reset the
+  protocol state, dismiss non-grabbing child popups, release reserved space,
+  and require a new configure/ack cycle before remapping.
 - [x] Serialize offscreen EGL tests with a shared `EglTest` guard held through
   resource teardown. All eight tests use the common renderer factory, including
   the multi-context magnifier check. This avoids overlapping driver setup and

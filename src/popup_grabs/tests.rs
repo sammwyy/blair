@@ -1,3 +1,5 @@
+mod layers;
+
 use super::*;
 use smithay::{
     backend::input::InputEvent,
@@ -11,7 +13,6 @@ use wayland_client::protocol::{
     wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_surface, wl_touch,
 };
 use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_surface, xdg_wm_base};
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::{
     input::{process_input_event, InputHooks},
@@ -81,6 +82,25 @@ struct Popup {
     shell: xdg_surface::XdgSurface,
 }
 
+impl Popup {
+    fn new(client: &TestClient, parent: Option<&xdg_surface::XdgSurface>) -> Self {
+        let wm = client.bind::<xdg_wm_base::XdgWmBase>(6);
+        let surface = client
+            .bind::<wl_compositor::WlCompositor>(6)
+            .create_surface(&client.handle(), ());
+        let shell = wm.get_xdg_surface(&surface, &client.handle(), ());
+        let positioner = wm.create_positioner(&client.handle(), ());
+        positioner.set_size(30, 30);
+        positioner.set_anchor_rect(0, 0, 30, 30);
+        let popup = shell.get_popup(parent, &positioner, &client.handle(), ());
+        Self {
+            popup,
+            surface,
+            shell,
+        }
+    }
+}
+
 impl App {
     fn new(f: &mut Fixture, x: i32) -> Self {
         let mut client = TestClient::new(&mut f.display, &mut f.state);
@@ -129,21 +149,7 @@ impl App {
     }
 
     fn popup(&self, parent: &xdg_surface::XdgSurface) -> Popup {
-        let wm = self.client.bind::<xdg_wm_base::XdgWmBase>(6);
-        let surface = self
-            .client
-            .bind::<wl_compositor::WlCompositor>(6)
-            .create_surface(&self.client.handle(), ());
-        let shell = wm.get_xdg_surface(&surface, &self.client.handle(), ());
-        let positioner = wm.create_positioner(&self.client.handle(), ());
-        positioner.set_size(30, 30);
-        positioner.set_anchor_rect(0, 0, 30, 30);
-        let popup = shell.get_popup(Some(parent), &positioner, &self.client.handle(), ());
-        Popup {
-            popup,
-            surface,
-            shell,
-        }
+        Popup::new(&self.client, Some(parent))
     }
 
     fn key(&mut self, f: &mut Fixture, pressed: bool) -> Serial {
@@ -441,41 +447,6 @@ fn popup_requests_cannot_replace_an_interactive_pointer_grab() {
     assert!(!f.state.seat.get_keyboard().unwrap().is_grabbed());
     assert!(f.state.active_popup_grab.is_none());
     f.assert_focus(&app.root());
-}
-
-#[test]
-fn pointer_input_cannot_take_focus_from_an_exclusive_layer() {
-    let mut f = Fixture::new();
-    let mut app = App::new(&mut f, 20);
-    let mut shell = TestClient::new(&mut f.display, &mut f.state);
-    let surface = shell
-        .bind::<wl_compositor::WlCompositor>(6)
-        .create_surface(&shell.handle(), ());
-    let layer = shell
-        .bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1>(4)
-        .get_layer_surface(
-            &surface,
-            None,
-            zwlr_layer_shell_v1::Layer::Overlay,
-            "test".into(),
-            &shell.handle(),
-            (),
-        );
-    layer.set_size(800, 30);
-    layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive);
-    for _ in 0..2 {
-        surface.commit();
-        shell.dispatch(&mut f.display, &mut f.state);
-    }
-    let focus = shell.surface(&surface);
-    f.assert_focus(&focus);
-    let serial = app.pointer(&mut f, true);
-    f.assert_focus(&focus);
-    let rejected = app.popup(&app.shell);
-    app.request(&mut f, &rejected, serial);
-    assert_eq!(app.client.events.popups_dismissed, 1);
-    f.assert_focus(&focus);
-    assert!(!f.state.seat.get_keyboard().unwrap().is_grabbed());
 }
 
 #[test]

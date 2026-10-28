@@ -1584,15 +1584,11 @@ impl BlairState {
         self.layer_surfaces
             .iter()
             .filter(|layer| matches!(layer.layer(), Layer::Top | Layer::Overlay))
-            .find(|layer| {
+            .filter(|layer| layer_accepts_keyboard_focus(layer))
+            .filter(|layer| {
                 layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
-                    && with_states(layer.wl_surface(), |states| {
-                        states
-                            .data_map
-                            .get::<LayerSurfaceData>()
-                            .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
-                    })
             })
+            .max_by_key(|layer| layer.layer() == Layer::Overlay)
             .map(|layer| layer.wl_surface().clone())
     }
 
@@ -1602,8 +1598,15 @@ impl BlairState {
         };
         let target = if self.session_locked {
             self.session_lock_focus(surface)
+        } else if let Some(exclusive) = self.exclusive_layer_surface() {
+            if self.active_popup_grab.as_ref().is_some_and(|grab| {
+                grab.keyboard_grab_start_data().focus.as_ref() != Some(&exclusive)
+            }) {
+                self.dismiss_popup_grab();
+            }
+            Some(exclusive)
         } else {
-            self.exclusive_layer_surface().or(surface)
+            surface
         };
         if keyboard.current_focus() == target {
             return;
@@ -2149,6 +2152,10 @@ impl BlairState {
         else {
             return;
         };
+        if !layer_accepts_keyboard_focus(layer) {
+            self.release_layer_focus(surface);
+            return;
+        }
         let interactivity = layer.cached_state().keyboard_interactivity;
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
@@ -2165,7 +2172,14 @@ impl BlairState {
         }
     }
 
-    pub fn layer_surface_removed(&mut self, surface: &WlSurface) {
+    pub fn release_layer_focus(&mut self, surface: &WlSurface) {
+        if self
+            .active_popup_grab
+            .as_ref()
+            .is_some_and(|grab| grab.keyboard_grab_start_data().focus.as_ref() == Some(surface))
+        {
+            self.dismiss_popup_grab();
+        }
         let focused = self
             .seat
             .get_keyboard()
@@ -2742,6 +2756,13 @@ pub fn surface_window_id(surface: &WlSurface) -> Option<WindowId> {
             .get::<RefCell<WindowId>>()
             .map(|cell| *cell.borrow())
     })
+}
+
+fn layer_accepts_keyboard_focus(layer: &DesktopLayerSurface) -> bool {
+    layer.alive()
+        && layer.can_receive_keyboard_focus()
+        && with_renderer_surface_state(layer.wl_surface(), |state| state.buffer().is_some())
+            .unwrap_or(false)
 }
 
 pub fn window_is_maximized(window: &Window) -> bool {
