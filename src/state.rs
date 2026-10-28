@@ -65,7 +65,7 @@ use smithay::{
         session_lock::SessionLockManagerState,
         shell::{
             kde::decoration::KdeDecorationState,
-            wlr_layer::{KeyboardInteractivity, Layer, LayerSurfaceData, WlrLayerShellState},
+            wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
             xdg::{
                 decoration::XdgDecorationState, PopupSurface, ToplevelSurface, XdgShellState,
                 XdgToplevelSurfaceData,
@@ -620,7 +620,7 @@ impl BlairState {
         self.refresh_idle_dimming();
     }
 
-    fn refresh_pointer_focus(&mut self) {
+    pub(crate) fn refresh_pointer_focus(&mut self) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -1091,16 +1091,19 @@ impl BlairState {
     }
 
     pub fn output_changed(&mut self, output: &Output) {
-        if layer_map_for_output(output).arrange() {
+        let previous = layer_map_for_output(output).non_exclusive_zone();
+        let changed = layer_map_for_output(output).arrange();
+        if changed || layer_map_for_output(output).non_exclusive_zone() != previous {
             self.emit_work_area_changed(output);
         }
+        self.configure_unmapped_layers(output);
         self.relayout_all();
         crate::input::clamp_pointer_after_output_change(self);
         self.request_redraw();
         self.mark_pointer_focus_dirty();
     }
 
-    fn relayout_all(&mut self) {
+    pub(crate) fn relayout_all(&mut self) {
         let workspaces: Vec<_> = self
             .workspaces
             .iter()
@@ -1154,27 +1157,6 @@ impl BlairState {
                 }
             }
         }
-    }
-
-    pub fn arrange_layers_for(&mut self, surface: &WlSurface) {
-        let Some(output) = self.output_for_layer(surface) else {
-            return;
-        };
-        if layer_map_for_output(&output).arrange() {
-            self.emit_work_area_changed(&output);
-            self.relayout_all();
-        }
-    }
-
-    pub fn output_for_layer(&self, surface: &WlSurface) -> Option<Output> {
-        self.space
-            .outputs()
-            .find(|output| {
-                layer_map_for_output(output)
-                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-                    .is_some()
-            })
-            .cloned()
     }
 
     pub fn emit_work_area_changed(&self, output: &Output) {
@@ -2173,6 +2155,16 @@ impl BlairState {
     }
 
     pub fn release_layer_focus(&mut self, surface: &WlSurface) {
+        let owned = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .is_some_and(|focus| {
+                self.layer_surfaces
+                    .iter()
+                    .find(|layer| layer.wl_surface() == surface)
+                    .is_some_and(|layer| crate::layer_surfaces::owns_surface(layer, &focus))
+            });
         if self
             .active_popup_grab
             .as_ref()
@@ -2184,7 +2176,7 @@ impl BlairState {
             .seat
             .get_keyboard()
             .and_then(|keyboard| keyboard.current_focus());
-        if focused.as_ref() == Some(surface) || focused.is_none() {
+        if owned || focused.as_ref() == Some(surface) || focused.is_none() {
             let target = self
                 .focused_workspace_window()
                 .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
@@ -2285,28 +2277,6 @@ impl BlairState {
             self.commit_layer(surface);
         }
         self.request_redraw();
-    }
-
-    fn commit_layer(&mut self, surface: &WlSurface) {
-        let initial_configure_sent = with_states(surface, |states| {
-            states
-                .data_map
-                .get::<LayerSurfaceData>()
-                .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
-        });
-        self.arrange_layers_for(surface);
-        if !initial_configure_sent {
-            if let Some(layer) = self
-                .layer_surfaces
-                .iter()
-                .find(|layer| layer.wl_surface() == surface)
-            {
-                layer.layer_surface().send_configure();
-            }
-            return;
-        }
-        self.focus_interactive_layer_surface(surface);
-        self.mark_pointer_focus_dirty();
     }
 
     fn commit_window(&mut self, id: WindowId, root: &WlSurface, is_root: bool) {
@@ -2760,6 +2730,7 @@ pub fn surface_window_id(surface: &WlSurface) -> Option<WindowId> {
 
 fn layer_accepts_keyboard_focus(layer: &DesktopLayerSurface) -> bool {
     layer.alive()
+        && crate::layer_surfaces::is_mapped(layer)
         && layer.can_receive_keyboard_focus()
         && with_renderer_surface_state(layer.wl_surface(), |state| state.buffer().is_some())
             .unwrap_or(false)
@@ -2910,7 +2881,7 @@ fn client_decoration_request(surface: &WlSurface) -> Option<DecorationMode> {
 pub(crate) mod tests {
     use super::*;
 
-    struct TestEvents(std::sync::Mutex<Vec<CompositorEvent>>);
+    use crate::test_support::TestEvents;
 
     pub(crate) fn fixture() -> (
         smithay::reexports::wayland_server::Display<BlairState>,
@@ -3148,12 +3119,6 @@ pub(crate) mod tests {
             .dispatch(Duration::from_millis(200), &mut state)
             .unwrap();
         assert!(state.visual_bell_until.is_none());
-    }
-
-    impl EventChannel for TestEvents {
-        fn publish(&self, event: CompositorEvent) {
-            self.0.lock().unwrap().push(event);
-        }
     }
 
     #[test]

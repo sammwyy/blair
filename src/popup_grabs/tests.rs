@@ -13,13 +13,13 @@ use smithay::{
 use wayland_client::protocol::{
     wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_surface, wl_touch,
 };
-use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_surface, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_wm_base};
 
 use crate::{
     input::{process_input_event, InputHooks},
     test_support::{
         input::{TestEvent, TestInputBackend},
-        TestClient,
+        TestClient, TestPopup as Popup,
     },
 };
 
@@ -75,31 +75,6 @@ struct App {
     _keyboard: wl_keyboard::WlKeyboard,
     _pointer: wl_pointer::WlPointer,
     _touch: wl_touch::WlTouch,
-}
-
-struct Popup {
-    popup: xdg_popup::XdgPopup,
-    surface: wl_surface::WlSurface,
-    shell: xdg_surface::XdgSurface,
-}
-
-impl Popup {
-    fn new(client: &TestClient, parent: Option<&xdg_surface::XdgSurface>) -> Self {
-        let wm = client.bind::<xdg_wm_base::XdgWmBase>(6);
-        let surface = client
-            .bind::<wl_compositor::WlCompositor>(6)
-            .create_surface(&client.handle(), ());
-        let shell = wm.get_xdg_surface(&surface, &client.handle(), ());
-        let positioner = wm.create_positioner(&client.handle(), ());
-        positioner.set_size(30, 30);
-        positioner.set_anchor_rect(0, 0, 30, 30);
-        let popup = shell.get_popup(parent, &positioner, &client.handle(), ());
-        Self {
-            popup,
-            surface,
-            shell,
-        }
-    }
 }
 
 impl App {

@@ -173,11 +173,17 @@
   releases their grabs and restores focus. Protocol tests cover nested menus,
   same-client unrelated windows, priority changes, actual key delivery, and
   popups dismissed before their initial commit.
-- [ ] Implement the complete layer-surface unmap/remap lifecycle.
-  `commit_layer` retains configure state and keeps bufferless surfaces in
-  `LayerMap`, which can continue reserving their exclusive zones. Reset the
-  protocol state, dismiss non-grabbing child popups, release reserved space,
-  and require a new configure/ack cycle before remapping.
+- [x] Implement the layer-surface unmap/remap lifecycle. Registered surfaces
+  retain a weak output assignment, while only mapped surfaces enter `LayerMap`.
+  Unmapping resets role state, releases reserved space and input grabs, and
+  dismisses child popups in reverse order. New buffers require a configure
+  acknowledgement from the current mapping cycle. Protocol and EGL tests cover
+  stale/wrapping serials, pending output changes, work-area events, repeated cycles,
+  input cleanup, output assignment, and removal without visual remnants.
+- [ ] Validate layer-shell sizes, margins, and exclusive zones before calling
+  `LayerMap::arrange`. Smithay 0.7 uses unchecked signed arithmetic; oversized
+  client values or accumulated reservations can overflow or produce negative
+  output areas. Bound layout inputs and test adversarial combinations.
 - [x] Serialize offscreen EGL tests with a shared `EglTest` guard held through
   resource teardown. All eight tests use the common renderer factory, including
   the multi-context magnifier check. This avoids overlapping driver setup and

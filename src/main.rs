@@ -11,6 +11,7 @@ mod idle_dim;
 mod input;
 mod input_devices;
 mod integrations;
+mod layer_surfaces;
 mod logging;
 mod outputs;
 mod popup_grabs;

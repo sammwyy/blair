@@ -381,3 +381,37 @@ fn outside_touch_dismisses_window_menus_and_focuses_an_on_demand_layer() {
     assert!(shell.client.events.touch.iter().any(|event| matches!(event,
         wl_touch::Event::Down { surface, .. } if surface == &shell.surface)));
 }
+
+#[test]
+fn unmapped_layer_parents_cannot_grab_using_another_windows_input_serial() {
+    for remap in [false, true] {
+        let mut f = Fixture::new();
+        let mut app = App::new(&mut f, 20);
+        let (surface, layer) = ShellLayer::create(
+            &app.client,
+            zwlr_layer_shell_v1::Layer::Overlay,
+            zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
+        );
+        app.dispatch(&mut f);
+        if remap {
+            surface.commit();
+            app.dispatch(&mut f);
+            app.client.paint_surface(&surface, 800, 30);
+            app.dispatch(&mut f);
+            surface.attach(None, 0, 0);
+            surface.commit();
+            app.dispatch(&mut f);
+        }
+        f.focus(&app);
+        let serial = app.key(&mut f, true);
+        let rejected = Popup::new(&app.client, None);
+        layer.get_popup(&rejected.popup);
+        app.request(&mut f, &rejected, serial);
+        assert_eq!(app.client.events.popups_dismissed, 1);
+        assert!(f.state.active_popup_grab.is_none());
+        f.assert_focus(&app.root());
+        let accepted = app.popup(&app.shell);
+        app.request(&mut f, &accepted, serial);
+        f.assert_focus(&app.client.surface(&accepted.surface));
+    }
+}

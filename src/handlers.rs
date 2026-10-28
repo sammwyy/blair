@@ -10,7 +10,7 @@ use smithay::{
     delegate_presentation, delegate_primary_selection, delegate_relative_pointer, delegate_seat,
     delegate_session_lock, delegate_shm, delegate_single_pixel_buffer, delegate_viewporter,
     delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{layer_map_for_output, LayerSurface as DesktopLayerSurface, PopupKind},
+    desktop::PopupKind,
     input::{
         keyboard::LedState,
         pointer::{CursorImageStatus, PointerHandle},
@@ -61,7 +61,10 @@ use smithay::{
         },
         shell::{
             kde::decoration::{KdeDecorationHandler, KdeDecorationState},
-            wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
+            wlr_layer::{
+                Layer, LayerSurface, LayerSurfaceConfigure, WlrLayerShellHandler,
+                WlrLayerShellState,
+            },
             xdg::{
                 decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
                 XdgShellHandler, XdgShellState,
@@ -305,24 +308,8 @@ impl WlrLayerShellHandler for BlairState {
         layer: Layer,
         namespace: String,
     ) {
-        tracing::debug!(namespace = %namespace, ?layer, "new layer surface");
-        let output = output
-            .as_ref()
-            .and_then(Output::from_resource)
-            .or_else(|| self.focused_output());
-        let Some(output) = output else {
-            tracing::warn!(namespace = %namespace, "no output for layer surface");
-            surface.send_close();
-            return;
-        };
-        let desktop_surface = DesktopLayerSurface::new(surface, namespace.clone());
-        if let Err(error) = layer_map_for_output(&output).map_layer(&desktop_surface) {
-            tracing::warn!(?error, namespace = %namespace, "failed to map layer surface");
-            return;
-        }
-        send_scale_to_surface(desktop_surface.wl_surface(), &output);
-        self.layer_surfaces.push(desktop_surface);
-        self.emit_work_area_changed(&output);
+        let output = output.as_ref().and_then(Output::from_resource);
+        self.register_layer_surface(surface, output, layer, namespace);
     }
 
     fn new_popup(&mut self, _parent: LayerSurface, popup: PopupSurface) {
@@ -331,28 +318,12 @@ impl WlrLayerShellHandler for BlairState {
         self.popup_manager.commit(popup.wl_surface());
     }
 
+    fn ack_configure(&mut self, surface: WlSurface, configure: LayerSurfaceConfigure) {
+        self.layer_configure_acknowledged(&surface, configure);
+    }
+
     fn layer_destroyed(&mut self, surface: LayerSurface) {
-        tracing::debug!("layer surface destroyed");
-        let wl_surface = surface.wl_surface().clone();
-        let Some(index) = self
-            .layer_surfaces
-            .iter()
-            .position(|mapped| mapped.wl_surface() == &wl_surface)
-        else {
-            return;
-        };
-        let mapped = self.layer_surfaces.remove(index);
-        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        for output in &outputs {
-            let mut map = layer_map_for_output(output);
-            if map.layers().any(|layer| layer == &mapped) {
-                map.unmap_layer(&mapped);
-                drop(map);
-                self.emit_work_area_changed(output);
-                self.output_changed(output);
-            }
-        }
-        self.release_layer_focus(&wl_surface);
+        self.remove_layer_surface(surface.wl_surface());
     }
 }
 

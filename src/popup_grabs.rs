@@ -220,6 +220,13 @@ impl BlairState {
         let root = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
             .map_err(|_| "popup has no live root")?;
         if self
+            .layer_surfaces
+            .iter()
+            .any(|layer| layer.wl_surface() == &root && !crate::layer_surfaces::is_mapped(layer))
+        {
+            return Err("popup parent layer is not mapped");
+        }
+        if self
             .exclusive_layer_surface()
             .is_some_and(|layer| layer != root)
         {

@@ -5,7 +5,10 @@ pub use egl::EglTest;
 
 pub mod input;
 
-use std::{os::unix::net::UnixStream, sync::Arc};
+use std::{
+    os::unix::net::UnixStream,
+    sync::{Arc, Mutex},
+};
 
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
 use wayland_client::{
@@ -29,6 +32,14 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 use crate::state::{BlairState, ClientState};
 
+pub struct TestEvents(pub Mutex<Vec<blair_protocol::CompositorEvent>>);
+
+impl blair_integration::EventChannel for TestEvents {
+    fn publish(&self, event: blair_protocol::CompositorEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
 #[derive(Default)]
 pub struct ClientEvents {
     pub globals: Vec<(u32, String, u32)>,
@@ -42,6 +53,9 @@ pub struct ClientEvents {
     pub locks_confirmed: usize,
     pub locks_rejected: usize,
     pub popups_dismissed: usize,
+    pub popup_done: Vec<u32>,
+    pub layer_configures: Vec<(u32, u32, u32)>,
+    pub hold_layer_configures: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for ClientEvents {
@@ -162,15 +176,23 @@ impl Dispatch<ext_session_lock_surface_v1::ExtSessionLockSurfaceV1, ()> for Clie
 
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientEvents {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
-            surface.ack_configure(serial);
+        if let zwlr_layer_surface_v1::Event::Configure {
+            serial,
+            width,
+            height,
+        } = event
+        {
+            state.layer_configures.push((serial, width, height));
+            if !state.hold_layer_configures {
+                surface.ack_configure(serial);
+            }
         }
     }
 }
@@ -223,7 +245,7 @@ impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Cli
 impl Dispatch<xdg_popup::XdgPopup, ()> for ClientEvents {
     fn event(
         state: &mut Self,
-        _: &xdg_popup::XdgPopup,
+        popup: &xdg_popup::XdgPopup,
         event: xdg_popup::Event,
         _: &(),
         _: &Connection,
@@ -231,6 +253,7 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for ClientEvents {
     ) {
         if let xdg_popup::Event::PopupDone = event {
             state.popups_dismissed += 1;
+            state.popup_done.push(popup.id().protocol_id());
         }
     }
 }
@@ -245,6 +268,31 @@ pub struct TestClient {
     queue: EventQueue<ClientEvents>,
     registry: wl_registry::WlRegistry,
     pub events: ClientEvents,
+}
+
+pub struct TestPopup {
+    pub popup: xdg_popup::XdgPopup,
+    pub surface: wl_surface::WlSurface,
+    pub shell: xdg_surface::XdgSurface,
+}
+
+impl TestPopup {
+    pub fn new(client: &TestClient, parent: Option<&xdg_surface::XdgSurface>) -> Self {
+        let wm = client.bind::<xdg_wm_base::XdgWmBase>(6);
+        let surface = client
+            .bind::<wl_compositor::WlCompositor>(6)
+            .create_surface(&client.handle(), ());
+        let shell = wm.get_xdg_surface(&surface, &client.handle(), ());
+        let positioner = wm.create_positioner(&client.handle(), ());
+        positioner.set_size(30, 30);
+        positioner.set_anchor_rect(0, 0, 30, 30);
+        let popup = shell.get_popup(parent, &positioner, &client.handle(), ());
+        Self {
+            popup,
+            surface,
+            shell,
+        }
+    }
 }
 
 impl TestClient {
@@ -302,19 +350,45 @@ impl TestClient {
         self.queue.dispatch_pending(&mut self.events).unwrap();
     }
 
-    pub fn paint_surface(&self, surface: &wl_surface::WlSurface, width: i32, height: i32) {
-        use wayland_protocols::wp::{
-            single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1,
-            viewporter::client::wp_viewporter::WpViewporter,
-        };
-        let manager = self.bind::<WpSinglePixelBufferManagerV1>(1);
-        let buffer = manager.create_u32_rgba_buffer(u32::MAX, 0, 0, u32::MAX, &self.handle(), ());
-        let viewporter = self.bind::<WpViewporter>(1);
-        let viewport = viewporter.get_viewport(surface, &self.handle(), ());
+    pub fn solid_buffer(&self) -> wayland_client::protocol::wl_buffer::WlBuffer {
+        use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
+        self.bind::<WpSinglePixelBufferManagerV1>(1)
+            .create_u32_rgba_buffer(u32::MAX, 0, 0, u32::MAX, &self.handle(), ())
+    }
+
+    pub fn paint_surface(
+        &self,
+        surface: &wl_surface::WlSurface,
+        width: i32,
+        height: i32,
+    ) -> wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport {
+        use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+        let buffer = self.solid_buffer();
+        let viewport = self
+            .bind::<WpViewporter>(1)
+            .get_viewport(surface, &self.handle(), ());
         viewport.set_destination(width, height);
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, 1, 1);
         surface.commit();
+        viewport
+    }
+
+    pub fn expect_protocol_error(
+        &mut self,
+        display: &mut Display<BlairState>,
+        state: &mut BlairState,
+    ) -> wayland_client::backend::protocol::ProtocolError {
+        self.connection.flush().unwrap();
+        display.dispatch_clients(state).unwrap();
+        display.flush_clients().unwrap();
+        if let Some(reader) = self.connection.prepare_read() {
+            let _ = reader.read();
+        }
+        let _ = self.queue.dispatch_pending(&mut self.events);
+        self.connection
+            .protocol_error()
+            .expect("expected a Wayland protocol error")
     }
 
     pub fn surface(
