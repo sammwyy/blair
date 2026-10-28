@@ -73,6 +73,27 @@ Removing an already composed cursor, adding a magnified cursor, hardware overlay
 planes, direct scanout, and failed readback retain the offscreen fallback.
 DRM hardware capture behavior and actual recording memory still need measurement.
 
+## Fullscreen scanout feedback
+
+The DRM backend builds shared render and scanout feedback per output. The
+scanout tranche targets the KMS device and contains only format/modifier pairs
+accepted by both the renderer's import path and the primary plane. The render
+tranche remains available as fallback. Primary-plane atomic tests may consider
+formats and modifiers different from the compositor's swapchain.
+
+Visible fullscreen surfaces and their subsurfaces receive scanout preferences
+after actual zero-copy selection or a format-unsupported render result. Scanout
+failure, ordinary composition, full occlusion, leaving fullscreen, minimization,
+session lock, and magnification restore render feedback. Feedback follows each
+surface's primary output; unrelated outputs cannot overwrite its preferences.
+Unchanged feedback shares immutable data and emits no repeated wire events.
+
+Protocol tests decode the format table and tranches and exercise those updates;
+they use synthetic render states and do not prove KMS scanout or memory savings.
+Native-seat verification is still required. Swapchain buffers may remain
+allocated during scanout, so avoiding composition alone does not establish a
+reduction in RSS, PSS, or driver-resident memory.
+
 ## Empty nested session
 
 Build the release compositor and run the sampler from an existing graphical

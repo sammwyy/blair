@@ -48,10 +48,7 @@ use smithay::{
         wayland_server::Display,
     },
     utils::{DeviceFd, Transform},
-    wayland::{
-        dmabuf::{DmabufFeedbackBuilder, DmabufGlobal},
-        presentation::Refresh,
-    },
+    wayland::presentation::Refresh,
 };
 
 use crate::{
@@ -59,7 +56,7 @@ use crate::{
     input::{process_input_event, reset_keyboard_state, InputHooks},
     render::{
         cursor_is_animated, output_elements, send_frame_callbacks, take_presentation_feedback,
-        update_primary_scanout_output, CursorMode, Shaders, CLEAR_COLOR,
+        update_primary_scanout_output, CursorMode, ScanoutFeedback, Shaders, CLEAR_COLOR,
     },
     session_lock::SessionLockFrame,
     state::BlairState,
@@ -86,6 +83,7 @@ struct DrmBackend {
     compositor: BlairDrmCompositor,
     renderer: GlesRenderer,
     shaders: Option<Shaders>,
+    feedback: Option<ScanoutFeedback>,
     output: Output,
     refresh_interval: Duration,
     pacer: super::FramePacer,
@@ -276,7 +274,7 @@ impl DrmBackend {
             &mut self.renderer,
             &elements,
             CLEAR_COLOR,
-            FrameFlags::DEFAULT,
+            FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
         );
         let frame = match result {
             Ok(frame) => frame,
@@ -328,6 +326,9 @@ impl DrmBackend {
         let render = render_start.elapsed();
 
         update_primary_scanout_output(state, &self.output, &frame.states);
+        if let Some(feedback) = &self.feedback {
+            feedback.send(state, &self.output, &frame.states);
+        }
         if damaged {
             let feedback = take_presentation_feedback(state, &self.output, &frame.states);
             let queued = QueuedFrame {
@@ -790,7 +791,14 @@ fn init_drm(
         }
     }
 
-    init_dmabuf(state, &mut renderer, display_handle, render_node);
+    let feedback = init_dmabuf(
+        state,
+        &mut renderer,
+        display_handle,
+        render_node,
+        drm.device_id(),
+        &compositor.surface().plane_info().formats,
+    );
 
     let refresh_interval = refresh_interval(mode.refresh);
     Ok(DrmBackend {
@@ -799,6 +807,7 @@ fn init_drm(
         compositor,
         renderer,
         shaders,
+        feedback,
         refresh_interval,
         pacer: super::FramePacer::new(refresh_interval),
         output,
@@ -823,28 +832,30 @@ fn init_dmabuf(
     renderer: &mut GlesRenderer,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
     render_node: Option<DrmNode>,
-) {
-    let formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
-    let global: Option<DmabufGlobal> = match render_node {
-        Some(node) => DmabufFeedbackBuilder::new(node.dev_id(), formats.clone())
-            .build()
-            .map_err(|error| tracing::warn!(%error, "failed to build the dmabuf feedback"))
-            .ok()
-            .map(|feedback| {
-                state
-                    .dmabuf_state
-                    .create_global_with_default_feedback::<BlairState>(display_handle, &feedback)
-            }),
-        None => Some(
-            state
-                .dmabuf_state
-                .create_global::<BlairState>(display_handle, formats),
+    scanout_device: smithay::reexports::rustix::fs::Dev,
+    plane_formats: &smithay::backend::allocator::format::FormatSet,
+) -> Option<ScanoutFeedback> {
+    let formats = renderer.dmabuf_formats();
+    let feedback = ScanoutFeedback::new(
+        render_node.map_or(scanout_device, |node| node.dev_id()),
+        scanout_device,
+        &formats,
+        plane_formats,
+    )
+    .map_err(|error| tracing::warn!(%error, "failed to build per-surface dmabuf feedback"))
+    .ok();
+    let global = match &feedback {
+        Some(feedback) => state
+            .dmabuf_state
+            .create_global_with_default_feedback::<BlairState>(display_handle, feedback.render()),
+        None => state.dmabuf_state.create_global::<BlairState>(
+            display_handle,
+            formats.iter().copied().collect::<Vec<_>>(),
         ),
     };
-    if global.is_some() {
-        tracing::info!("linux-dmabuf enabled");
-    }
-    state.dmabuf_global = global;
+    tracing::info!("linux-dmabuf enabled");
+    state.dmabuf_global = Some(global);
+    feedback
 }
 
 fn log_input_device(message: &'static str, device: &impl InputDevice) {

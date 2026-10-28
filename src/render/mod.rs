@@ -2,6 +2,7 @@ mod blur;
 mod capture;
 mod clip;
 mod decoration;
+mod dmabuf;
 mod frame_callbacks;
 mod magnify;
 
@@ -55,6 +56,7 @@ use blair_protocol::Rect;
 pub use capture::{capture_cursor, capture_region, read_framebuffer};
 pub use clip::RoundedClip;
 pub use decoration::{ButtonBuffers, DecorationParts, WindowDecoration};
+pub use dmabuf::ScanoutFeedback;
 pub(crate) use frame_callbacks::{send_frame_callbacks, HiddenFrames};
 pub use magnify::Magnifier;
 

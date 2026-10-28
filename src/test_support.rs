@@ -42,6 +42,10 @@ impl blair_integration::EventChannel for TestEvents {
 
 #[derive(Default)]
 pub struct ClientEvents {
+    pub dmabuf_feedback: Vec<(
+        u32,
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::Event,
+    )>,
     pub screencopy: Vec<(
         u32,
         wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::Event,

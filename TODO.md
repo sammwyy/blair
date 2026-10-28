@@ -29,8 +29,14 @@
 - [ ] Add tablet, pen, and on-screen keyboard protocols: `tablet-v2`,
   `text-input-v3`, and `input-method-v2`.
 - [ ] Enable per-surface direct scanout of client buffers. The DRM backend
-  advertises a single global dmabuf feedback tranche and never sends
-  per-surface scanout feedback for fullscreen clients.
+  now sends per-surface scanout preference tranches to visible fullscreen
+  surfaces and subsurfaces that scan out or need a compatible format. Tranches
+  intersect renderer-import and primary-plane formats; atomic tests may accept
+  client formats/modifiers different from the compositor swapchain. Failed
+  scanout, effects, hiding, or leaving fullscreen restore render feedback.
+  Protocol tests cover format filtering, updates, ownership, subsurfaces, and
+  warm deduplication. Actual DRM presentation and memory savings still need
+  verification on a native seat.
 - [x] Rasterize SVG titlebar icons at the requested physical size. Aspect ratio,
   transparent padding, and straight-alpha cache pixels survive decoration upload;
   embedded images resolve beside the document and system fonts load only for
