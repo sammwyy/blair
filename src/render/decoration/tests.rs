@@ -5,30 +5,18 @@ fn title_id(
     renderer: &mut smithay::backend::renderer::pixman::PixmanRenderer,
     font: &creamui_fonts::FontFace,
 ) -> Id {
-    use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
     decoration.update_title(
         font,
         "Terminal",
-        14.0,
-        [255, 255, 255, 255],
-        200,
-        24,
-        false,
-        1,
+        TitleStyle {
+            font_size: 14.0,
+            color: [255; 4],
+            area: (200, 24).into(),
+            centered: false,
+            buffer_scale: 1,
+        },
     );
-    let (buffer, _) = decoration.title_buffer().unwrap();
-    MemoryRenderBufferRenderElement::from_buffer(
-        renderer,
-        (0.0, 0.0),
-        buffer,
-        None,
-        None,
-        None,
-        Kind::Unspecified,
-    )
-    .unwrap()
-    .id()
-    .clone()
+    memory_id(decoration.title_buffer().unwrap().0, renderer)
 }
 
 #[test]
@@ -280,4 +268,172 @@ fn mix_interpolates_each_channel() {
         mix([0, 0, 0, 0], [100, 200, 50, 255], 0.5),
         [50, 100, 25, 128]
     );
+}
+
+fn memory_id(
+    buffer: &MemoryRenderBuffer,
+    renderer: &mut smithay::backend::renderer::pixman::PixmanRenderer,
+) -> Id {
+    smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        (0.0, 0.0),
+        buffer,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    )
+    .unwrap()
+    .id()
+    .clone()
+}
+
+#[test]
+fn decoration_cache_hits_do_not_allocate_and_title_styles_invalidate() {
+    let font = creamui_fonts::resolve(
+        creamui_fonts::DEFAULT_FAMILY,
+        creamui_fonts::FontWeight::Regular,
+    );
+    let style = TitleStyle {
+        font_size: 14.0,
+        color: [255; 4],
+        area: (200, 24).into(),
+        centered: false,
+        buffer_scale: 1,
+    };
+    let look = ButtonLook {
+        glyph: ButtonGlyph::Close,
+        glyph_visible: true,
+        disc: [0; 4],
+        glyph_color: [255; 4],
+    };
+    let icon = Rc::new(RgbaBitmap {
+        pixels: [255, 0, 0, 128].repeat(4),
+        width: 2,
+        height: 2,
+    });
+    let theme = crate::config::DecorationConfig::default().to_theme(None);
+    let mut decoration = WindowDecoration::default();
+    let allocations = crate::test_support::count_allocations(|| {
+        decoration.update_title(&font, "Terminal", style);
+        decoration.update_button(0, look, 20, 1);
+        decoration.update_icon(Some("test"), Some(&icon), 2, 1);
+    });
+    assert!(allocations > 0);
+    assert_eq!(
+        crate::test_support::count_allocations(|| {
+            for _ in 0..1000 {
+                std::hint::black_box(theme.clone());
+                decoration.update_title(&font, "Terminal", style);
+                decoration.update_button(0, look, 20, 1);
+                decoration.update_icon(Some("test"), Some(&icon), 2, 1);
+            }
+        }),
+        0
+    );
+    let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
+    for changed in [
+        TitleStyle {
+            font_size: 14.5,
+            ..style
+        },
+        TitleStyle {
+            color: [30, 30, 30, 255],
+            ..style
+        },
+        TitleStyle {
+            area: (201, 24).into(),
+            ..style
+        },
+        TitleStyle {
+            area: (200, 25).into(),
+            ..style
+        },
+        TitleStyle {
+            centered: true,
+            ..style
+        },
+        TitleStyle {
+            buffer_scale: 2,
+            ..style
+        },
+    ] {
+        decoration.update_title(&font, "Terminal", style);
+        let previous = memory_id(decoration.title_buffer().unwrap().0, &mut renderer);
+        decoration.update_title(&font, "Terminal", changed);
+        let current = memory_id(decoration.title_buffer().unwrap().0, &mut renderer);
+        assert_ne!(current, previous, "{changed:?}");
+        assert_eq!(
+            crate::test_support::count_allocations(
+                || decoration.update_title(&font, "Terminal", changed)
+            ),
+            0
+        );
+        assert_eq!(
+            memory_id(decoration.title_buffer().unwrap().0, &mut renderer),
+            current
+        );
+    }
+    let previous = memory_id(decoration.title_buffer().unwrap().0, &mut renderer);
+    decoration.update_title(&font, "A different title", style);
+    assert_ne!(
+        memory_id(decoration.title_buffer().unwrap().0, &mut renderer),
+        previous
+    );
+}
+
+#[test]
+fn icon_buffers_track_identity_dimensions_scale_and_availability() {
+    let mut decoration = WindowDecoration::default();
+    let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
+    let first = Rc::new(RgbaBitmap {
+        pixels: [255, 0, 0, 255].repeat(4),
+        width: 2,
+        height: 2,
+    });
+    decoration.update_icon(Some("test"), None, 2, 1);
+    assert!(decoration.icon_buffer().is_none());
+    decoration.update_icon(Some("test"), Some(&first), 2, 1);
+    let initial = memory_id(decoration.icon_buffer().unwrap().0, &mut renderer);
+    decoration.update_icon(Some("test"), Some(&first), 2, 1);
+    assert_eq!(
+        memory_id(decoration.icon_buffer().unwrap().0, &mut renderer),
+        initial
+    );
+    for (app_id, size, scale) in [
+        (Some("test"), 3, 1),
+        (Some("test"), 2, 2),
+        (Some("other"), 2, 1),
+    ] {
+        decoration.update_icon(app_id, Some(&first), size, scale);
+        assert_ne!(
+            memory_id(decoration.icon_buffer().unwrap().0, &mut renderer),
+            initial
+        );
+    }
+    decoration.update_icon(Some("test"), Some(&first), 2, 1);
+    let previous = memory_id(decoration.icon_buffer().unwrap().0, &mut renderer);
+    let second = Rc::new(RgbaBitmap {
+        pixels: [0, 0, 255, 255].repeat(4),
+        width: 2,
+        height: 2,
+    });
+    decoration.update_icon(Some("test"), Some(&second), 2, 1);
+    assert_ne!(
+        memory_id(decoration.icon_buffer().unwrap().0, &mut renderer),
+        previous
+    );
+    drop(second);
+    assert!(decoration
+        .icon
+        .key
+        .as_ref()
+        .unwrap()
+        .bitmap
+        .as_ref()
+        .unwrap()
+        .upgrade()
+        .is_none());
+    decoration.update_icon(Some("test"), None, 2, 1);
+    assert!(decoration.icon_buffer().is_none());
 }

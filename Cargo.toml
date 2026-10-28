@@ -97,6 +97,7 @@ blair-window-integration-protocol = { workspace = true, features = ["server"] }
 xcursor.workspace = true
 profiling.workspace = true
 png = "0.17"
+hashbrown = { version = "0.17", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 swash = "0.2"
 creamui-theme = { version = "0.2.0", path = "../creamui/crates/theme" }

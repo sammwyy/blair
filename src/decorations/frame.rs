@@ -234,7 +234,8 @@ mod tests {
                 DecorationButton::Minimize,
                 DecorationButton::Maximize,
                 DecorationButton::Close,
-            ],
+            ]
+            .into(),
             button_side: DecorationButtonSide::Right,
             button_style: crate::config::DecorationButtonStyle::Normal,
             button_size: 20,

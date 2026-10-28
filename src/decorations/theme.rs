@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::config::{
     DecorationButton, DecorationButtonSide, DecorationButtonStyle, TitlebarColorMode,
 };
@@ -20,7 +22,7 @@ pub struct DecorationTheme {
     pub close_button: [u8; 4],
     pub maximize_button: [u8; 4],
     pub minimize_button: [u8; 4],
-    pub button_layout: Vec<DecorationButton>,
+    pub button_layout: Arc<[DecorationButton]>,
     pub button_side: DecorationButtonSide,
     pub button_style: DecorationButtonStyle,
     pub button_size: i32,

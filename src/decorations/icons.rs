@@ -1,12 +1,14 @@
 use std::{
     cell::{OnceCell, RefCell},
-    collections::HashMap,
+    collections::hash_map::RandomState,
+    hash::{Hash, Hasher},
     path::Path,
     rc::Rc,
     time::Instant,
 };
 
 use delib::{application_icons::ApplicationIconResolver, icons::system_icon_theme};
+use hashbrown::{Equivalent, HashMap};
 use image::imageops::FilterType;
 
 const MAX_CACHE_ENTRIES: usize = 256;
@@ -20,6 +22,20 @@ pub struct RgbaBitmap {
     pub height: i32,
 }
 
+struct IconLookup<'a>(&'a str, i32);
+
+impl Hash for IconLookup<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.0, self.1).hash(state);
+    }
+}
+
+impl Equivalent<IconKey> for IconLookup<'_> {
+    fn equivalent(&self, key: &IconKey) -> bool {
+        self.0 == key.0 && self.1 == key.1
+    }
+}
+
 struct CachedIcon {
     bitmap: Option<Rc<RgbaBitmap>>,
     last_used: Instant,
@@ -28,13 +44,13 @@ struct CachedIcon {
 
 #[derive(Default)]
 struct IconEntries {
-    entries: HashMap<IconKey, CachedIcon>,
+    entries: HashMap<IconKey, CachedIcon, RandomState>,
     bytes: usize,
 }
 
 impl IconEntries {
-    fn get(&mut self, key: &IconKey) -> Option<Option<Rc<RgbaBitmap>>> {
-        let entry = self.entries.get_mut(key)?;
+    fn get(&mut self, app_id: &str, size: i32) -> Option<Option<Rc<RgbaBitmap>>> {
+        let entry = self.entries.get_mut(&IconLookup(app_id, size))?;
         entry.last_used = Instant::now();
         Some(entry.bitmap.clone())
     }
@@ -99,15 +115,17 @@ impl IconCache {
     }
 
     pub fn get(&self, app_id: &str, size: i32) -> Option<Rc<RgbaBitmap>> {
-        let key = (app_id.to_owned(), size.max(1));
-        if let Some(cached) = self.entries.borrow_mut().get(&key) {
+        let size = size.max(1);
+        if let Some(cached) = self.entries.borrow_mut().get(app_id, size) {
             return cached;
         }
         let resolver = self.resolver.get_or_init(|| {
             ApplicationIconResolver::new(self.theme.clone().unwrap_or_else(system_icon_theme))
         });
-        let resolved = load_icon(resolver, app_id, key.1);
-        self.entries.borrow_mut().insert(key, resolved.clone());
+        let resolved = load_icon(resolver, app_id, size);
+        self.entries
+            .borrow_mut()
+            .insert((app_id.to_owned(), size), resolved.clone());
         resolved
     }
 
@@ -178,6 +196,32 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_lookups_preserve_sizes_and_cache_hits_do_not_allocate() {
+        let cache = IconCache::default();
+        let pixels = bitmap(16);
+        cache
+            .entries
+            .borrow_mut()
+            .insert(("test".to_owned(), 24), Some(pixels.clone()));
+        cache
+            .entries
+            .borrow_mut()
+            .insert(("test".to_owned(), 48), None);
+        assert!(Rc::ptr_eq(&cache.get("test", 24).unwrap(), &pixels));
+        assert!(cache.get("test", 48).is_none());
+        let allocations = crate::test_support::count_allocations(|| {
+            for _ in 0..1000 {
+                std::hint::black_box(cache.get("test", 24));
+                std::hint::black_box(cache.get("test", 48));
+            }
+        });
+        assert_eq!(allocations, 0);
+        assert!(cache.resolver.get().is_none());
+        assert!(cache.entries.borrow_mut().get("missing", 24).is_none());
+        assert!(cache.entries.borrow_mut().get("test", 96).is_none());
+    }
+
+    #[test]
     fn negative_results_obey_the_entry_budget_and_keep_recently_used_icons() {
         let mut entries = IconEntries::default();
         let keep = ("keep".to_owned(), 24);
@@ -187,11 +231,11 @@ mod tests {
         for index in 2..MAX_CACHE_ENTRIES {
             entries.insert((format!("missing-{index}"), 24), None);
         }
-        assert!(entries.get(&keep).unwrap().is_none());
+        assert!(entries.get(&keep.0, keep.1).unwrap().is_none());
         entries.insert(("new".to_owned(), 24), None);
         assert_eq!(entries.entries.len(), MAX_CACHE_ENTRIES);
-        assert!(entries.get(&keep).is_some());
-        assert!(entries.get(&evict).is_none());
+        assert!(entries.get(&keep.0, keep.1).is_some());
+        assert!(entries.get(&evict.0, evict.1).is_none());
         for index in 0..10_000 {
             entries.insert((format!("churn-{index}"), 24), None);
         }
@@ -207,7 +251,7 @@ mod tests {
         let key = ("first".to_owned(), 24);
         entries.insert(key.clone(), Some(first.clone()));
         entries.insert(("second".to_owned(), 24), Some(bitmap(MAX_CACHE_BYTES / 2)));
-        assert!(entries.get(&key).is_none());
+        assert!(entries.get(&key.0, key.1).is_none());
         assert_eq!(entries.entries.len(), 1);
         assert!(entries.bytes <= MAX_CACHE_BYTES);
         assert_eq!(first.pixels.len(), MAX_CACHE_BYTES / 2);
@@ -223,7 +267,7 @@ mod tests {
         entries.insert(("large".to_owned(), 24), Some(bitmap(MAX_CACHE_BYTES + 1)));
         entries.insert(("x".repeat(MAX_CACHE_BYTES + 1), 24), None);
         assert_eq!(entries.entries.len(), 1);
-        assert!(entries.get(&keep).is_some());
+        assert!(entries.get(&keep.0, keep.1).is_some());
     }
 
     #[test]

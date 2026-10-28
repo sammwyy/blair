@@ -1,3 +1,6 @@
+mod allocations;
+pub use allocations::count_allocations;
+
 pub mod input;
 
 use std::{os::unix::net::UnixStream, sync::Arc};

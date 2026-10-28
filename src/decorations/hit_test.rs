@@ -136,7 +136,7 @@ mod tests {
             close_button: [0; 4],
             maximize_button: [0; 4],
             minimize_button: [0; 4],
-            button_layout: vec![DecorationButton::Close],
+            button_layout: vec![DecorationButton::Close].into(),
             button_side: DecorationButtonSide::Right,
             button_style: crate::config::DecorationButtonStyle::Normal,
             button_size: 20,

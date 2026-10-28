@@ -59,8 +59,8 @@ pub use magnify::Magnifier;
 
 use clip::ClippedSurfaceElement;
 use decoration::{
-    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitlebarPixelSource,
-    TitlebarStrip,
+    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitleStyle,
+    TitlebarPixelSource, TitlebarStrip,
 };
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
@@ -817,7 +817,7 @@ fn window_elements(
     let (title_text, app_id) = state
         .windows
         .get(&id)
-        .map(|managed| (managed.title.clone(), managed.app_id.clone()))
+        .map(|managed| (managed.title.as_str(), managed.app_id.as_deref()))
         .unwrap_or_default();
 
     let decorated = (frame.has_border || frame.has_content_outline) && shaders.is_some();
@@ -943,13 +943,14 @@ fn window_elements(
             * theme.text_scale;
         decoration.update_title(
             font,
-            &title_text,
-            title_size,
-            muted,
-            geometry.title.width,
-            geometry.title.height,
-            theme.title_centered,
-            buffer_scale,
+            title_text,
+            TitleStyle {
+                font_size: title_size,
+                color: muted,
+                area: (geometry.title.width, geometry.title.height).into(),
+                centered: theme.title_centered,
+                buffer_scale,
+            },
         );
         if let Some((buffer, bounds)) = decoration.title_buffer() {
             let mut area = from_rect(geometry.title);
@@ -960,17 +961,12 @@ fn window_elements(
         }
 
         if theme.show_icon && geometry.icon.width > 0 {
-            let icon = app_id.as_deref().and_then(|app_id| {
+            let icon = app_id.and_then(|app_id| {
                 state
                     .icon_cache
                     .get(app_id, geometry.icon.width * buffer_scale)
             });
-            let key = format!(
-                "{}|{}|{buffer_scale}",
-                app_id.as_deref().unwrap_or(""),
-                geometry.icon.width
-            );
-            decoration.update_icon(&key, icon.as_deref(), geometry.icon.width, buffer_scale);
+            decoration.update_icon(app_id, icon.as_ref(), geometry.icon.width, buffer_scale);
             if let Some((buffer, size)) = decoration.icon_buffer() {
                 let location =
                     Point::<i32, Logical>::from((geometry.icon.x, geometry.icon.y)) - origin;

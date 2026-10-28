@@ -64,10 +64,13 @@
   titles and fractional output scales retain their placement. CPU and EGL
   tests compare the result against full bitmaps and verify width-independent
   storage for short titles.
-- [ ] Share identical button buffers across windows and replace formatted
-  title/button/icon cache keys with typed state. `WindowDecoration` retains
-  separate button buffers and renderer textures per window; cache hits still
-  allocate temporary strings on every rendered frame.
+- [x] Use typed title/button/icon cache keys and borrowed icon lookups.
+  Window rendering borrows title/app-ID text and theme snapshots share their
+  button layout. Allocation-counting tests verify warm cache hits allocate
+  nothing; style, font, size, scale, and icon identity changes invalidate
+  buffers without retaining decoded icon pixels through the key.
+- [ ] Share identical button buffers across windows. `WindowDecoration`
+  retains separate button pixels and renderer textures per window.
 - [x] Reuse magnifier resources per output. The retained texture, damage
   tracker, and element ID preserve scene damage and skip unchanged frames
   without an explicit CPU wait. Mode, scale, and renderer changes replace

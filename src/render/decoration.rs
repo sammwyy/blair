@@ -1,3 +1,5 @@
+use std::rc::{Rc, Weak};
+
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -246,17 +248,59 @@ pub struct WindowDecoration {
     area: Rectangle<i32, Logical>,
     params: Option<FrameParams>,
     pub strip: Option<TitlebarStrip>,
-    buttons: [BufferCache; 3],
-    title: BufferCache,
+    buttons: [BufferCache<ButtonKey>; 3],
+    title: BufferCache<TitleKey>,
     title_offset: Point<i32, Logical>,
-    icon: BufferCache,
+    icon: BufferCache<IconBufferKey>,
 }
 
-#[derive(Debug, Default)]
-struct BufferCache {
-    key: Option<String>,
+#[derive(Debug)]
+struct BufferCache<K> {
+    key: Option<K>,
     buffer: Option<MemoryRenderBuffer>,
     size: Size<i32, Logical>,
+}
+
+impl<K> Default for BufferCache<K> {
+    fn default() -> Self {
+        Self {
+            key: None,
+            buffer: None,
+            size: Size::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TitleStyle {
+    pub font_size: f32,
+    pub color: [u8; 4],
+    pub area: Size<i32, Logical>,
+    pub centered: bool,
+    pub buffer_scale: i32,
+}
+
+#[derive(Debug)]
+struct TitleKey {
+    font: u64,
+    generation: u64,
+    text: Box<str>,
+    style: TitleStyle,
+}
+
+#[derive(Debug)]
+struct IconBufferKey {
+    app_id: Option<Box<str>>,
+    size: i32,
+    buffer_scale: i32,
+    bitmap: Option<Weak<RgbaBitmap>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ButtonKey {
+    look: ButtonLook,
+    size: i32,
+    buffer_scale: i32,
 }
 
 impl Default for WindowDecoration {
@@ -300,43 +344,41 @@ impl WindowDecoration {
         }
     }
 
-    /// Rasterizes `text` into the title glyph cache when the cache key
-    /// (font, registry generation, text, style, box, and scale) changed.
-    /// `size`, `max_width` and `height` are logical; the bitmap is drawn at
-    /// `buffer_scale` so it stays crisp on HiDPI outputs.
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_title(
-        &mut self,
-        font: &creamui_fonts::FontFace,
-        text: &str,
-        size: f32,
-        color: [u8; 4],
-        max_width: i32,
-        height: i32,
-        centered: bool,
-        buffer_scale: i32,
-    ) {
+    pub fn update_title(&mut self, font: &creamui_fonts::FontFace, text: &str, style: TitleStyle) {
         let font_id = font.id();
         let generation = creamui_fonts::registry_generation();
-        let key = format!("{font_id}|{generation}|{text}|{size}|{color:?}|{max_width}|{height}|{centered}|{buffer_scale}");
-        if self.title.key.as_deref() == Some(key.as_str()) {
+        if self.title.key.as_ref().is_some_and(|key| {
+            key.font == font_id
+                && key.generation == generation
+                && key.text.as_ref() == text
+                && key.style == style
+        }) {
             return;
         }
-        self.title.key = Some(key);
+        self.title.key = Some(TitleKey {
+            font: font_id,
+            generation,
+            text: text.into(),
+            style,
+        });
         let glyphs = crate::decorations::rasterize_title(
             font,
             text,
-            size * buffer_scale as f32,
-            color,
-            max_width * buffer_scale,
-            height * buffer_scale,
-            centered,
+            style.font_size * style.buffer_scale as f32,
+            style.color,
+            style.area.w * style.buffer_scale,
+            style.area.h * style.buffer_scale,
+            style.centered,
         );
         if let Some(glyphs) = glyphs {
             let (buffer, bounds) = buffer_from_glyphs(
                 &glyphs,
-                buffer_scale,
-                (max_width * buffer_scale, height * buffer_scale).into(),
+                style.buffer_scale,
+                (
+                    style.area.w * style.buffer_scale,
+                    style.area.h * style.buffer_scale,
+                )
+                    .into(),
             );
             self.title.buffer = Some(buffer);
             self.title.size = bounds.size;
@@ -355,15 +397,29 @@ impl WindowDecoration {
     /// expected at `buffer_scale` times the logical `size`.
     pub fn update_icon(
         &mut self,
-        key: &str,
-        icon: Option<&RgbaBitmap>,
+        app_id: Option<&str>,
+        icon: Option<&Rc<RgbaBitmap>>,
         size: i32,
         buffer_scale: i32,
     ) {
-        if self.icon.key.as_deref() == Some(key) {
+        if self.icon.key.as_ref().is_some_and(|key| {
+            key.app_id.as_deref() == app_id
+                && key.size == size
+                && key.buffer_scale == buffer_scale
+                && match (&key.bitmap, icon) {
+                    (Some(previous), Some(current)) => previous.ptr_eq(&Rc::downgrade(current)),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }) {
             return;
         }
-        self.icon.key = Some(key.to_owned());
+        self.icon.key = Some(IconBufferKey {
+            app_id: app_id.map(Into::into),
+            size,
+            buffer_scale,
+            bitmap: icon.map(Rc::downgrade),
+        });
         self.icon.buffer = icon.map(|icon| {
             buffer_from_pixels(
                 &premultiply(&icon.pixels),
@@ -378,9 +434,13 @@ impl WindowDecoration {
     /// Rasterizes a titlebar button into slot `index` when its look, size,
     /// or scale changed since the last call.
     pub fn update_button(&mut self, index: usize, look: ButtonLook, size: i32, buffer_scale: i32) {
-        let key = format!("{look:?}|{size}|{buffer_scale}");
+        let key = ButtonKey {
+            look,
+            size,
+            buffer_scale,
+        };
         let cache = &mut self.buttons[index];
-        if cache.key.as_deref() == Some(key.as_str()) {
+        if cache.key == Some(key) {
             return;
         }
         cache.key = Some(key);
@@ -668,7 +728,7 @@ fn premultiply(pixels: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonGlyph {
     Close,
     Maximize,
@@ -677,7 +737,7 @@ pub enum ButtonGlyph {
 
 /// How a titlebar button is drawn: a soft disc with a thin glyph on top.
 /// Colors are straight (non-premultiplied) RGBA.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ButtonLook {
     pub glyph: ButtonGlyph,
     pub glyph_visible: bool,

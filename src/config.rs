@@ -1068,7 +1068,7 @@ impl DecorationConfig {
             close_button,
             maximize_button,
             minimize_button,
-            button_layout: self.buttons.layout.clone(),
+            button_layout: self.buttons.layout.as_slice().into(),
             button_side: self.buttons.side,
             button_style: self.buttons.style,
             button_size: self.buttons.size,
