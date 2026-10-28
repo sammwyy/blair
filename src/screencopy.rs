@@ -52,13 +52,14 @@ impl ScreencopyRequest {
     /// Writes `pixels` (tightly packed, `region` sized) into the client's
     /// buffer and completes the capture.
     pub fn submit(self, pixels: &[u8], time: std::time::Duration) {
-        self.submit_transformed(pixels, Transform::Normal, time);
+        self.submit_transformed(pixels, Transform::Normal, None, time);
     }
 
     pub fn submit_transformed(
         self,
         pixels: &[u8],
         transform: Transform,
+        overlay: Option<CursorOverlay<'_>>,
         time: std::time::Duration,
     ) {
         let width = self.region.size.w;
@@ -76,13 +77,18 @@ impl ScreencopyRequest {
             let offset = data.offset as usize;
             // SAFETY: the pool remains mapped during the closure and offset is within it.
             let target = unsafe { std::slice::from_raw_parts_mut(ptr.add(offset), len - offset) };
-            copy_pixels(
+            if !copy_pixels(
                 pixels,
                 target,
                 data.stride as usize,
                 self.region.size,
                 transform,
-            )
+            ) {
+                return false;
+            }
+            overlay.as_ref().is_none_or(|overlay| {
+                composite_cursor(target, data.stride as usize, self.region, overlay)
+            })
         });
         match copied {
             Ok(true) => {
@@ -108,6 +114,53 @@ impl ScreencopyRequest {
     pub fn fail(self) {
         self.frame.failed();
     }
+}
+
+pub struct CursorOverlay<'a> {
+    pub region: Rectangle<i32, Physical>,
+    pub pixels: &'a [u8],
+}
+
+fn composite_cursor(
+    target: &mut [u8],
+    stride: usize,
+    region: Rectangle<i32, Physical>,
+    overlay: &CursorOverlay<'_>,
+) -> bool {
+    let Some(bytes) = (overlay.region.size.w as usize)
+        .checked_mul(overlay.region.size.h as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+    else {
+        return false;
+    };
+    if overlay.region.is_empty() || overlay.pixels.len() < bytes {
+        return false;
+    }
+    let Some(affected) = region.intersection(overlay.region) else {
+        return true;
+    };
+    for y in affected.loc.y..affected.loc.y + affected.size.h {
+        for x in affected.loc.x..affected.loc.x + affected.size.w {
+            let source = (((y - overlay.region.loc.y) as usize * overlay.region.size.w as usize)
+                + (x - overlay.region.loc.x) as usize)
+                * 4;
+            let dest = (y - region.loc.y) as usize * stride + (x - region.loc.x) as usize * 4;
+            let alpha = overlay.pixels[source + 3] as u16;
+            if alpha == 0 {
+                continue;
+            }
+            if alpha == 255 {
+                target[dest..dest + 3].copy_from_slice(&overlay.pixels[source..source + 3]);
+                continue;
+            }
+            for channel in 0..3 {
+                target[dest + channel] = overlay.pixels[source + channel].saturating_add(
+                    ((target[dest + channel] as u16 * (255 - alpha) + 127) / 255) as u8,
+                );
+            }
+        }
+    }
+    true
 }
 
 fn copy_pixels(

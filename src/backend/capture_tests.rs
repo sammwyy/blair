@@ -10,11 +10,11 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{texture::TextureRenderElement, Id, Kind},
             gles::GlesTexture,
-            Bind, Color32F, ImportMem, Offscreen, Renderer,
+            Bind, Color32F, ExportMem, ImportMem, Offscreen, Renderer,
         },
     },
     reexports::rustix::fs::{memfd_create, MemfdFlags},
-    utils::Transform,
+    utils::{Rectangle, Transform},
 };
 use std::{
     fs::File,
@@ -53,6 +53,8 @@ fn protocol_captures_reuse_the_frame_and_preserve_cursor_fallbacks() {
     let egl = EglTest::new();
     let mut renderer = egl.renderer();
     let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    state.config.accessibility.zoom = true;
+    state.config.accessibility.zoom_factor = 2.0;
     let output = crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
     let mut client = TestClient::new(&mut display, &mut state);
     let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
@@ -103,7 +105,7 @@ fn protocol_captures_reuse_the_frame_and_preserve_cursor_fallbacks() {
         Id::new(),
         renderer.context_id(),
         (0.0, 0.0),
-        texture,
+        texture.clone(),
         1,
         Transform::Normal,
         None,
@@ -225,4 +227,85 @@ fn protocol_captures_reuse_the_frame_and_preserve_cursor_fallbacks() {
             .count();
         assert_eq!(damage, usize::from(label == 1));
     }
+    state.config.accessibility.zoom = false;
+    let frame = manager.capture_output(1, &client_output, &client.handle(), 4);
+    client.dispatch(&mut display, &mut state);
+    frame.copy(&buffer);
+    client.dispatch(&mut display, &mut state);
+    let framebuffer = renderer.bind(&mut target).unwrap();
+    process_frame_captures(
+        &mut state,
+        &mut renderer,
+        &output,
+        &framebuffer,
+        Transform::Flipped180,
+        CursorMode::HostNamed,
+    );
+    drop(framebuffer);
+    assert!(state.pending_captures.is_empty());
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.read_exact(&mut copied).unwrap();
+    let mut elements = crate::render::output_elements(
+        &mut renderer,
+        &mut state,
+        &output,
+        None,
+        CursorMode::Composited,
+    );
+    elements.push(
+        TextureRenderElement::from_static_texture(
+            Id::new(),
+            renderer.context_id(),
+            (0.0, 0.0),
+            texture,
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .into(),
+    );
+    let mut expected_texture =
+        Offscreen::<GlesTexture>::create_buffer(&mut renderer, Fourcc::Abgr8888, (8, 6).into())
+            .unwrap();
+    let mut framebuffer = renderer.bind(&mut expected_texture).unwrap();
+    OutputDamageTracker::new((8, 6), 1.0, Transform::Normal)
+        .render_output(
+            &mut renderer,
+            &mut framebuffer,
+            0,
+            &elements,
+            Color32F::BLACK,
+        )
+        .unwrap();
+    let mapping = renderer
+        .copy_framebuffer(
+            &framebuffer,
+            Rectangle::from_size((8, 6).into()),
+            Fourcc::Xrgb8888,
+        )
+        .unwrap();
+    let expected = renderer.map_texture(&mapping).unwrap();
+    for y in 0..6 {
+        for x in 0..8 {
+            for channel in 0..3 {
+                let actual = copied[offset + y * stride + x * 4 + channel];
+                let expected = expected[(y * 8 + x) * 4 + channel];
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "cursor pixel ({x},{y}), channel={channel}: {actual} != {expected}"
+                );
+            }
+        }
+    }
+    client.dispatch(&mut display, &mut state);
+    assert!(client
+        .events
+        .screencopy
+        .iter()
+        .any(|(label, event)| *label == 4
+            && matches!(event, zwlr_screencopy_frame_v1::Event::Ready { .. })));
 }

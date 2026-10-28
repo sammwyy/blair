@@ -4,14 +4,72 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             damage::OutputDamageTracker,
-            element::utils::{Relocate, RelocateRenderElement},
+            element::{
+                utils::{Relocate, RelocateRenderElement},
+                Element,
+            },
             gles::{GlesMapping, GlesRenderer, GlesTarget, GlesTexture},
-            Bind, ExportMem, Offscreen,
+            Bind, Color32F, ExportMem, Offscreen,
         },
     },
     output::Output,
     utils::{Physical, Rectangle, Size, Transform},
 };
+
+pub fn capture_cursor(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    output: &Output,
+) -> Result<Option<(Rectangle<i32, Physical>, GlesMapping)>> {
+    let Some(output_geo) = state.space.output_geometry(output) else {
+        return Ok(None);
+    };
+    let viewport = output.current_transform().transform_size(
+        output
+            .current_mode()
+            .context("the output has no current mode")?
+            .size,
+    );
+    let scale = output.current_scale().fractional_scale();
+    let ctx = super::FrameContext {
+        output_geo,
+        scale,
+        viewport,
+    };
+    let mut elements = Vec::new();
+    super::cursor_elements(
+        renderer,
+        state,
+        output,
+        &ctx,
+        CursorMode::Composited,
+        &mut elements,
+    );
+    let Some(region) = elements
+        .iter()
+        .map(|element| element.geometry(scale.into()))
+        .reduce(|a, b| a.merge(b))
+        .and_then(|region| region.intersection(Rectangle::from_size(viewport)))
+    else {
+        return Ok(None);
+    };
+    let mut texture = render_region_with_clear(
+        renderer,
+        &mut elements,
+        region,
+        scale,
+        Color32F::new(0.0, 0.0, 0.0, 0.0),
+    )?;
+    let framebuffer = renderer.bind(&mut texture).context("bind cursor capture")?;
+    let mapping = renderer
+        .copy_framebuffer(
+            &framebuffer,
+            Rectangle::from_size(region.size.to_logical(1).to_buffer(1, Transform::Normal)),
+            Fourcc::Argb8888,
+        )
+        .context("read cursor capture")?;
+    Ok(Some((region, mapping)))
+}
 
 use crate::{
     render::{output_elements, CursorMode, OutputRenderElement, Shaders, CLEAR_COLOR},
@@ -48,6 +106,16 @@ pub(super) fn render_region(
     region: Rectangle<i32, Physical>,
     scale: f64,
 ) -> Result<GlesTexture> {
+    render_region_with_clear(renderer, elements, region, scale, CLEAR_COLOR)
+}
+
+fn render_region_with_clear(
+    renderer: &mut GlesRenderer,
+    elements: &mut [OutputRenderElement],
+    region: Rectangle<i32, Physical>,
+    scale: f64,
+    clear: Color32F,
+) -> Result<GlesTexture> {
     for element in elements.iter_mut() {
         match element {
             OutputRenderElement::Clipped(element) => element.set_offscreen_region(Some(region)),
@@ -76,7 +144,7 @@ pub(super) fn render_region(
             .bind(&mut target)
             .context("failed to bind the offscreen region buffer")?;
         OutputDamageTracker::new(region.size, scale, Transform::Normal)
-            .render_output(renderer, &mut framebuffer, 0, &relocated, CLEAR_COLOR)
+            .render_output(renderer, &mut framebuffer, 0, &relocated, clear)
             .map_err(|error| anyhow::anyhow!("failed to render the offscreen region: {error}"))?;
         drop(framebuffer);
         Ok(target)

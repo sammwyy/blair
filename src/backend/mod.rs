@@ -352,14 +352,43 @@ fn process_frame_captures(
                 matches!(cursor, CursorImageStatus::Surface(ref surface) if surface.alive())
             }
         };
+    let zoom = state.config.accessibility.zoom && state.config.accessibility.zoom_factor > 1.0;
+    let cursor_capture = (!frame_has_cursor
+        && visible_cursor
+        && !zoom
+        && state
+            .pending_captures
+            .iter()
+            .any(|request| request.output == *output && request.overlay_cursor))
+    .then(|| crate::render::capture_cursor(renderer, state, output));
     let time = state.clock_now();
     for request in std::mem::take(&mut state.pending_captures) {
-        if request.output != *output
-            || frame_has_cursor != (visible_cursor && request.overlay_cursor)
-        {
+        if request.output != *output || (frame_has_cursor && !request.overlay_cursor) {
             state.pending_captures.push(request);
             continue;
         }
+        let overlay = if !frame_has_cursor && visible_cursor && request.overlay_cursor {
+            match cursor_capture.as_ref() {
+                Some(Ok(Some((region, mapping)))) => match renderer.map_texture(mapping) {
+                    Ok(pixels) => Some(crate::screencopy::CursorOverlay {
+                        region: *region,
+                        pixels,
+                    }),
+                    Err(error) => {
+                        tracing::debug!(%error, "cursor mapping unavailable; capturing offscreen");
+                        state.pending_captures.push(request);
+                        continue;
+                    }
+                },
+                Some(Ok(None)) => None,
+                _ => {
+                    state.pending_captures.push(request);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let mapping = match crate::render::read_framebuffer(
             renderer,
             framebuffer,
@@ -376,8 +405,8 @@ fn process_frame_captures(
         };
         match renderer.map_texture(&mapping) {
             Ok(pixels) => {
-                tracing::trace!(output = output.name(), region = ?request.region, "screencopy reused output framebuffer");
-                request.submit_transformed(pixels, transform, time);
+                tracing::trace!(output = output.name(), region = ?request.region, cursor_overlay = overlay.is_some(), "screencopy reused output framebuffer");
+                request.submit_transformed(pixels, transform, overlay, time);
             }
             Err(error) => {
                 tracing::debug!(%error, "output mapping unavailable; capturing offscreen");

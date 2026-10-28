@@ -199,6 +199,12 @@ impl WinitData {
 
         let animating = state.animations_active() || cursor_is_animated(state, &self.output);
         self.pacer.keep_awake(state, animating);
+        super::process_captures(
+            state,
+            self.backend.renderer(),
+            &self.output,
+            self.shaders.as_ref(),
+        );
     }
 
     /// Renders when a repaint is due, at most once per host frame.
@@ -323,8 +329,6 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         state.refresh();
         data.sync_host_cursor(state);
         data.dispatch_redraw(state);
-        let WinitData { backend, output, shaders, .. } = &mut *data;
-        super::process_captures(state, backend.renderer(), output, shaders.as_ref());
         if let Err(error) = state.display_handle.flush_clients() {
             tracing::warn!(%error, "failed to flush clients");
         }

@@ -16,10 +16,12 @@
   but only opening and workspace-switch animations currently run.
 - [ ] Avoid a second full render pass for `wlr-screencopy`. It currently
   reads the composed framebuffer directly in Winit and from DRM swapchain
-  buffers when cursor inclusion matches and no overlay planes are active.
+  buffers when no overlay planes are active. Missing cursors are composed from
+  a cursor-bounds-only readback, shared by the frame's requests, without desktop
+  reconstruction. Requests wait for the scheduled repaint before fallback.
   Mapped readback pixels copy directly into client SHM, with output transforms
-  normalized during copying. Cursor mismatches, direct scanout, overlay planes,
-  readback failures, and captures before a scheduled repaint still use offscreen
+  normalized during copying. Removing an already composed cursor, adding a
+  magnified cursor, direct scanout, overlay planes, and readback failures use offscreen
   rendering; reuse those paths too. Region fallback captures allocate and render
   only the requested region, preserving rounded clips and decorations.
 - [ ] Add `wlr-output-management-v1`, so monitor layout changes do not require

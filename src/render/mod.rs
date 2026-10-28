@@ -52,7 +52,7 @@ use crate::{
 };
 use blair_protocol::Rect;
 
-pub use capture::{capture_region, read_framebuffer};
+pub use capture::{capture_cursor, capture_region, read_framebuffer};
 pub use clip::RoundedClip;
 pub use decoration::{ButtonBuffers, DecorationParts, WindowDecoration};
 pub(crate) use frame_callbacks::{send_frame_callbacks, HiddenFrames};

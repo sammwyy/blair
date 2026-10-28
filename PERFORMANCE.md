@@ -45,24 +45,32 @@ scene allocations, but its RSS/PSS impact has not been measured separately.
 
 Winit reads compatible captures from the composed host back buffer before swap.
 DRM reads the swapchain buffer after its render fence when no overlay planes
-are active and cursor inclusion matches. The readback covers only the requested
+are active. The readback covers only the requested
 region. Its mapping copies directly to client SHM without an intermediate
 `Vec<u8>`; row order, rotation, mirroring, destination stride, and pool offset
 are preserved. Output transforms normalize to canonical pixels, so capture flags
 remain uninverted. GPU tests verify all eight output transforms and cropped
 readbacks; a Wayland protocol test checks SHM pixels, padding, completion,
 damage, and fallback admission.
+When a requested cursor is absent from the base framebuffer, its own bounds are
+captured over transparent pixels and blended directly into client SHM using
+premultiplied alpha. That cursor readback is shared by all requests in the frame.
+No desktop elements are rebuilt for this overlay. A GPU reference test compares
+this copy with rendering the cursor over the same background. Requests arriving
+between repaints wait for the scheduled frame instead of invoking fallback early.
 Nested Winit smoke checks with `grim`, `grim -g`, and `grim -c` passed with
 framebuffer-reuse trace events. The host surface is made current again after
 mapping readback, before swap; this restores EGL state without redrawing the
 scene. A following cursor-free capture matched the initial PNG byte for byte.
+Cursor-inclusive smoke checks also report `cursor_overlay=true`; plain captures
+before and after those checks remain byte-identical.
 
 This path avoids one offscreen RGBA scene texture and one region-sized pixel
 vector per compatible capture. For full-output 1920×1080 capture this removes
 16,588,800 bytes of pixel storage, excluding the readback PBO and client SHM
 which are still required. These are allocation sizes, not measured RSS/PSS.
-Cursor mismatches, hardware overlay planes, direct scanout, failed readback,
-and requests handled before a scheduled repaint retain the offscreen fallback.
+Removing an already composed cursor, adding a magnified cursor, hardware overlay
+planes, direct scanout, and failed readback retain the offscreen fallback.
 DRM hardware capture behavior and actual recording memory still need measurement.
 
 ## Empty nested session

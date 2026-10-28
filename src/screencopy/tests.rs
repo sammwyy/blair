@@ -12,6 +12,28 @@ const TRANSFORMS: [Transform; 8] = [
 ];
 
 #[test]
+fn cursor_overlay_clips_and_blends_premultiplied_pixels_without_touching_padding() {
+    let region = Rectangle::from_size((2, 2).into());
+    let mut target = vec![0xab; 24];
+    assert!(copy_pixels(
+        &[10, 20, 30, 255].repeat(4),
+        &mut target,
+        12,
+        region.size,
+        Transform::Normal
+    ));
+    let overlay = CursorOverlay {
+        region: Rectangle::new((-1, 1).into(), (3, 1).into()),
+        pixels: &[255, 0, 0, 255, 50, 25, 0, 128, 7, 9, 11, 255],
+    };
+    assert!(composite_cursor(&mut target, 12, region, &overlay));
+    assert_eq!(&target[12..20], &[55, 35, 15, 255, 7, 9, 11, 255]);
+    assert_eq!(&target[..8], &[10, 20, 30, 255].repeat(2));
+    assert_eq!(&target[8..12], &[0xab; 4]);
+    assert_eq!(&target[20..], &[0xab; 4]);
+}
+
+#[test]
 fn transformed_copies_preserve_pixels_and_destination_padding() {
     let size = Size::<i32, Physical>::from((3, 2));
     let expected: Vec<u8> = (0..24).collect();

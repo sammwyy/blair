@@ -353,6 +353,12 @@ impl DrmBackend {
         self.timer.maybe_report(&mut state.render_stats);
         let animating = state.animations_active() || cursor_is_animated(state, &self.output);
         self.pacer.keep_awake(state, animating);
+        super::process_captures(
+            state,
+            &mut self.renderer,
+            &self.output,
+            self.shaders.as_ref(),
+        );
     }
 
     fn on_vblank(&mut self, state: &mut BlairState, metadata: Option<DrmEventMetadata>) {
@@ -600,12 +606,6 @@ pub fn run(config: CompositorConfig) -> Result<()> {
             }
         }
         backend.dispatch_redraw(state);
-        super::process_captures(
-            state,
-            &mut backend.renderer,
-            &backend.output,
-            backend.shaders.as_ref(),
-        );
         if let Err(error) = state.display_handle.flush_clients() {
             tracing::warn!(%error, "failed to flush clients");
         }
