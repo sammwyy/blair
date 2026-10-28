@@ -7,5 +7,5 @@ mod theme;
 pub use frame::DecorationFrame;
 pub use hit_test::{hit_test_frame, hit_test_overlay_controls, DecorationPart, RESIZE_OUTSET};
 pub use icons::{IconCache, RgbaBitmap};
-pub use text::rasterize_title;
+pub use text::{rasterize_title, RasterizedGlyphs};
 pub use theme::DecorationTheme;

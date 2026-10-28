@@ -1,5 +1,6 @@
 use creamui_fonts::{FontFace, HorizontalAlign, LayoutSettings};
-use swash::scale::{Render, ScaleContext, Source};
+use smithay::utils::{Physical, Rectangle};
+use swash::scale::{image::Image, Render, ScaleContext, Source};
 use swash::zeno::Format;
 
 const ELLIPSIS: char = '…';
@@ -8,8 +9,7 @@ const ELLIPSIS: char = '…';
 /// render buffer.
 pub struct RasterizedGlyphs {
     pub pixels: Vec<u8>,
-    pub width: i32,
-    pub height: i32,
+    pub bounds: Rectangle<i32, Physical>,
 }
 
 /// Renders `text` inside a `max_width` x `height` box, truncating with an
@@ -24,7 +24,7 @@ pub fn rasterize_title(
     height: i32,
     centered: bool,
 ) -> Option<RasterizedGlyphs> {
-    if text.trim().is_empty() || max_width <= 0 || height <= 0 {
+    if text.trim().is_empty() || color[3] == 0 || max_width <= 0 || height <= 0 {
         return None;
     }
     let fitted = fit_within(font, text, size, max_width as f32);
@@ -45,7 +45,39 @@ pub fn rasterize_title(
             },
         },
     );
-    Some(paint_glyphs(font, &layout, size, max_width, height, color))
+    paint_glyphs(font, &layout, size, max_width, height, color)
+}
+
+fn glyph_images<'a>(
+    font: &'a FontFace,
+    layout: &'a creamui_fonts::TextLayout,
+    size: f32,
+    context: &'a mut ScaleContext,
+) -> impl Iterator<Item = (Image, Rectangle<i32, Physical>)> + 'a {
+    layout.glyphs.iter().filter_map(move |glyph| {
+        let face = if glyph.face == 0 {
+            font
+        } else {
+            &layout.fallback_faces[glyph.face - 1]
+        };
+        let mut scaler = context
+            .builder(face.font_ref())
+            .size(size)
+            .hint(false)
+            .build();
+        let image = Render::new(&[Source::Outline])
+            .format(Format::Alpha)
+            .render(&mut scaler, glyph.id)?;
+        let bounds = Rectangle::new(
+            (
+                (glyph.x.round() as i32).saturating_add(image.placement.left),
+                (glyph.y.round() as i32).saturating_sub(image.placement.top),
+            )
+                .into(),
+            (image.placement.width as i32, image.placement.height as i32).into(),
+        );
+        Some((image, bounds))
+    })
 }
 
 fn paint_glyphs(
@@ -55,62 +87,61 @@ fn paint_glyphs(
     width: i32,
     height: i32,
     color: [u8; 4],
-) -> RasterizedGlyphs {
-    let mut pixels = vec![0u8; width as usize * height as usize * 4];
-    let mut scale_context = ScaleContext::new();
-    // Blending happens in sRGB, which makes light-on-dark text look heavier
-    // and dark-on-light text lighter than the font intends. Thin the
-    // former and firm up the latter so both read at their real weight.
+) -> Option<RasterizedGlyphs> {
+    let area = Rectangle::from_size((width, height).into());
+    let mut context = ScaleContext::new();
+    // Blending in sRGB makes light text heavier and dark text lighter.
     let light = u32::from(color[0]) + u32::from(color[1]) + u32::from(color[2]) > 3 * 128;
     let exponent: f32 = if light { 1.3 } else { 0.85 };
-    let weights: Vec<u16> = (0..=255u16)
-        .map(|c| ((f32::from(c) / 255.0).powf(exponent) * 255.0).round() as u16)
-        .collect();
-    for glyph in &layout.glyphs {
-        let glyph_font = if glyph.face == 0 {
-            font
-        } else {
-            &layout.fallback_faces[glyph.face - 1]
-        };
-        let mut scaler = scale_context
-            .builder(glyph_font.font_ref())
-            .size(size)
-            .hint(false)
-            .build();
-        let Some(image) = Render::new(&[Source::Outline])
-            .format(Format::Alpha)
-            .render(&mut scaler, glyph.id)
-        else {
+    let alpha: [u8; 256] = std::array::from_fn(|coverage| {
+        let weight = ((coverage as f32 / 255.0).powf(exponent) * 255.0).round() as u16;
+        (weight * u16::from(color[3]) / 255) as u8
+    });
+    // A bounds pass keeps raster scratch space limited to one glyph.
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+    for (image, bounds) in glyph_images(font, layout, size, &mut context) {
+        let Some(clip) = bounds.intersection(area) else {
             continue;
         };
-        let gx = glyph.x.round() as i32 + image.placement.left;
-        let gy = glyph.y.round() as i32 - image.placement.top;
-        for row in 0..image.placement.height as usize {
-            for col in 0..image.placement.width as usize {
-                let coverage =
-                    weights[usize::from(image.data[row * image.placement.width as usize + col])];
-                if coverage == 0 {
+        for y in clip.loc.y..clip.loc.y + clip.size.h {
+            for x in clip.loc.x..clip.loc.x + clip.size.w {
+                let index = ((y - bounds.loc.y) * bounds.size.w + x - bounds.loc.x) as usize;
+                let value = alpha[usize::from(image.data[index])];
+                if value != 0 {
+                    left = left.min(x);
+                    top = top.min(y);
+                    right = right.max(x + 1);
+                    bottom = bottom.max(y + 1);
+                }
+            }
+        }
+    }
+    if left >= right || top >= bottom {
+        return None;
+    }
+    let painted = Rectangle::from_extremities((left, top), (right, bottom));
+    let mut pixels = vec![0; painted.size.w as usize * painted.size.h as usize * 4];
+    for (image, bounds) in glyph_images(font, layout, size, &mut context) {
+        let Some(clip) = bounds.intersection(painted) else {
+            continue;
+        };
+        for y in clip.loc.y..clip.loc.y + clip.size.h {
+            for x in clip.loc.x..clip.loc.x + clip.size.w {
+                let index = ((y - bounds.loc.y) * bounds.size.w + x - bounds.loc.x) as usize;
+                let alpha = alpha[usize::from(image.data[index])];
+                if alpha == 0 {
                     continue;
                 }
-                let px = gx + col as i32;
-                let py = gy + row as i32;
-                if px < 0 || py < 0 || px >= width || py >= height {
-                    continue;
-                }
-                let offset = (py as usize * width as usize + px as usize) * 4;
-                let alpha = (coverage * u16::from(color[3]) / 255) as u8;
-                pixels[offset] = color[0];
-                pixels[offset + 1] = color[1];
-                pixels[offset + 2] = color[2];
+                let offset = ((y - top) * painted.size.w + x - left) as usize * 4;
+                pixels[offset..offset + 3].copy_from_slice(&color[..3]);
                 pixels[offset + 3] = pixels[offset + 3].max(alpha);
             }
         }
     }
-    RasterizedGlyphs {
+    Some(RasterizedGlyphs {
         pixels,
-        width,
-        height,
-    }
+        bounds: painted,
+    })
 }
 
 fn fit_within(font: &FontFace, text: &str, size: f32, max_width: f32) -> String {
@@ -147,47 +178,4 @@ fn measure(font: &FontFace, text: &str, size: f32) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn font() -> std::rc::Rc<FontFace> {
-        creamui_fonts::resolve(
-            creamui_fonts::DEFAULT_FAMILY,
-            creamui_fonts::FontWeight::Regular,
-        )
-    }
-
-    #[test]
-    fn empty_title_renders_nothing() {
-        let font = font();
-        assert!(rasterize_title(&font, "", 14.0, [255, 255, 255, 255], 200, 20, false).is_none());
-        assert!(rasterize_title(&font, "hi", 14.0, [255, 255, 255, 255], 0, 20, false).is_none());
-    }
-
-    #[test]
-    fn short_title_fits_without_truncation() {
-        let font = font();
-        let glyphs = rasterize_title(
-            &font,
-            "Terminal",
-            14.0,
-            [255, 255, 255, 255],
-            400,
-            20,
-            false,
-        )
-        .unwrap();
-        assert!(glyphs.pixels.iter().any(|&byte| byte != 0));
-        assert!(glyphs.width <= 400);
-        assert!(glyphs.height <= 20);
-    }
-
-    #[test]
-    fn long_title_is_truncated_with_an_ellipsis() {
-        let font = font();
-        let long = "A very long window title that will not fit".repeat(3);
-        let fitted = fit_within(&font, &long, 14.0, 80.0);
-        assert!(fitted.ends_with(ELLIPSIS));
-        assert!(fitted.len() < long.len());
-    }
-}
+mod tests;

@@ -927,7 +927,15 @@ fn window_elements(
             decoration.update_button(index, look, rect.width, buffer_scale);
             if let Some((buffer, size)) = decoration.button_buffer(index) {
                 let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
-                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+                push_memory_element(
+                    renderer,
+                    buffer,
+                    Rectangle::new(location, size),
+                    None,
+                    scale,
+                    alpha,
+                    elements,
+                );
             }
         }
 
@@ -943,10 +951,12 @@ fn window_elements(
             theme.title_centered,
             buffer_scale,
         );
-        if let Some((buffer, size)) = decoration.title_buffer() {
-            let location =
-                Point::<i32, Logical>::from((geometry.title.x, geometry.title.y)) - origin;
-            push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+        if let Some((buffer, bounds)) = decoration.title_buffer() {
+            let mut area = from_rect(geometry.title);
+            area.loc -= origin;
+            // Preserve the full title rectangle's sampling grid at fractional scales.
+            let source = Rectangle::new(Point::default() - bounds.loc.to_f64(), area.size.to_f64());
+            push_memory_element(renderer, buffer, area, Some(source), scale, alpha, elements);
         }
 
         if theme.show_icon && geometry.icon.width > 0 {
@@ -964,7 +974,15 @@ fn window_elements(
             if let Some((buffer, size)) = decoration.icon_buffer() {
                 let location =
                     Point::<i32, Logical>::from((geometry.icon.x, geometry.icon.y)) - origin;
-                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+                push_memory_element(
+                    renderer,
+                    buffer,
+                    Rectangle::new(location, size),
+                    None,
+                    scale,
+                    alpha,
+                    elements,
+                );
             }
         }
     }
@@ -1084,7 +1102,15 @@ fn window_elements(
             decoration.update_button(index, look, rect.width, buffer_scale);
             if let Some((buffer, size)) = decoration.button_buffer(index) {
                 let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
-                push_memory_element(renderer, buffer, location, size, scale, alpha, elements);
+                push_memory_element(
+                    renderer,
+                    buffer,
+                    Rectangle::new(location, size),
+                    None,
+                    scale,
+                    alpha,
+                    elements,
+                );
             }
         }
         let control_count = elements.len() - controls_start;
@@ -1393,21 +1419,21 @@ fn decoration_button_look(
 fn push_memory_element(
     renderer: &mut GlesRenderer,
     buffer: &MemoryRenderBuffer,
-    location: Point<i32, Logical>,
-    size: smithay::utils::Size<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+    source: Option<Rectangle<f64, Logical>>,
     scale: f64,
     alpha: f32,
     elements: &mut Vec<OutputRenderElement>,
 ) {
-    let physical_location: Point<i32, Physical> = location.to_physical_precise_round(scale);
+    let physical_location: Point<i32, Physical> = area.loc.to_physical_precise_round(scale);
     let physical_location = physical_location.to_f64();
     match MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         physical_location,
         buffer,
         Some(alpha),
-        None,
-        Some(size),
+        source,
+        Some(area.size),
         Kind::Unspecified,
     ) {
         Ok(element) => elements.push(element.into()),

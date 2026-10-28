@@ -15,7 +15,7 @@ use smithay::{
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 
-use crate::decorations::RgbaBitmap;
+use crate::decorations::{RasterizedGlyphs, RgbaBitmap};
 
 const FRAME_SHADER: &str = r#"
 precision mediump float;
@@ -248,6 +248,7 @@ pub struct WindowDecoration {
     pub strip: Option<TitlebarStrip>,
     buttons: [BufferCache; 3],
     title: BufferCache,
+    title_offset: Point<i32, Logical>,
     icon: BufferCache,
 }
 
@@ -268,6 +269,7 @@ impl Default for WindowDecoration {
             strip: None,
             buttons: Default::default(),
             title: BufferCache::default(),
+            title_offset: Point::default(),
             icon: BufferCache::default(),
         }
     }
@@ -330,17 +332,20 @@ impl WindowDecoration {
             height * buffer_scale,
             centered,
         );
-        self.title.buffer = glyphs.as_ref().map(|glyphs| {
-            buffer_from_pixels(
-                &premultiply(&glyphs.pixels),
-                glyphs.width,
-                glyphs.height,
+        if let Some(glyphs) = glyphs {
+            let (buffer, bounds) = buffer_from_glyphs(
+                &glyphs,
                 buffer_scale,
-            )
-        });
-        self.title.size = glyphs
-            .map(|glyphs| (glyphs.width / buffer_scale, glyphs.height / buffer_scale).into())
-            .unwrap_or_default();
+                (max_width * buffer_scale, height * buffer_scale).into(),
+            );
+            self.title.buffer = Some(buffer);
+            self.title.size = bounds.size;
+            self.title_offset = bounds.loc;
+        } else {
+            self.title.buffer = None;
+            self.title.size = Size::default();
+            self.title_offset = Point::default();
+        }
     }
 
     /// Uploads a window's real app icon into the icon buffer, keyed by its
@@ -399,11 +404,11 @@ impl WindowDecoration {
         cache.buffer.as_ref().map(|buffer| (buffer, cache.size))
     }
 
-    pub fn title_buffer(&self) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
+    pub fn title_buffer(&self) -> Option<(&MemoryRenderBuffer, Rectangle<i32, Logical>)> {
         self.title
             .buffer
             .as_ref()
-            .map(|buffer| (buffer, self.title.size))
+            .map(|buffer| (buffer, Rectangle::new(self.title_offset, self.title.size)))
     }
 
     pub fn icon_buffer(&self) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
@@ -589,6 +594,54 @@ fn premultiplied(color: Color32F) -> (f32, f32, f32, f32) {
     (color.r() * a, color.g() * a, color.b() * a, a)
 }
 
+fn buffer_from_glyphs(
+    glyphs: &RasterizedGlyphs,
+    scale: i32,
+    area: Size<i32, Physical>,
+) -> (MemoryRenderBuffer, Rectangle<i32, Logical>) {
+    // Transparent edge texels preserve filtering beyond the painted bounds.
+    let padded = Rectangle::new(
+        glyphs.bounds.loc - Point::from((1, 1)),
+        (glyphs.bounds.size.w + 2, glyphs.bounds.size.h + 2).into(),
+    )
+    .intersection(Rectangle::from_size(area))
+    .unwrap();
+    let bounds = padded.to_f64().to_logical(f64::from(scale)).to_i32_up();
+    let physical = bounds.to_physical_precise_round(scale);
+    let offset = glyphs.bounds.loc - physical.loc;
+    let mut buffer = MemoryRenderBuffer::new(
+        Fourcc::Abgr8888,
+        (physical.size.w, physical.size.h),
+        scale,
+        Transform::Normal,
+        None,
+    );
+    buffer
+        .render()
+        .draw(|pixels| {
+            let source_stride = glyphs.bounds.size.w as usize * 4;
+            for (row, source) in glyphs.pixels.chunks_exact(source_stride).enumerate() {
+                let start =
+                    ((offset.y as usize + row) * physical.size.w as usize + offset.x as usize) * 4;
+                for (dest, source) in pixels[start..start + source_stride]
+                    .chunks_exact_mut(4)
+                    .zip(source.chunks_exact(4))
+                {
+                    let alpha = u16::from(source[3]);
+                    for channel in 0..3 {
+                        dest[channel] = ((u16::from(source[channel]) * alpha + 127) / 255) as u8;
+                    }
+                    dest[3] = source[3];
+                }
+            }
+            Ok::<_, std::convert::Infallible>(vec![Rectangle::from_size(
+                (physical.size.w, physical.size.h).into(),
+            )])
+        })
+        .unwrap();
+    (buffer, bounds)
+}
+
 /// Smithay treats uploaded RGBA as premultiplied, so every bitmap passed
 /// here must already be premultiplied (see [`premultiply`]); uploading
 /// straight alpha brightens every antialiased edge and makes text look bold
@@ -727,132 +780,4 @@ pub fn mix(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn title_id(
-        decoration: &mut WindowDecoration,
-        renderer: &mut smithay::backend::renderer::pixman::PixmanRenderer,
-        font: &creamui_fonts::FontFace,
-    ) -> Id {
-        use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-        decoration.update_title(
-            font,
-            "Terminal",
-            14.0,
-            [255, 255, 255, 255],
-            200,
-            24,
-            false,
-            1,
-        );
-        let (buffer, _) = decoration.title_buffer().unwrap();
-        MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            (0.0, 0.0),
-            buffer,
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        )
-        .unwrap()
-        .id()
-        .clone()
-    }
-
-    #[test]
-    fn titles_reuse_the_bitmap_until_the_font_identity_changes() {
-        let font = creamui_fonts::resolve(
-            creamui_fonts::DEFAULT_FAMILY,
-            creamui_fonts::FontWeight::Regular,
-        );
-        let replacement = creamui_fonts::FontFace::from_bytes(font.font_ref().data).unwrap();
-        assert_ne!(font.id(), replacement.id());
-        let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
-        let mut decoration = WindowDecoration::default();
-        let first = title_id(&mut decoration, &mut renderer, &font);
-        assert_eq!(title_id(&mut decoration, &mut renderer, &font), first);
-        let second = title_id(&mut decoration, &mut renderer, &replacement);
-        assert_ne!(second, first);
-        assert_eq!(
-            title_id(&mut decoration, &mut renderer, &replacement),
-            second
-        );
-    }
-
-    #[test]
-    fn title_bitmaps_notice_registry_changes_without_a_new_primary_font() {
-        let font = creamui_fonts::resolve(
-            creamui_fonts::DEFAULT_FAMILY,
-            creamui_fonts::FontWeight::Regular,
-        );
-        let mut renderer = smithay::backend::renderer::pixman::PixmanRenderer::new().unwrap();
-        let mut decoration = WindowDecoration::default();
-        let first = title_id(&mut decoration, &mut renderer, &font);
-        creamui_fonts::register_bytes(
-            "Blair Title Cache Test",
-            creamui_fonts::FontWeight::Regular,
-            font.font_ref().data,
-        )
-        .unwrap();
-        assert_eq!(
-            creamui_fonts::resolve(
-                creamui_fonts::DEFAULT_FAMILY,
-                creamui_fonts::FontWeight::Regular
-            )
-            .id(),
-            font.id()
-        );
-        let second = title_id(&mut decoration, &mut renderer, &font);
-        assert_ne!(second, first);
-        assert_eq!(title_id(&mut decoration, &mut renderer, &font), second);
-    }
-
-    #[test]
-    fn button_is_a_disc_with_a_glyph_and_empty_corners() {
-        let size = 20;
-        let look = ButtonLook {
-            glyph: ButtonGlyph::Close,
-            glyph_visible: true,
-            disc: [0, 0, 0, 0],
-            glyph_color: [255, 255, 255, 255],
-        };
-        let pixels = rasterize_button(look, size);
-        let center = (10 * size as usize + 10) * 4;
-        // The cross passes through the center at full coverage.
-        assert!(pixels[center + 3] > 200);
-        assert_eq!(pixels[3], 0);
-        // Premultiplied: no channel may exceed alpha.
-        assert!(pixels
-            .chunks_exact(4)
-            .all(|px| px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3]));
-    }
-
-    #[test]
-    fn premultiply_scales_color_by_alpha() {
-        assert_eq!(premultiply(&[255, 128, 0, 128]), vec![128, 64, 0, 128]);
-    }
-
-    #[test]
-    fn contrast_picks_dark_text_on_light_backgrounds() {
-        assert_eq!(contrasting([250, 250, 250, 255])[0], 0x1d);
-        assert_eq!(contrasting([20, 20, 30, 255])[0], 0xf5);
-    }
-
-    #[test]
-    fn mix_interpolates_each_channel() {
-        assert_eq!(
-            mix([0, 0, 0, 255], [255, 255, 255, 255], 0.0),
-            [0, 0, 0, 255]
-        );
-        assert_eq!(
-            mix([0, 0, 0, 255], [255, 255, 255, 255], 1.0),
-            [255, 255, 255, 255]
-        );
-        assert_eq!(
-            mix([0, 0, 0, 0], [100, 200, 50, 255], 0.5),
-            [50, 100, 25, 128]
-        );
-    }
-}
+mod tests;

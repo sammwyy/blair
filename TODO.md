@@ -58,13 +58,16 @@
   every font it tries, including candidates that do not cover the requested
   character. Unsupported title characters can leave the whole installed
   font set mapped; measure resident pages and release unsuccessful candidates.
-- [ ] Crop title bitmaps to their painted glyph bounds and share identical
-  button buffers across windows. `paint_glyphs` in `src/decorations/text.rs`
-  allocates the full available title rectangle even for a short title;
-  `WindowDecoration` retains separate CPU buffers and renderer textures per
-  window. The title allocation grows with the square of the buffer scale.
-  Replace formatted title/button/icon cache keys with typed state so cache
-  hits do not allocate temporary strings on every rendered frame.
+- [x] Crop title bitmaps to their painted glyph bounds. Raster scratch holds
+  one glyph at a time; retained buffers include only the crop and a transparent
+  filtering border. Title sampling keeps the original rectangle so centered
+  titles and fractional output scales retain their placement. CPU and EGL
+  tests compare the result against full bitmaps and verify width-independent
+  storage for short titles.
+- [ ] Share identical button buffers across windows and replace formatted
+  title/button/icon cache keys with typed state. `WindowDecoration` retains
+  separate button buffers and renderer textures per window; cache hits still
+  allocate temporary strings on every rendered frame.
 - [x] Reuse magnifier resources per output. The retained texture, damage
   tracker, and element ID preserve scene damage and skip unchanged frames
   without an explicit CPU wait. Mode, scale, and renderer changes replace
