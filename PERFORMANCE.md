@@ -72,3 +72,52 @@ unchanged between samples.
 This is an initial empty-session snapshot. It does not establish memory
 retention under window or configuration churn, shell-loaded behavior, or the
 DRM backend's footprint; those measurements remain tracked in `TODO.md`.
+
+## Font fallback retention: 2026-10-28
+
+Run the font-only probe from the adjacent CreamUI checkout:
+
+```bash
+cargo run --release -p creamui-fonts --example fallback_memory
+```
+
+The same probe was run before and after the bounded fallback-cache change,
+using Rust `1.97.1 (8bab26f4f 2026-07-14)` and CreamUI's release profile
+(fat LTO, one codegen unit, stripped binaries). Baseline font sources were
+CreamUI `0083cb7f8f56ca5b42bebc5f5ceb60b76c5a444b`; updated sources and the
+probe are in CreamUI `ef8e836`. The probe's SHA-256 is
+`ec50b215636a94e3bade356a5c10b2054a13dd87b5bc55120aa9be1e9a49fb0c`.
+Kernel: `6.19.14-100.fc42.x86_64`. No compositor or graphics seat is started.
+`creamui-widgets` is outside this probe's dependency graph.
+
+The probe loads the default UI face, shapes U+10FFFF, repeats that miss 100
+times, shapes the 32 noncharacters U+FDD0–U+FDEF, then shapes Latin/Hebrew,
+Chinese, emoji, and a combining accent. Each returned layout is dropped before
+sampling `/proc/self/smaps`. These numbers describe font-file mappings only;
+they exclude anonymous cache storage and other process mappings. PSS also
+depends on other processes sharing those font pages.
+
+| Stage / metric | Before | After, run 1 | After, run 2 |
+| --- | ---: | ---: | ---: |
+| Primary face: mappings | 1 | 1 | 1 |
+| Primary face: mapped size (KiB) | 404 | 404 | 404 |
+| After unsupported character: mappings | 411 | 1 | 1 |
+| After unsupported character: mapped size (KiB) | 312,512 | 404 | 404 |
+| After unsupported character: RSS (KiB) | 37,524 | 128 | 192 |
+| After unsupported character: PSS (KiB) | 36,141 | 28 | 41 |
+| After mixed scripts: mappings | 411 | 4 | 4 |
+| After mixed scripts: RSS (KiB) | 37,836 | 740 | 784 |
+| After mixed scripts: PSS (KiB) | 36,389 | 489 | 497 |
+| First unsupported-character search (µs) | 10,857 | 41,469 | 42,282 |
+| 100 repeated misses (µs) | 173 | 190 | 244 |
+| 32 distinct misses (µs) | 5,360 | 4,017 | 4,075 |
+
+The first search now builds compact coverage ranges and is slower in this
+sample. Later searches can reject known fonts without remapping their files.
+Timing values are observations from these runs, not a controlled CPU benchmark.
+The fallback cache retains at most 32 selected files within 32 MiB of font-file
+data, 1,024 coverage records within 8 MiB, and 4,096 weak character results.
+Registered faces and live layouts retain their own ownership; those references
+are outside these cache limits. Blair's title rasterizer drops its layouts
+after producing pixels, and an isolated regression test verifies that unsupported
+title characters do not add retained font mappings.

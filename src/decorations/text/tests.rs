@@ -41,6 +41,48 @@ fn long_title_is_truncated_with_an_ellipsis() {
     assert!(fitted.len() < long.len());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_title_characters_do_not_retain_font_mappings() {
+    crate::test_support::isolated_config_test(
+        concat!(
+            module_path!(),
+            "::unsupported_title_characters_do_not_retain_font_mappings"
+        ),
+        |_| {
+            let font = font();
+            let mappings = || {
+                std::fs::read_to_string("/proc/self/maps")
+                    .unwrap()
+                    .lines()
+                    .filter(|line| {
+                        let path = line
+                            .split_whitespace()
+                            .skip(5)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        std::path::Path::new(&path)
+                            .extension()
+                            .is_some_and(|extension| {
+                                ["ttf", "otf", "ttc"]
+                                    .iter()
+                                    .any(|expected| extension.eq_ignore_ascii_case(expected))
+                            })
+                    })
+                    .count()
+            };
+            let before = mappings();
+            for ch in ['\u{10ffff}', '\u{ffff}', '\u{fdd0}'] {
+                let title = format!("Window {ch}");
+                let bitmap =
+                    rasterize_title(&font, &title, 14.0, [255; 4], 200, 24, false).unwrap();
+                assert!(bitmap.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+                assert_eq!(mappings(), before);
+            }
+        },
+    );
+}
+
 fn uncropped_pixels(
     font: &FontFace,
     layout: &creamui_fonts::TextLayout,

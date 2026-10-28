@@ -58,11 +58,14 @@
   of decoded pixels and app-ID storage. Least-recently-used eviction includes
   negative results; oversized entries are not retained, and theme changes
   release all cached entries and reset lazy resolver initialization.
-- [ ] Bound font-fallback file retention used by decoration titles.
-  `fallback_face` in `../creamui/crates/fonts/src/lib.rs` maps and caches
-  every font it tries, including candidates that do not cover the requested
-  character. Unsupported title characters can leave the whole installed
-  font set mapped; measure resident pages and release unsuccessful candidates.
+- [x] Bound font-fallback retention in CreamUI. Rejected font mappings are
+  released; bounded coverage metadata avoids reopening known misses. Selected
+  files use a 32-entry/32 MiB cache and character results hold weak references.
+  Tests preserve fallback order, normalized clusters, registry invalidation,
+  and live face ownership after eviction. A release probe reduced an unsupported
+  character's retained font mappings from 411 to 1 and font RSS from 37,524 KiB
+  to 128–192 KiB. `PERFORMANCE.md` records the cold-search tradeoff and the
+  reproducible probe; Blair has an isolated title-rasterization regression.
 - [x] Crop title bitmaps to their painted glyph bounds. Raster scratch holds
   one glyph at a time; retained buffers include only the crop and a transparent
   filtering border. Title sampling keeps the original rectangle so centered
