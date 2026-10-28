@@ -69,8 +69,15 @@
   button layout. Allocation-counting tests verify warm cache hits allocate
   nothing; style, font, size, scale, and icon identity changes invalidate
   buffers without retaining decoded icon pixels through the key.
-- [ ] Share identical button buffers across windows. `WindowDecoration`
-  retains separate button pixels and renderer textures per window.
+- [x] Share identical button pixels and renderer textures across windows.
+  A bounded weak index releases unused buffers and normalizes invisible
+  glyph/color differences. Each button instance keeps its own render ID and
+  commit counter; GPU tests cover independent updates, removal, movement,
+  opacity, and unchanged frames. Disabled parts release buffers during rendering.
+- [ ] Discard obsolete decoration buffers on inactive workspaces when their
+  decoration policy changes. Render-time cleanup only visits visible windows,
+  so disabled title/icon/button buffers on other workspaces can remain until
+  the window is rendered again or destroyed.
 - [x] Reuse magnifier resources per output. The retained texture, damage
   tracker, and element ID preserve scene damage and skip unchanged frames
   without an explicit CPU wait. Mode, scale, and renderer changes replace

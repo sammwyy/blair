@@ -54,13 +54,13 @@ use blair_protocol::Rect;
 
 pub use capture::capture_region;
 pub use clip::RoundedClip;
-pub use decoration::WindowDecoration;
+pub use decoration::{ButtonBuffers, WindowDecoration};
 pub use magnify::Magnifier;
 
 use clip::ClippedSurfaceElement;
 use decoration::{
-    contrasting, mix, ButtonGlyph, ButtonLook, FrameElement, FrameParams, TitleStyle,
-    TitlebarPixelSource, TitlebarStrip,
+    contrasting, mix, ButtonGlyph, ButtonLook, ButtonRenderElement, FrameElement, FrameParams,
+    TitleStyle, TitlebarPixelSource, TitlebarStrip,
 };
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.08, 0.08, 0.12, 1.0);
@@ -84,6 +84,7 @@ render_elements! {
     Clipped=ClippedSurfaceElement,
     Frame=FrameElement,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Button=ButtonRenderElement,
     Blur=blur::BlurredBackdropElement,
     Solid=SolidColorRenderElement,
     Texture=TextureRenderElement<GlesTexture>,
@@ -821,6 +822,10 @@ fn window_elements(
         .unwrap_or_default();
 
     let decorated = (frame.has_border || frame.has_content_outline) && shaders.is_some();
+    let titlebar = decorated && frame.has_titlebar;
+    if let Some(decoration) = state.decorations.get_mut(&id) {
+        decoration.retain_buffers(titlebar, titlebar || overlay_controls);
+    }
     // Sample before drawing controls. Dynamic titlebar modes use this, and
     // hybrid controls use the dominant top-edge color for readable glyphs.
     let titlebar_source = match shaders {
@@ -914,6 +919,7 @@ fn window_elements(
         .enumerate()
         {
             if rect.width <= 0 || rect.height <= 0 {
+                decoration.clear_button(index);
                 continue;
             }
             let look = decoration_button_look(
@@ -924,19 +930,17 @@ fn window_elements(
                 focused,
                 state.hovered_button == Some((id, button)),
             );
-            decoration.update_button(index, look, rect.width, buffer_scale);
-            if let Some((buffer, size)) = decoration.button_buffer(index) {
-                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
-                push_memory_element(
-                    renderer,
-                    buffer,
-                    Rectangle::new(location, size),
-                    None,
-                    scale,
-                    alpha,
-                    elements,
-                );
-            }
+            decoration.update_button(
+                index,
+                look,
+                rect.width,
+                buffer_scale,
+                &mut state.button_buffers,
+            );
+            let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
+            push_button_element(
+                renderer, decoration, index, location, scale, alpha, elements,
+            );
         }
 
         let title_size = (theme.titlebar_height as f32 / theme.text_scale * 0.41).clamp(10.0, 18.0)
@@ -980,6 +984,8 @@ fn window_elements(
                     elements,
                 );
             }
+        } else {
+            decoration.update_icon(app_id, None, 0, buffer_scale);
         }
     }
 
@@ -1080,6 +1086,7 @@ fn window_elements(
         .enumerate()
         {
             if rect.width <= 0 || rect.height <= 0 {
+                decoration.clear_button(index);
                 continue;
             }
             let hovered = state.hovered_button == Some((id, button));
@@ -1095,19 +1102,17 @@ fn window_elements(
                 true,
                 hovered,
             );
-            decoration.update_button(index, look, rect.width, buffer_scale);
-            if let Some((buffer, size)) = decoration.button_buffer(index) {
-                let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
-                push_memory_element(
-                    renderer,
-                    buffer,
-                    Rectangle::new(location, size),
-                    None,
-                    scale,
-                    alpha,
-                    elements,
-                );
-            }
+            decoration.update_button(
+                index,
+                look,
+                rect.width,
+                buffer_scale,
+                &mut state.button_buffers,
+            );
+            let location = Point::<i32, Logical>::from((rect.x, rect.y)) - origin;
+            push_button_element(
+                renderer, decoration, index, location, scale, alpha, elements,
+            );
         }
         let control_count = elements.len() - controls_start;
         elements[content_start..].rotate_right(control_count);
@@ -1409,6 +1414,23 @@ fn decoration_button_look(
             ),
             glyph_color: [0; 4],
         },
+    }
+}
+
+fn push_button_element(
+    renderer: &mut GlesRenderer,
+    decoration: &WindowDecoration,
+    index: usize,
+    location: Point<i32, Logical>,
+    scale: f64,
+    alpha: f32,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let location: Point<i32, Physical> = location.to_physical_precise_round(scale);
+    match decoration.button_element(index, renderer, location.to_f64(), alpha) {
+        Ok(Some(element)) => elements.push(element.into()),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "failed to import a decoration button buffer"),
     }
 }
 

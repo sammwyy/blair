@@ -1,3 +1,7 @@
+mod buttons;
+use buttons::ButtonCache;
+pub use buttons::{ButtonBuffers, ButtonRenderElement};
+
 use std::rc::{Rc, Weak};
 
 use smithay::{
@@ -248,7 +252,7 @@ pub struct WindowDecoration {
     area: Rectangle<i32, Logical>,
     params: Option<FrameParams>,
     pub strip: Option<TitlebarStrip>,
-    buttons: [BufferCache<ButtonKey>; 3],
+    buttons: [ButtonCache; 3],
     title: BufferCache<TitleKey>,
     title_offset: Point<i32, Logical>,
     icon: BufferCache<IconBufferKey>,
@@ -431,37 +435,54 @@ impl WindowDecoration {
         self.icon.size = icon.map(|_| (size, size).into()).unwrap_or_default();
     }
 
-    /// Rasterizes a titlebar button into slot `index` when its look, size,
-    /// or scale changed since the last call.
-    pub fn update_button(&mut self, index: usize, look: ButtonLook, size: i32, buffer_scale: i32) {
-        let key = ButtonKey {
-            look,
-            size,
-            buffer_scale,
-        };
-        let cache = &mut self.buttons[index];
-        if cache.key == Some(key) {
-            return;
-        }
-        cache.key = Some(key);
-        if size <= 0 {
-            cache.buffer = None;
-            cache.size = Default::default();
-            return;
-        }
-        let pixels = size * buffer_scale;
-        cache.buffer = Some(buffer_from_pixels(
-            &rasterize_button(look, pixels),
-            pixels,
-            pixels,
-            buffer_scale,
-        ));
-        cache.size = (size, size).into();
+    pub fn update_button(
+        &mut self,
+        index: usize,
+        look: ButtonLook,
+        size: i32,
+        buffer_scale: i32,
+        buffers: &mut ButtonBuffers,
+    ) {
+        self.buttons[index].update(
+            ButtonKey {
+                look,
+                size,
+                buffer_scale,
+            },
+            buffers,
+        );
     }
 
-    pub fn button_buffer(&self, index: usize) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
-        let cache = &self.buttons[index];
-        cache.buffer.as_ref().map(|buffer| (buffer, cache.size))
+    pub fn clear_button(&mut self, index: usize) {
+        self.buttons[index].clear();
+    }
+
+    pub fn retain_buffers(&mut self, titlebar: bool, controls: bool) {
+        if !titlebar {
+            self.title = BufferCache::default();
+            self.title_offset = Point::default();
+            self.icon = BufferCache::default();
+        }
+        if !controls {
+            for button in &mut self.buttons {
+                button.clear();
+            }
+        }
+    }
+
+    pub fn button_element(
+        &self,
+        index: usize,
+        renderer: &mut GlesRenderer,
+        location: Point<f64, Physical>,
+        alpha: f32,
+    ) -> Result<Option<ButtonRenderElement>, GlesError> {
+        self.buttons[index].element(renderer, location, alpha)
+    }
+
+    #[cfg(test)]
+    fn button_buffer(&self, index: usize) -> Option<(&MemoryRenderBuffer, Size<i32, Logical>)> {
+        self.buttons[index].buffer()
     }
 
     pub fn title_buffer(&self) -> Option<(&MemoryRenderBuffer, Rectangle<i32, Logical>)> {

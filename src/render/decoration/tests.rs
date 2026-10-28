@@ -313,10 +313,11 @@ fn decoration_cache_hits_do_not_allocate_and_title_styles_invalidate() {
         height: 2,
     });
     let theme = crate::config::DecorationConfig::default().to_theme(None);
+    let mut buttons = ButtonBuffers::default();
     let mut decoration = WindowDecoration::default();
     let allocations = crate::test_support::count_allocations(|| {
         decoration.update_title(&font, "Terminal", style);
-        decoration.update_button(0, look, 20, 1);
+        decoration.update_button(0, look, 20, 1, &mut buttons);
         decoration.update_icon(Some("test"), Some(&icon), 2, 1);
     });
     assert!(allocations > 0);
@@ -325,7 +326,7 @@ fn decoration_cache_hits_do_not_allocate_and_title_styles_invalidate() {
             for _ in 0..1000 {
                 std::hint::black_box(theme.clone());
                 decoration.update_title(&font, "Terminal", style);
-                decoration.update_button(0, look, 20, 1);
+                decoration.update_button(0, look, 20, 1, &mut buttons);
                 decoration.update_icon(Some("test"), Some(&icon), 2, 1);
             }
         }),
@@ -436,4 +437,50 @@ fn icon_buffers_track_identity_dimensions_scale_and_availability() {
         .is_none());
     decoration.update_icon(Some("test"), None, 2, 1);
     assert!(decoration.icon_buffer().is_none());
+}
+
+#[test]
+fn hidden_decoration_parts_release_their_buffers() {
+    let mut decoration = WindowDecoration::default();
+    let id = decoration.id.clone();
+    let font = creamui_fonts::resolve(
+        creamui_fonts::DEFAULT_FAMILY,
+        creamui_fonts::FontWeight::Regular,
+    );
+    decoration.update_title(
+        &font,
+        "Terminal",
+        TitleStyle {
+            font_size: 14.0,
+            color: [255; 4],
+            area: (200, 24).into(),
+            centered: false,
+            buffer_scale: 1,
+        },
+    );
+    let icon = Rc::new(RgbaBitmap {
+        pixels: [255; 4].repeat(4),
+        width: 2,
+        height: 2,
+    });
+    decoration.update_icon(Some("test"), Some(&icon), 2, 1);
+    let mut buffers = ButtonBuffers::default();
+    let look = ButtonLook {
+        glyph: ButtonGlyph::Close,
+        glyph_visible: false,
+        disc: [255; 4],
+        glyph_color: [0; 4],
+    };
+    decoration.update_button(0, look, 20, 1, &mut buffers);
+    decoration.retain_buffers(false, true);
+    assert!(decoration.title_buffer().is_none());
+    assert!(decoration.icon_buffer().is_none());
+    assert!(decoration.button_buffer(0).is_some());
+    decoration.retain_buffers(false, false);
+    assert!(decoration.button_buffer(0).is_none());
+    assert_eq!(decoration.id, id);
+    assert_eq!(
+        crate::test_support::count_allocations(|| decoration.retain_buffers(false, false)),
+        0
+    );
 }
