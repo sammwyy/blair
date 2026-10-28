@@ -114,6 +114,47 @@ This is an initial empty-session snapshot. It does not establish memory
 retention under window or configuration churn, shell-loaded behavior, or the
 DRM backend's footprint; those measurements remain tracked in `TODO.md`.
 
+## Empty nested snapshot after blur changes: 2026-10-28
+
+Source: `5dd27d1a32f927ad098dd8ee1d05740e0673d234`, built with Rust
+`1.97.1 (8bab26f4f 2026-07-14)` and the repository's release profile.
+Local dependencies were CreamUI `4888d05c451676c1031efff84896ba25face4d8d`
+and Delib `6bd877c397ce18c8711df0143df1787b017595df`; all three checkouts
+were clean. Both runs used `python3 scripts/measure-nested-memory.py`.
+
+- Binary SHA-256: `a10dca5c3ebaea2c5ccc02c642100684c6a520156bd7e501c2fdf2b0a6f77f3e`
+- Cargo.lock SHA-256: `806b07fddf019a8d0560695fdccce69bf3374959a2ab936d9d1304c44ddb6c9d`
+- Kernel: `6.19.14-100.fc42.x86_64`; AMDGPU, PCI `0000:03:00.0`.
+- Host: KWin Wayland; Blair output: 1280×800, scale 1, 60 Hz.
+- No shell, application windows, D-Bus integration, or system Blair configuration.
+
+| Metric | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| RSS (KiB) | 91,672 | 91,676 |
+| PSS (KiB) | 50,562 | 50,576 |
+| Anonymous resident memory (KiB) | 27,840 | 27,924 |
+| PSS from file mappings (KiB) | 22,721 | 22,652 |
+| Shared clean mappings (KiB) | 52,772 | 52,804 |
+| Shared dirty mappings (KiB) | 4 | 4 |
+| Swap (KiB) | 0 | 0 |
+| Cumulative CPU time (seconds) | 0.12 | 0.13 |
+| Event-loop startup observed (seconds) | 0.151 | 0.152 |
+
+Each run's metrics and engine counters were unchanged at 1, 5, and 15 seconds.
+AMDGPU reported `drm-total-gtt` 8,208 KiB in both runs. Run 1 reported
+`drm-total-vram` 25,504 KiB, `drm-shared-vram` 4,544 KiB,
+`drm-resident-gtt` 33,680 KiB, and `drm-resident-vram` 32 KiB. Run 2 reported
+30,052 KiB, 9,088 KiB, 38,224 KiB, and 36 KiB respectively. Each process had
+three descriptors sharing one DRM client ID; counters are reported once per client.
+
+This snapshot does not demonstrate an empty-session memory reduction. Relative
+to the earlier snapshot, anonymous memory is within 108 KiB and RSS is about
+0.9 MiB higher; PSS is about 9.6 MiB higher, in the file-mapping component.
+PSS depends on mapping ownership in other processes. These snapshots also use
+different sources and dependencies, so they do not isolate the cause of that
+difference. There are no blur regions in this workload; loaded-shell and window
+churn measurements are still needed to quantify the offscreen-buffer savings.
+
 ## Font fallback retention: 2026-10-28
 
 Run the font-only probe from the adjacent CreamUI checkout:
