@@ -393,6 +393,7 @@ impl BlairState {
                     return;
                 }
                 lifecycle(&layer).phase.set(Phase::Mapped);
+                tracing::debug!(namespace = layer.namespace(), surface = ?surface.id(), "layer mapped");
                 self.layer_layout_changed(&output, previous);
                 self.focus_interactive_layer_surface(surface);
             }
