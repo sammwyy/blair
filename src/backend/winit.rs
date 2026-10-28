@@ -167,7 +167,8 @@ impl WinitData {
             0,
             wp_presentation_feedback::Kind::empty(),
         );
-        send_frame_callbacks(state, &self.output, state.clock_now());
+        let time = state.clock_now();
+        send_frame_callbacks(state, &self.output, time);
 
         self.timer.record_frame(build, render, damaged);
         self.timer.record_presented(Instant::now());

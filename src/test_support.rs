@@ -56,6 +56,7 @@ pub struct ClientEvents {
     pub popup_done: Vec<u32>,
     pub layer_configures: Vec<(u32, u32, u32)>,
     pub hold_layer_configures: bool,
+    pub frames: Vec<(u32, u32)>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for ClientEvents {
@@ -87,6 +88,21 @@ impl Dispatch<wl_callback::WlCallback, ()> for ClientEvents {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, u32> for ClientEvents {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        label: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { callback_data } = event {
+            state.frames.push((*label, callback_data));
+        }
     }
 }
 

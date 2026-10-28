@@ -314,7 +314,8 @@ impl DrmBackend {
                 }
             }
         }
-        send_frame_callbacks(state, &self.output, state.clock_now());
+        let time = state.clock_now();
+        send_frame_callbacks(state, &self.output, time);
 
         self.timer.record_frame(build, render, damaged);
         self.timer.maybe_report(&mut state.render_stats);

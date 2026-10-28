@@ -252,6 +252,7 @@ pub struct BlairState {
     pub exit_requested: bool,
     redraw_requested: bool,
     pub render_stats: RenderStats,
+    pub(crate) hidden_frames: crate::render::HiddenFrames,
 
     pub events: Arc<dyn EventChannel>,
 }
@@ -449,6 +450,7 @@ impl BlairState {
             exit_requested: false,
             redraw_requested: true,
             render_stats: RenderStats::default(),
+            hidden_frames: Default::default(),
             events,
             config,
         };
@@ -618,6 +620,7 @@ impl BlairState {
         let inhibited = !self.idle_inhibitors.is_empty();
         self.idle_notifier_state.set_is_inhibited(inhibited);
         self.refresh_idle_dimming();
+        self.schedule_hidden_frames();
     }
 
     pub(crate) fn refresh_pointer_focus(&mut self) {

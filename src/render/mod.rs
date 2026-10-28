@@ -2,9 +2,10 @@ mod blur;
 mod capture;
 mod clip;
 mod decoration;
+mod frame_callbacks;
 mod magnify;
 
-use std::{collections::hash_map::Entry, time::Duration};
+use std::collections::hash_map::Entry;
 
 use smithay::{
     backend::renderer::{
@@ -31,10 +32,9 @@ use smithay::{
     desktop::{
         layer_map_for_output,
         utils::{
-            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
-            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
-            update_surface_primary_scanout_output, with_surfaces_surface_tree,
-            OutputPresentationFeedback,
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+            take_presentation_feedback_surface_tree, update_surface_primary_scanout_output,
+            with_surfaces_surface_tree, OutputPresentationFeedback,
         },
         PopupManager, Window,
     },
@@ -55,6 +55,7 @@ use blair_protocol::Rect;
 pub use capture::capture_region;
 pub use clip::RoundedClip;
 pub use decoration::{ButtonBuffers, DecorationParts, WindowDecoration};
+pub(crate) use frame_callbacks::{send_frame_callbacks, HiddenFrames};
 pub use magnify::Magnifier;
 
 use clip::ClippedSurfaceElement;
@@ -73,10 +74,6 @@ pub enum CursorMode {
     HostNamed,
     Hidden,
 }
-
-/// Frame callbacks of surfaces that are not visible anywhere are still sent
-/// at roughly this interval so clients never block forever on them.
-const HIDDEN_FRAME_THROTTLE: Duration = Duration::from_millis(995);
 
 render_elements! {
     pub OutputRenderElement<=GlesRenderer>;
@@ -1556,19 +1553,6 @@ pub fn update_primary_scanout_output(
                 default_primary_scanout_output_compare,
             );
         });
-    });
-}
-
-pub fn send_frame_callbacks(state: &BlairState, output: &Output, time: Duration) {
-    profiling::scope!("send_frame_callbacks");
-    for_each_surface_root(state, |root| {
-        send_frames_surface_tree(
-            root,
-            output,
-            time,
-            Some(HIDDEN_FRAME_THROTTLE),
-            surface_primary_scanout_output,
-        );
     });
 }
 

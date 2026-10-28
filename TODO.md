@@ -143,11 +143,13 @@
 - [x] Request redraws when blur state is committed or unset. Protocol tests
   verify repaint requests without a surface commit, pending-region isolation,
   and suppression of redundant redraws for unchanged blur state.
-- [ ] Schedule throttled frame callbacks for hidden surfaces independently
-  of output damage. `HIDDEN_FRAME_THROTTLE` in `src/render/mod.rs` only limits
-  callbacks when `send_frame_callbacks` is already called during a repaint;
-  it does not schedule one. Hidden clients can wait indefinitely when the
-  visible workspace is idle despite the intended roughly one-second cadence.
+- [x] Schedule hidden frame callbacks independently of output damage. One
+  cancellable timer serves committed callbacks at roughly one-second intervals
+  and stops when none remain. Visible callbacks follow their primary output;
+  unchanged scheduling allocates nothing. Protocol and EGL tests cover idle
+  delivery without redraws, repeated requests, output routing/removal, popup
+  teardown, synchronized subsurfaces, callback ordering/timestamp wrapping,
+  and workspace, minimization, and session-lock visibility changes.
 - [x] Consolidate window rendering parameters into `WindowRenderContext` and
   titlebar sampling parameters into `TitlebarSampleParams`. Both rendering
   helpers now use explicit context/options types without argument-count lint
