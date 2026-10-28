@@ -145,8 +145,8 @@ pub struct ClippedSurfaceElement {
 }
 
 impl ClippedSurfaceElement {
-    pub(super) fn relocate_clip(&mut self, region: Rectangle<i32, Physical>) {
-        self.offscreen_region = Some(region);
+    pub(super) fn set_offscreen_region(&mut self, region: Option<Rectangle<i32, Physical>>) {
+        self.offscreen_region = region;
     }
 
     pub fn new(

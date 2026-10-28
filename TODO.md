@@ -34,14 +34,19 @@
 - [ ] Expose decoration button reordering (`decorations.buttons.layout`) in
   Coconut. Its settings UI currently only edits the side and fixed
   minimize/maximize/close order.
-- [ ] Optimize `blair_blur_unstable_v1` backdrop capture in `render/blur.rs`:
-  support recursively blurred backdrops. Captures now render only the blur
+- [x] Optimize `blair_blur_unstable_v1` backdrop capture in `render/blur.rs`.
+  Captures render only the blur
   rectangle plus filter padding, clamped to the output. EGL tests compare
   cropped and full-output backdrops at integer/fractional scales and output
   edges; region captures also preserve rounded surface clips and decorations.
   A two-pass separable Gaussian uses paired bilinear taps and discards horizontal
   padding after its first pass. GPU tests compare dense CPU convolution at
   radii 1, 4, 16, and 64, including a checkerboard that aliased at large radii.
+  Scene assembly proceeds from background to overlay; captures borrow already
+  assembled elements, including preceding blur, without rebuilding windows or
+  decorations. Protocol/EGL tests cover cumulative blur across bottom layers,
+  windows, overlapping top layers, overlays, popup clipping/unset/teardown, and
+  the global disable switch.
 - [ ] Establish a reproducible release-build memory baseline for DRM and
   Winit, both empty and with the shell loaded. Record RSS/PSS, anonymous
   memory, shared mappings, output resolution/scale, and graphics buffers;

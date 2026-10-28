@@ -15,16 +15,10 @@ use smithay::{
         utils::{CommitCounter, DamageSet, OpaqueRegions},
         Renderer, Texture,
     },
-    desktop::Window,
-    output::Output,
     utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
-    wayland::shell::wlr_layer::Layer,
 };
 
-use super::{
-    clip::local_from_ndc, layer_elements, window_elements, FrameContext, OutputRenderElement,
-    RoundedClip, Shaders, WindowRenderContext,
-};
+use super::{clip::local_from_ndc, FrameContext, OutputRenderElement, RoundedClip, Shaders};
 use crate::state::BlairState;
 
 const BLUR_SHADER: &str = r#"#version 100
@@ -98,26 +92,23 @@ pub fn compile(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError>
     )
 }
 
-/// Captures `windows_behind` plus the bottom/background layers into an
-/// offscreen texture, blurs `frame_rect` (output-logical) with a custom
-/// shader, and pushes the result into `elements`. A no-op if the shader
-/// failed to compile, `radius` is zero, or `frame_rect` falls outside the
-/// output.
+/// Captures the already assembled scene below this surface, including its blur.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn push_backdrop(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
-    output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &creamui_fonts::FontFace,
-    windows_behind: &[Window],
+    backdrop: &mut [OutputRenderElement],
     frame_rect: Rectangle<i32, Logical>,
     coverage: &[Rectangle<i32, Logical>],
     clip: Option<RoundedClip>,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let Some(shaders) = shaders else { return };
+    if !state.config.blur.enabled {
+        return;
+    }
     let radius = state.config.blur.radius as f32;
     if radius <= 0.0 {
         return;
@@ -131,27 +122,6 @@ pub(super) fn push_backdrop(
     if frame_rect_physical.is_empty() {
         return;
     }
-
-    let mut backdrop = Vec::new();
-    let window_context = WindowRenderContext {
-        output,
-        frame: ctx,
-        shaders: Some(shaders),
-        font,
-    };
-    for window in windows_behind.iter().rev() {
-        window_elements(renderer, state, window, &window_context, &mut backdrop);
-    }
-    layer_elements(
-        renderer,
-        state,
-        output,
-        ctx,
-        Some(shaders),
-        &[Layer::Bottom, Layer::Background],
-        None,
-        &mut backdrop,
-    );
 
     // Keep every shader tap and its bilinear filtering footprint inside the capture.
     let capture = backdrop_region(frame_rect_physical, ctx.viewport, radius);
@@ -252,7 +222,7 @@ fn horizontal_blur(
         },
     );
     element.direction = (1.0, 0.0);
-    super::capture::render_region(renderer, vec![element.into()], columns, 1.0)
+    super::capture::render_region(renderer, &mut [element.into()], columns, 1.0)
 }
 
 fn backdrop_region(
@@ -276,12 +246,12 @@ pub struct BlurredBackdropElement {
     direction: (f32, f32),
     coverage: Vec<Rectangle<i32, Physical>>,
     clip: RoundedClip,
+    offscreen_region: Option<Rectangle<i32, Physical>>,
 }
 
 impl BlurredBackdropElement {
-    pub(super) fn relocate_clip(&mut self, region: Rectangle<i32, Physical>) {
-        self.clip.rect.loc -= region.loc;
-        self.clip.viewport = region.size;
+    pub(super) fn set_offscreen_region(&mut self, region: Option<Rectangle<i32, Physical>>) {
+        self.offscreen_region = region;
     }
 
     fn new(
@@ -300,6 +270,7 @@ impl BlurredBackdropElement {
             direction: (0.0, 1.0),
             coverage,
             clip,
+            offscreen_region: None,
         }
     }
 }
@@ -370,7 +341,12 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
         if damage.is_empty() {
             return Ok(());
         }
-        let [tl, tr, br, bl] = self.clip.radii;
+        let mut clip = self.clip;
+        if let Some(region) = self.offscreen_region {
+            clip.rect.loc -= region.loc;
+            clip.viewport = region.size;
+        }
+        let [tl, tr, br, bl] = clip.radii;
         let uniforms = vec![
             Uniform::new("texel", self.texel),
             Uniform::new("spread", self.spread),
@@ -378,14 +354,11 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
             Uniform::new(
                 "clip_from_ndc",
                 UniformValue::Matrix3x3 {
-                    matrices: vec![local_from_ndc(self.clip.rect, frame.projection())],
+                    matrices: vec![local_from_ndc(clip.rect, frame.projection())],
                     transpose: false,
                 },
             ),
-            Uniform::new(
-                "viewport",
-                (self.clip.viewport.w as f32, self.clip.viewport.h as f32),
-            ),
+            Uniform::new("viewport", (clip.viewport.w as f32, clip.viewport.h as f32)),
             Uniform::new(
                 "clip_size",
                 (self.clip.rect.size.w as f32, self.clip.rect.size.h as f32),
@@ -409,6 +382,9 @@ impl RenderElement<GlesRenderer> for BlurredBackdropElement {
         None
     }
 }
+
+#[cfg(test)]
+mod scene_tests;
 
 #[cfg(test)]
 mod tests {
@@ -482,7 +458,7 @@ mod tests {
                         );
                         let target = super::super::capture::render_region(
                             &mut renderer,
-                            vec![backdrop.into()],
+                            &mut [backdrop.into()],
                             capture,
                             scale,
                         )
@@ -527,7 +503,7 @@ mod tests {
                         // Cropping the final draw also exercises clips in nested offscreen passes.
                         let mut rendered = super::super::capture::render_region(
                             &mut renderer,
-                            vec![element.into()],
+                            &mut [element.into()],
                             frame,
                             scale,
                         )
@@ -611,7 +587,7 @@ mod tests {
             );
             let mut rendered = super::super::capture::render_region(
                 &mut renderer,
-                vec![element.into()],
+                &mut [element.into()],
                 Rectangle::from_size(size),
                 1.0,
             )

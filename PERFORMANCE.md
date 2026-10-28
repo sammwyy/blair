@@ -31,6 +31,16 @@ radii 1, 4, 16, and 64. Dense filtering removes the previous widely spaced tap
 pattern; its sample count grows with radius and should be profiled separately
 from the buffer savings.
 
+Scene assembly proceeds from background to overlay. Each surface's backdrop
+borrows the already assembled lower scene, including previous blurred surfaces.
+The capture pass allocates relocation wrappers holding references rather than
+moving or duplicating the render elements. Offscreen clip coordinates are reset
+before those elements are reused. Window/decorations and surface trees are
+built once per scene instead of once for every blur region above them; nested
+blur does not recursively reconstruct the lower window stack. Each blur element
+still retains its own filtered texture for the frame. This removes repeated
+scene allocations, but its RSS/PSS impact has not been measured separately.
+
 ## Empty nested session
 
 Build the release compositor and run the sampler from an existing graphical

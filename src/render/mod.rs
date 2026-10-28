@@ -357,33 +357,53 @@ fn scene_elements(
     let fullscreen = windows
         .last()
         .is_some_and(|window| state.window_is_fullscreen(window));
-    let popup_backdrop = PopupBackdrop {
-        output,
-        font: &font,
-        windows: &windows,
-    };
-
+    let mut scene = Vec::new();
     layer_elements(
         renderer,
         state,
         output,
         &ctx,
         shaders,
-        &[Layer::Overlay],
-        Some(&popup_backdrop),
-        &mut elements,
+        &[Layer::Background, Layer::Bottom],
+        &mut scene,
     );
-    layer_blur_elements(
-        renderer,
-        state,
+    let background_count = scene.len();
+    let window_context = WindowRenderContext {
         output,
-        &ctx,
+        frame: &ctx,
         shaders,
-        &font,
-        &windows,
-        Layer::Overlay,
-        &mut elements,
-    );
+        font: &font,
+    };
+    let mut foreground = Vec::new();
+    for window in &windows {
+        window_elements(renderer, state, window, &window_context, &mut foreground);
+        push_theme_titlebar_blur(
+            renderer,
+            state,
+            &ctx,
+            shaders,
+            &mut scene,
+            window,
+            &mut foreground,
+        );
+        push_window_blur(
+            renderer,
+            state,
+            &ctx,
+            shaders,
+            &mut scene,
+            window,
+            &mut foreground,
+        );
+        scene.splice(0..0, foreground.drain(..));
+        if let (Some(surface), Some(frame)) = (window.wl_surface(), window_frame(state, window)) {
+            let root = frame.client.loc - ctx.output_geo.loc;
+            let alpha = state.window_opacity(window, output);
+            push_popups(
+                renderer, state, &ctx, shaders, &surface, root, alpha, &mut scene,
+            );
+        }
+    }
     if !fullscreen {
         layer_elements(
             renderer,
@@ -392,54 +412,8 @@ fn scene_elements(
             &ctx,
             shaders,
             &[Layer::Top],
-            Some(&popup_backdrop),
-            &mut elements,
+            &mut scene,
         );
-        layer_blur_elements(
-            renderer,
-            state,
-            output,
-            &ctx,
-            shaders,
-            &font,
-            &windows,
-            Layer::Top,
-            &mut elements,
-        );
-    }
-    let window_context = WindowRenderContext {
-        output,
-        frame: &ctx,
-        shaders,
-        font: &font,
-    };
-    for (index, window) in windows.iter().enumerate().rev() {
-        window_elements(renderer, state, window, &window_context, &mut elements);
-        push_theme_titlebar_blur(
-            renderer,
-            state,
-            output,
-            &ctx,
-            shaders,
-            &font,
-            &windows[..index],
-            window,
-            &mut elements,
-        );
-        push_window_blur(
-            renderer,
-            state,
-            output,
-            &ctx,
-            shaders,
-            &font,
-            &windows[..index],
-            window,
-            &mut elements,
-        );
-    }
-    if fullscreen {
-        return elements;
     }
     layer_elements(
         renderer,
@@ -447,25 +421,25 @@ fn scene_elements(
         output,
         &ctx,
         shaders,
-        &[Layer::Bottom, Layer::Background],
-        None,
-        &mut elements,
+        &[Layer::Overlay],
+        &mut scene,
     );
+    if fullscreen {
+        scene.truncate(scene.len() - background_count);
+    }
+    elements.extend(scene);
     elements
 }
 
 /// Theme titlebars are translucent surfaces. Blur the scene directly behind
 /// their interior so the theme color has the same depth as other shell
 /// surfaces, without requiring every client to request a blur region.
-#[allow(clippy::too_many_arguments)]
 fn push_theme_titlebar_blur(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
-    output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &creamui_fonts::FontFace,
-    windows_behind: &[Window],
+    backdrop: &mut [OutputRenderElement],
     window: &Window,
     elements: &mut Vec<OutputRenderElement>,
 ) {
@@ -486,11 +460,9 @@ fn push_theme_titlebar_blur(
     blur::push_backdrop(
         renderer,
         state,
-        output,
         ctx,
         shaders,
-        font,
-        windows_behind,
+        backdrop,
         coverage,
         &[coverage],
         None,
@@ -590,17 +562,10 @@ pub fn cursor_is_animated(state: &BlairState, output: &Output) -> bool {
     }
 }
 
-struct PopupBackdrop<'a> {
-    output: &'a Output,
-    font: &'a creamui_fonts::FontFace,
-    windows: &'a [Window],
-}
-
 /// Renders each layer's own content plus its popups, popups clipped
 /// separately (not via `LayerSurface::render_elements`, which bundles them
 /// unclipped) so a dock-anchored panel gets the same corner clip as a
 /// toplevel-anchored one.
-#[allow(clippy::too_many_arguments)]
 fn layer_elements(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
@@ -608,7 +573,6 @@ fn layer_elements(
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
     layers: &[Layer],
-    backdrop: Option<&PopupBackdrop<'_>>,
     elements: &mut Vec<OutputRenderElement>,
 ) {
     let scale = ctx.scale;
@@ -616,40 +580,14 @@ fn layer_elements(
         let surfaces: Vec<_> = {
             let map = layer_map_for_output(output);
             map.layers_on(layer)
-                .rev()
                 .filter_map(|surface| {
                     Some((surface.wl_surface().clone(), map.layer_geometry(surface)?))
                 })
                 .collect()
         };
+        let mut foreground = Vec::new();
         for (wl_surface, geometry) in surfaces {
-            for (popup, popup_offset) in PopupManager::popups_for_surface(&wl_surface) {
-                let root = geometry.loc + popup_offset;
-                let clip =
-                    push_popup_elements(renderer, state, ctx, shaders, &popup, root, 1.0, elements);
-                if let (Some(backdrop), Some(clip)) = (backdrop, clip) {
-                    if state.config.blur.enabled {
-                        if let Some(region) = crate::blur::blur_of(popup.wl_surface()) {
-                            let bounds = clip.rect.to_f64().to_logical(scale).to_i32_round();
-                            let coverage = surface_blur_rects(region, root, bounds.size);
-                            blur::push_backdrop(
-                                renderer,
-                                state,
-                                backdrop.output,
-                                ctx,
-                                shaders,
-                                backdrop.font,
-                                backdrop.windows,
-                                bounds,
-                                &coverage,
-                                Some(clip),
-                                elements,
-                            );
-                        }
-                    }
-                }
-            }
-            elements.extend(surface_tree_elements(
+            foreground.extend(surface_tree_elements(
                 renderer,
                 &wl_surface,
                 geometry.loc.to_physical_precise_round(scale),
@@ -657,7 +595,84 @@ fn layer_elements(
                 1.0,
                 Kind::Unspecified,
             ));
+            if state.config.blur.enabled {
+                if let Some(region) = crate::blur::blur_of(&wl_surface) {
+                    let coverage = surface_blur_rects(region, geometry.loc, geometry.size);
+                    if let Some(bounds) = coverage.iter().copied().reduce(|a, b| a.merge(b)) {
+                        blur::push_backdrop(
+                            renderer,
+                            state,
+                            ctx,
+                            shaders,
+                            elements,
+                            bounds,
+                            &coverage,
+                            None,
+                            &mut foreground,
+                        );
+                    }
+                }
+            }
+            elements.splice(0..0, foreground.drain(..));
+            push_popups(
+                renderer,
+                state,
+                ctx,
+                shaders,
+                &wl_surface,
+                geometry.loc,
+                1.0,
+                elements,
+            );
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_popups(
+    renderer: &mut GlesRenderer,
+    state: &mut BlairState,
+    ctx: &FrameContext,
+    shaders: Option<&Shaders>,
+    surface: &WlSurface,
+    origin: Point<i32, Logical>,
+    alpha: f32,
+    elements: &mut Vec<OutputRenderElement>,
+) {
+    let popups: Vec<_> = PopupManager::popups_for_surface(surface).collect();
+    let mut foreground = Vec::new();
+    for (popup, offset) in popups.into_iter().rev() {
+        let root = origin + offset;
+        let clip = push_popup_elements(
+            renderer,
+            state,
+            ctx,
+            shaders,
+            &popup,
+            root,
+            alpha,
+            &mut foreground,
+        );
+        if let Some(clip) = clip {
+            if state.config.blur.enabled {
+                if let Some(region) = crate::blur::blur_of(popup.wl_surface()) {
+                    let bounds = clip.rect.to_f64().to_logical(ctx.scale).to_i32_round();
+                    let coverage = surface_blur_rects(region, root, bounds.size);
+                    blur::push_backdrop(
+                        renderer,
+                        state,
+                        ctx,
+                        shaders,
+                        elements,
+                        bounds,
+                        &coverage,
+                        Some(clip),
+                        &mut foreground,
+                    );
+                }
+            }
+        }
+        elements.splice(0..0, foreground.drain(..));
     }
 }
 
@@ -717,17 +732,13 @@ fn push_popup_elements(
 }
 
 /// Pushes a blurred backdrop for `window`, if it has an active
-/// `blair_blur_v1` region, sampling `windows_behind` (this output's stack
-/// below `window`, back to front) plus the bottom/background layers.
-#[allow(clippy::too_many_arguments)]
+/// `blair_blur_v1` region, sampling the scene below it.
 fn push_window_blur(
     renderer: &mut GlesRenderer,
     state: &mut BlairState,
-    output: &Output,
     ctx: &FrameContext,
     shaders: Option<&Shaders>,
-    font: &creamui_fonts::FontFace,
-    windows_behind: &[Window],
+    backdrop: &mut [OutputRenderElement],
     window: &Window,
     elements: &mut Vec<OutputRenderElement>,
 ) {
@@ -749,17 +760,7 @@ fn push_window_blur(
         return;
     };
     blur::push_backdrop(
-        renderer,
-        state,
-        output,
-        ctx,
-        shaders,
-        font,
-        windows_behind,
-        frame_rect,
-        &coverage,
-        None,
-        elements,
+        renderer, state, ctx, shaders, backdrop, frame_rect, &coverage, None, elements,
     );
 }
 
@@ -777,46 +778,6 @@ fn surface_blur_rects(
                     .map(|rect| Rectangle::new(origin + rect.loc, rect.size))
             })
             .collect(),
-    }
-}
-
-/// Layer shells are above normal windows, so their backdrop must contain
-/// the window stack as well as wallpaper and bottom layers.
-#[allow(clippy::too_many_arguments)]
-fn layer_blur_elements(
-    renderer: &mut GlesRenderer,
-    state: &mut BlairState,
-    output: &Output,
-    ctx: &FrameContext,
-    shaders: Option<&Shaders>,
-    font: &creamui_fonts::FontFace,
-    windows: &[Window],
-    layer: Layer,
-    elements: &mut Vec<OutputRenderElement>,
-) {
-    if !state.config.blur.enabled {
-        return;
-    }
-    let surfaces: Vec<_> = {
-        let map = layer_map_for_output(output);
-        map.layers_on(layer)
-            .rev()
-            .filter_map(|surface| {
-                Some((surface.wl_surface().clone(), map.layer_geometry(surface)?))
-            })
-            .collect()
-    };
-    for (surface, geometry) in surfaces {
-        let Some(region) = crate::blur::blur_of(&surface) else {
-            continue;
-        };
-        let coverage = surface_blur_rects(region, geometry.loc, geometry.size);
-        let Some(bounds) = coverage.iter().copied().reduce(|a, b| a.merge(b)) else {
-            continue;
-        };
-        blur::push_backdrop(
-            renderer, state, output, ctx, shaders, font, windows, bounds, &coverage, None, elements,
-        );
     }
 }
 
@@ -853,11 +814,6 @@ fn window_elements(
     let origin = ctx.output_geo.loc;
     let render_loc = frame.client.loc - window.geometry().loc - origin;
     let overlay_controls = state.window_has_overlay_controls(window);
-
-    for (popup, offset) in PopupManager::popups_for_surface(&surface) {
-        let root = render_loc + window.geometry().loc + offset;
-        let _ = push_popup_elements(renderer, state, ctx, shaders, &popup, root, alpha, elements);
-    }
 
     let focused = state.focused_window == Some(id);
     let (title_text, app_id) = state
