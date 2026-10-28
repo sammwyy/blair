@@ -50,20 +50,29 @@ pub fn hybrid_requested(surface: Option<&WlSurface>) -> bool {
     })
 }
 
-fn set_requested(surface: &WlSurface, requested: bool) {
-    with_states(surface, |states| {
+fn set_requested(state: &mut BlairState, surface: &WlSurface, requested: bool) {
+    let changed = with_states(surface, |states| {
         states
             .data_map
             .insert_if_missing(SurfaceIntegration::default);
-        states
+        let mut integration = states
             .data_map
             .get::<SurfaceIntegration>()
             .expect("inserted above")
             .0
             .lock()
-            .expect("integration state lock poisoned")
-            .requested = requested;
+            .expect("integration state lock poisoned");
+        let changed = integration.requested != requested;
+        integration.requested = requested;
+        changed
     });
+    if changed {
+        state.refresh_decoration_modes();
+        if let Some(id) = crate::state::surface_window_id(surface) {
+            state.refresh_window_decoration_buffers(id);
+        }
+        state.request_redraw();
+    }
 }
 
 /// Updates the client with the effective mode and the client-local controls
@@ -106,7 +115,7 @@ impl GlobalDispatch<BlairWindowIntegrationManagerV1, ()> for BlairState {
 
 impl Dispatch<BlairWindowIntegrationManagerV1, ()> for BlairState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _manager: &BlairWindowIntegrationManagerV1,
         request: blair_window_integration_manager_v1::Request,
@@ -139,7 +148,7 @@ impl Dispatch<BlairWindowIntegrationManagerV1, ()> for BlairState {
                 object.controls(0, 0, 0, 0);
             }
             blair_window_integration_manager_v1::Request::Unset { surface } => {
-                set_requested(&surface, false)
+                set_requested(state, &surface, false)
             }
             _ => {}
         }
@@ -157,9 +166,7 @@ impl Dispatch<BlairWindowIntegrationV1, IntegrationData> for BlairState {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         if let blair_window_integration_v1::Request::SetHybrid { enabled } = request {
-            set_requested(&data.surface, enabled != 0);
-            state.refresh_decoration_modes();
-            state.request_redraw();
+            set_requested(state, &data.surface, enabled != 0);
         }
     }
 }

@@ -404,3 +404,6 @@ pub fn add_output(
     state.add_output(&output, location.into());
     output
 }
+
+wayland_client::delegate_noop!(ClientEvents: ignore blair_window_integration_protocol::client::blair_window_integration_manager_v1::BlairWindowIntegrationManagerV1);
+wayland_client::delegate_noop!(ClientEvents: ignore blair_window_integration_protocol::client::blair_window_integration_v1::BlairWindowIntegrationV1);

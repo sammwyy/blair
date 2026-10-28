@@ -330,6 +330,9 @@ impl BlairState {
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
+        if let Some(id) = crate::state::surface_window_id(toplevel.wl_surface()) {
+            self.refresh_window_decoration_buffers(id);
+        }
         self.request_redraw();
     }
 }
@@ -701,6 +704,9 @@ impl BlairState {
             DecorationMode::ServerSide => KdeDecorationMode::Server,
             _ => KdeDecorationMode::Client,
         });
+        if let Some(id) = crate::state::surface_window_id(surface) {
+            self.refresh_window_decoration_buffers(id);
+        }
         self.request_redraw();
     }
 }

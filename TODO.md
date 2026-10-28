@@ -74,10 +74,12 @@
   glyph/color differences. Each button instance keeps its own render ID and
   commit counter; GPU tests cover independent updates, removal, movement,
   opacity, and unchanged frames. Disabled parts release buffers during rendering.
-- [ ] Discard obsolete decoration buffers on inactive workspaces when their
-  decoration policy changes. Render-time cleanup only visits visible windows,
-  so disabled title/icon/button buffers on other workspaces can remain until
-  the window is rendered again or destroyed.
+- [x] Reconcile decoration buffers independently of output rendering.
+  Configuration/theme changes prune cached windows on every workspace; client
+  decoration/hybrid requests, surface commits, fullscreen, and minimization
+  prune affected windows. Rendering shares the same part visibility rules.
+  Tests cover allocation-free unchanged cleanup, preservation after failed
+  saves, hybrid unset negotiation/redraws, and release of sampled GPU textures.
 - [x] Reuse magnifier resources per output. The retained texture, damage
   tracker, and element ID preserve scene damage and skip unchanged frames
   without an explicit CPU wait. Mode, scale, and renderer changes replace

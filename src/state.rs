@@ -475,6 +475,29 @@ impl BlairState {
         &self.decoration_theme
     }
 
+    fn refresh_decoration_buffers(&mut self) {
+        for (id, managed) in &self.windows {
+            if !self.decorations.contains_key(id) {
+                continue;
+            }
+            let parts = crate::render::window_decoration_parts(self, &managed.window);
+            self.decorations.get_mut(id).unwrap().retain_parts(parts);
+        }
+    }
+
+    pub(crate) fn refresh_window_decoration_buffers(&mut self, id: WindowId) {
+        if !self.decorations.contains_key(&id) {
+            return;
+        }
+        let parts = self
+            .windows
+            .get(&id)
+            .map_or_else(crate::render::DecorationParts::default, |managed| {
+                crate::render::window_decoration_parts(self, &managed.window)
+            });
+        self.decorations.get_mut(&id).unwrap().retain_parts(parts);
+    }
+
     /// Re-reads the CreamUI system theme and re-derives the decoration
     /// theme from it, in response to an `org.creamui.Theme.ReloadTheme`
     /// D-Bus signal.
@@ -482,6 +505,7 @@ impl BlairState {
         self.system_accent = load_system_accent();
         self.decoration_theme = self.config.decorations.to_theme(self.system_accent);
         self.relayout_all();
+        self.refresh_decoration_buffers();
         tracing::info!("reloaded decoration colors from the CreamUI system theme");
         self.request_redraw();
     }
@@ -848,6 +872,7 @@ impl BlairState {
         if previous.window != self.config.window || previous.decorations != self.config.decorations
         {
             self.relayout_all();
+            self.refresh_decoration_buffers();
         }
         self.request_redraw();
         self.emit(CompositorEvent::ConfigurationChanged);
@@ -1837,6 +1862,7 @@ impl BlairState {
         let workspace = managed.workspace;
         managed.minimized = Some(location);
         self.space.unmap_elem(window);
+        self.refresh_window_decoration_buffers(id);
         self.retile(workspace);
         if self.focused_window == Some(id) {
             self.focus_previous_window();
@@ -1957,6 +1983,7 @@ impl BlairState {
         } else {
             self.restore_geometry(window);
         }
+        self.refresh_window_decoration_buffers(id);
         self.request_redraw();
     }
 
@@ -2217,6 +2244,9 @@ impl BlairState {
         let window_id = surface_window_id(&root);
         if let Some(id) = window_id {
             self.commit_window(id, &root, surface == &root);
+            if surface == &root {
+                self.refresh_window_decoration_buffers(id);
+            }
         }
 
         if self.session_locked

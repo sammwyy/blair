@@ -1,3 +1,5 @@
+mod policy;
+
 use super::*;
 
 fn title_id(
@@ -472,15 +474,20 @@ fn hidden_decoration_parts_release_their_buffers() {
         glyph_color: [0; 4],
     };
     decoration.update_button(0, look, 20, 1, &mut buffers);
-    decoration.retain_buffers(false, true);
+    decoration.retain_parts(DecorationParts {
+        buttons: [true; 3],
+        ..Default::default()
+    });
     assert!(decoration.title_buffer().is_none());
     assert!(decoration.icon_buffer().is_none());
     assert!(decoration.button_buffer(0).is_some());
-    decoration.retain_buffers(false, false);
+    decoration.retain_parts(DecorationParts::default());
     assert!(decoration.button_buffer(0).is_none());
     assert_eq!(decoration.id, id);
     assert_eq!(
-        crate::test_support::count_allocations(|| decoration.retain_buffers(false, false)),
+        crate::test_support::count_allocations(
+            || decoration.retain_parts(DecorationParts::default())
+        ),
         0
     );
 }

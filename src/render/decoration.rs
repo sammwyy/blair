@@ -275,6 +275,14 @@ impl<K> Default for BufferCache<K> {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DecorationParts {
+    pub title: bool,
+    pub icon: bool,
+    pub buttons: [bool; 3],
+    pub sampled_titlebar: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TitleStyle {
     pub font_size: f32,
@@ -453,20 +461,21 @@ impl WindowDecoration {
         );
     }
 
-    pub fn clear_button(&mut self, index: usize) {
-        self.buttons[index].clear();
-    }
-
-    pub fn retain_buffers(&mut self, titlebar: bool, controls: bool) {
-        if !titlebar {
+    pub fn retain_parts(&mut self, parts: DecorationParts) {
+        if !parts.title {
             self.title = BufferCache::default();
             self.title_offset = Point::default();
+        }
+        if !parts.icon {
             self.icon = BufferCache::default();
         }
-        if !controls {
-            for button in &mut self.buttons {
+        for (button, keep) in self.buttons.iter_mut().zip(parts.buttons) {
+            if !keep {
                 button.clear();
             }
+        }
+        if !parts.sampled_titlebar {
+            self.strip = None;
         }
     }
 

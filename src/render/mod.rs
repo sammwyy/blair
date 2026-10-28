@@ -47,14 +47,14 @@ use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::{
     config::{DecorationButton, DecorationButtonStyle, TitlebarColorMode, WindowLayout},
-    decorations::DecorationFrame,
+    decorations::{DecorationFrame, DecorationTheme, FrameGeometry},
     state::BlairState,
 };
 use blair_protocol::Rect;
 
 pub use capture::capture_region;
 pub use clip::RoundedClip;
-pub use decoration::{ButtonBuffers, WindowDecoration};
+pub use decoration::{ButtonBuffers, DecorationParts, WindowDecoration};
 pub use magnify::Magnifier;
 
 use clip::ClippedSurfaceElement;
@@ -160,6 +160,54 @@ pub fn window_frame(state: &BlairState, window: &Window) -> Option<WindowFrame> 
         has_content_outline,
         has_titlebar,
     })
+}
+
+pub fn window_decoration_parts(state: &BlairState, window: &Window) -> DecorationParts {
+    window_frame(state, window).map_or_else(DecorationParts::default, |frame| {
+        decoration_layout(
+            &frame,
+            state.decoration_theme(),
+            state.window_has_overlay_controls(window),
+            true,
+        )
+        .1
+    })
+}
+
+fn decoration_layout(
+    frame: &WindowFrame,
+    theme: &DecorationTheme,
+    overlay: bool,
+    shaders: bool,
+) -> (FrameGeometry, DecorationParts) {
+    let titlebar = frame.has_titlebar && theme.titlebar_height > 0 && shaders;
+    let geometry = if overlay {
+        DecorationFrame::overlay_controls(to_rect(frame.client), theme)
+    } else {
+        DecorationFrame::compute(to_rect(frame.client), theme, frame.has_titlebar)
+    };
+    let present = |rect: Rect| rect.width > 0 && rect.height > 0;
+    let buttons = [
+        geometry.close_btn,
+        geometry.maximize_btn,
+        geometry.minimize_btn,
+    ]
+    .map(|rect| (titlebar || overlay) && present(rect));
+    let parts = DecorationParts {
+        title: titlebar && present(geometry.title),
+        icon: titlebar && theme.show_icon && present(geometry.icon),
+        buttons,
+        sampled_titlebar: shaders
+            && ((overlay && buttons.into_iter().any(|visible| visible))
+                || (titlebar
+                    && matches!(
+                        theme.titlebar_mode,
+                        TitlebarColorMode::Blend
+                            | TitlebarColorMode::Auto
+                            | TitlebarColorMode::Gradient
+                    ))),
+    };
+    (geometry, parts)
 }
 
 pub fn z_ordered_windows(state: &BlairState, output: &Output) -> Vec<Window> {
@@ -821,26 +869,17 @@ fn window_elements(
         .map(|managed| (managed.title.as_str(), managed.app_id.as_deref()))
         .unwrap_or_default();
 
+    let theme = state.decoration_theme().clone();
     let decorated = (frame.has_border || frame.has_content_outline) && shaders.is_some();
-    let titlebar = decorated && frame.has_titlebar;
+    let (geometry, parts) = decoration_layout(&frame, &theme, overlay_controls, shaders.is_some());
     if let Some(decoration) = state.decorations.get_mut(&id) {
-        decoration.retain_buffers(titlebar, titlebar || overlay_controls);
+        decoration.retain_parts(parts);
     }
     // Sample before drawing controls. Dynamic titlebar modes use this, and
     // hybrid controls use the dominant top-edge color for readable glyphs.
     let titlebar_source = match shaders {
-        Some(shaders)
-            if overlay_controls
-                || (decorated
-                    && frame.has_titlebar
-                    && matches!(
-                        state.decoration_theme().titlebar_mode,
-                        TitlebarColorMode::Blend
-                            | TitlebarColorMode::Auto
-                            | TitlebarColorMode::Gradient
-                    )) =>
-        {
-            let mode = state.decoration_theme().titlebar_mode;
+        Some(shaders) if parts.sampled_titlebar => {
+            let mode = theme.titlebar_mode;
             let decoration = state.decorations.entry(id).or_default();
             titlebar_pixel_source(
                 renderer,
@@ -855,15 +894,10 @@ fn window_elements(
                 },
             )
         }
-        _ => {
-            if let Some(decoration) = state.decorations.get_mut(&id) {
-                decoration.strip = None;
-            }
-            None
-        }
+        _ => None,
     };
     let titlebar_background = {
-        let theme = state.decoration_theme();
+        let theme = &theme;
         let fill = if focused {
             theme.active_titlebar
         } else {
@@ -881,10 +915,8 @@ fn window_elements(
             .map_or(fill, |average| over(average, fill))
     };
 
-    if decorated && frame.has_titlebar {
-        let theme = state.decoration_theme().clone();
+    if decorated && frame.has_titlebar && theme.titlebar_height > 0 {
         let buffer_scale = (scale.ceil() as i32).max(1);
-        let geometry = DecorationFrame::compute(to_rect(frame.client), &theme, true);
         let background = titlebar_background;
         let foreground = contrasting(background);
         // Unfocused windows fade their text and glyphs toward the
@@ -918,8 +950,7 @@ fn window_elements(
         .into_iter()
         .enumerate()
         {
-            if rect.width <= 0 || rect.height <= 0 {
-                decoration.clear_button(index);
+            if !parts.buttons[index] {
                 continue;
             }
             let look = decoration_button_look(
@@ -943,28 +974,32 @@ fn window_elements(
             );
         }
 
-        let title_size = (theme.titlebar_height as f32 / theme.text_scale * 0.41).clamp(10.0, 18.0)
-            * theme.text_scale;
-        decoration.update_title(
-            font,
-            title_text,
-            TitleStyle {
-                font_size: title_size,
-                color: muted,
-                area: (geometry.title.width, geometry.title.height).into(),
-                centered: theme.title_centered,
-                buffer_scale,
-            },
-        );
-        if let Some((buffer, bounds)) = decoration.title_buffer() {
-            let mut area = from_rect(geometry.title);
-            area.loc -= origin;
-            // Preserve the full title rectangle's sampling grid at fractional scales.
-            let source = Rectangle::new(Point::default() - bounds.loc.to_f64(), area.size.to_f64());
-            push_memory_element(renderer, buffer, area, Some(source), scale, alpha, elements);
+        if parts.title {
+            let title_size = (theme.titlebar_height as f32 / theme.text_scale * 0.41)
+                .clamp(10.0, 18.0)
+                * theme.text_scale;
+            decoration.update_title(
+                font,
+                title_text,
+                TitleStyle {
+                    font_size: title_size,
+                    color: muted,
+                    area: (geometry.title.width, geometry.title.height).into(),
+                    centered: theme.title_centered,
+                    buffer_scale,
+                },
+            );
+            if let Some((buffer, bounds)) = decoration.title_buffer() {
+                let mut area = from_rect(geometry.title);
+                area.loc -= origin;
+                // Preserve the full title rectangle's sampling grid at fractional scales.
+                let source =
+                    Rectangle::new(Point::default() - bounds.loc.to_f64(), area.size.to_f64());
+                push_memory_element(renderer, buffer, area, Some(source), scale, alpha, elements);
+            }
         }
 
-        if theme.show_icon && geometry.icon.width > 0 {
+        if parts.icon {
             let icon = app_id.and_then(|app_id| {
                 state
                     .icon_cache
@@ -984,8 +1019,6 @@ fn window_elements(
                     elements,
                 );
             }
-        } else {
-            decoration.update_icon(app_id, None, 0, buffer_scale);
         }
     }
 
@@ -1026,8 +1059,6 @@ fn window_elements(
     // client elements in the front-to-back render list to remain visible.
     if overlay_controls {
         let controls_start = elements.len();
-        let theme = state.decoration_theme().clone();
-        let geometry = DecorationFrame::overlay_controls(to_rect(frame.client), &theme);
         let controls = [
             geometry.close_btn,
             geometry.maximize_btn,
@@ -1085,8 +1116,7 @@ fn window_elements(
         .into_iter()
         .enumerate()
         {
-            if rect.width <= 0 || rect.height <= 0 {
-                decoration.clear_button(index);
+            if !parts.buttons[index] {
                 continue;
             }
             let hovered = state.hovered_button == Some((id, button));
@@ -1121,7 +1151,6 @@ fn window_elements(
     }
 
     if let (true, Some(shaders)) = (decorated, shaders) {
-        let theme = state.decoration_theme().clone();
         let params = FrameParams {
             radius: state.corner_radius(frame.frame) as f32,
             border_width: theme.border_width as f32,
