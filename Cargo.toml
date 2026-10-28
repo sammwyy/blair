@@ -99,6 +99,7 @@ profiling.workspace = true
 png = "0.17"
 hashbrown = { version = "0.17", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = "0.45.1"
 swash = "0.2"
 creamui-theme = { version = "0.2.0", path = "../creamui/crates/theme" }
 creamui-theme-loader = { version = "0.2.0", path = "../creamui/crates/theme-loader" }

@@ -24,8 +24,12 @@
 - [ ] Enable per-surface direct scanout of client buffers. The DRM backend
   advertises a single global dmabuf feedback tranche and never sends
   per-surface scanout feedback for fullscreen clients.
-- [ ] Rasterize SVG titlebar icons. The icon resolver only handles PNG/JPEG, so
-  SVG-only icon themes can leave windows without an icon.
+- [x] Rasterize SVG titlebar icons at the requested physical size. Aspect ratio,
+  transparent padding, and straight-alpha cache pixels survive decoration upload;
+  embedded images resolve beside the document and system fonts load only for
+  SVG text. SVG/PNG/JPEG format selection preserves theme priority. Tests cover
+  scaling, transparency, content, cache reuse/invalidation, malformed files,
+  raster compatibility, and decode limits. Warm SVG cache hits allocate nothing.
 - [ ] Expose decoration button reordering (`decorations.buttons.layout`) in
   Coconut. Its settings UI currently only edits the side and fixed
   minimize/maximize/close order.
@@ -45,10 +49,11 @@
   deadline; the timer reschedules itself until that deadline and is removed
   when dimming is disabled or its configuration changes. Event-loop tests
   cover sustained input, cancellation, reconfiguration, and expiry.
-- [ ] Retain only the desktop-entry fields needed for application icons in
-  `../delib/src/application_icons.rs`. Blair now initializes the resolver on
-  the first icon lookup, but the resolver still retains every installed
-  desktop entry, including localized names and unrelated fields.
+- [x] Retain only desktop IDs and optional icon values in delib's application
+  icon resolver. Desktop-entry precedence and app-ID fallbacks remain intact;
+  iconless user entries still shadow system entries. A fixture with roughly 1 MiB
+  of localized metadata retains less than 128 bytes of ID/icon strings for its
+  entries. Caller-selected formats share the resolver's theme ordering.
 - [x] Bound `IconCache` in `src/decorations/icons.rs` to 256 entries and 8 MiB
   of decoded pixels and app-ID storage. Least-recently-used eviction includes
   negative results; oversized entries are not retained, and theme changes

@@ -4,15 +4,18 @@ Blair is a Rust Wayland compositor built with Smithay. This guide covers its nat
 
 ## Requirements
 
-Use a current stable Rust toolchain. Smithay 0.7 requires Rust 1.80.1 or newer. Blair uses local path dependencies from CreamUI, so keep both repositories next to each other:
+Use a current stable Rust toolchain. Smithay 0.7 requires Rust 1.80.1 or newer. Blair uses local path dependencies from CreamUI and delib, so keep these repositories next to each other:
 
 ```text
 workspace/
 ├── blair/
-└── creamui/
+├── creamui/
+└── delib/
 ```
 
-If you use another layout, update the CreamUI paths in `Cargo.toml`.
+If you use another layout, update the local dependency paths in `Cargo.toml`.
+Keep delib current: titlebar icon decoding uses its caller-selected format
+resolution API.
 
 ### libseat and seatd
 
