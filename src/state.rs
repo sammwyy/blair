@@ -209,7 +209,6 @@ pub struct BlairState {
     output_workspaces: HashMap<String, u64>,
     focused_output: Option<String>,
     workspace_animation_started: HashMap<String, Instant>,
-    next_workspace_id: u64,
     next_window_id: u64,
     pub rules: RuleSet,
     pub shortcuts: ShortcutRegistry,
@@ -364,7 +363,6 @@ impl BlairState {
         let mut rules = RuleSet::default();
         rules.set_configured(&config.rules);
         let workspaces = configured_workspaces(&config.workspaces);
-        let next_workspace_id = config.workspaces.count + 1;
         let system_accent = load_system_accent();
         let decoration_theme = config.decorations.to_theme(system_accent);
         let mut state = Self {
@@ -409,7 +407,6 @@ impl BlairState {
             output_workspaces: HashMap::new(),
             focused_output: None,
             workspace_animation_started: HashMap::new(),
-            next_workspace_id,
             next_window_id: 1,
             rules,
             shortcuts: ShortcutRegistry::default(),
@@ -913,15 +910,19 @@ impl BlairState {
                     *workspace = count;
                 }
             }
+        } else {
+            let stale: Vec<u64> = self
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.id)
+                .filter(|id| self.workspace_removable(*id))
+                .collect();
+            if !stale.is_empty() {
+                self.workspaces
+                    .retain(|workspace| !stale.contains(&workspace.id));
+            }
         }
         self.workspaces.sort_by_key(|workspace| workspace.id);
-        self.next_workspace_id = self
-            .workspaces
-            .iter()
-            .map(|workspace| workspace.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
         for workspace in &mut self.workspaces {
             workspace.focus_history.retain(|id| {
                 self.windows
@@ -1379,8 +1380,9 @@ impl BlairState {
     }
 
     fn create_workspace_unchecked(&mut self, name: String) -> u64 {
-        let id = self.next_workspace_id;
-        self.next_workspace_id += 1;
+        let id = (1..)
+            .find(|id| self.workspace(*id).is_none())
+            .expect("the workspace id space cannot be exhausted");
         let name = if name.trim().is_empty() {
             id.to_string()
         } else {
@@ -1395,9 +1397,47 @@ impl BlairState {
         if id > self.config.workspaces.count && !self.config.workspaces.dynamic {
             return;
         }
-        while self.next_workspace_id <= id {
-            self.create_workspace_unchecked(self.next_workspace_id.to_string());
+        for missing in 1..=id {
+            if self.workspace(missing).is_none() {
+                self.create_workspace_unchecked(missing.to_string());
+            }
         }
+    }
+
+    /// Runtime-created workspaces are removable once no mapped window sits
+    /// on them and no output is displaying them. Configured ids (1..=count)
+    /// are the static baseline and always stay.
+    fn workspace_removable(&self, id: u64) -> bool {
+        self.config.workspaces.dynamic
+            && id > self.config.workspaces.count
+            && self.workspace(id).is_some()
+            && !self.output_workspaces.values().any(|shown| *shown == id)
+            && !self
+                .windows
+                .values()
+                .any(|managed| managed.mapped && managed.workspace == id)
+    }
+
+    fn prune_workspace_if_empty(&mut self, id: u64) {
+        if self.workspace_removable(id) {
+            self.workspaces.retain(|workspace| workspace.id != id);
+            self.emit(CompositorEvent::WorkspacesChanged);
+        }
+    }
+
+    pub fn destroy_workspace(&mut self, id: u64) -> bool {
+        if !self.workspace_removable(id) {
+            return false;
+        }
+        self.workspaces.retain(|workspace| workspace.id != id);
+        self.emit(CompositorEvent::WorkspacesChanged);
+        true
+    }
+
+    /// `(create, destroy)`; both require dynamic workspaces to be enabled.
+    pub fn workspace_capabilities(&self) -> (bool, bool) {
+        let dynamic = self.config.workspaces.dynamic;
+        (dynamic, dynamic)
     }
 
     pub fn list_workspaces(&self) -> Vec<WorkspaceInfo> {
@@ -1474,6 +1514,7 @@ impl BlairState {
         }
         self.request_redraw();
         self.mark_pointer_focus_dirty();
+        self.prune_workspace_if_empty(current);
         true
     }
 
@@ -1521,6 +1562,7 @@ impl BlairState {
         self.request_redraw();
         self.mark_pointer_focus_dirty();
         self.emit(CompositorEvent::WorkspacesChanged);
+        self.prune_workspace_if_empty(previous);
         true
     }
 
@@ -2471,6 +2513,9 @@ impl BlairState {
         tracing::debug!(%id, "window unmapped");
         self.emit(CompositorEvent::WindowClosed { id });
         self.emit(CompositorEvent::WorkspacesChanged);
+        if let Some(workspace) = workspace {
+            self.prune_workspace_if_empty(workspace);
+        }
     }
 
     fn forget_window_focus(&mut self, id: WindowId) {
@@ -2564,6 +2609,7 @@ impl BlairState {
             tracing::debug!(%id, "window closed");
             self.emit(CompositorEvent::WindowClosed { id });
             self.emit(CompositorEvent::WorkspacesChanged);
+            self.prune_workspace_if_empty(managed.workspace);
         }
     }
 
@@ -3190,6 +3236,60 @@ pub(crate) mod tests {
         assert_eq!(state.list_workspaces().len(), 4);
         assert!(state.switch_workspace(5));
         assert_eq!(state.focused_workspace_id(), 1);
+    }
+
+    #[test]
+    fn dynamic_workspaces_reuse_gap_ids_and_only_destroy_empty_unshown_ones() {
+        let display = smithay::reexports::wayland_server::Display::<BlairState>::new().unwrap();
+        let event_loop = smithay::reexports::calloop::EventLoop::<BlairState>::try_new().unwrap();
+        let events = Arc::new(TestEvents(std::sync::Mutex::new(Vec::new())));
+        let mut state = BlairState::new(
+            display.handle(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            CompositorConfig::default(),
+            events.clone(),
+        );
+        let output = Output::new(
+            "test-0".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "Test".into(),
+                model: "Test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (1280, 720).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        state.add_output(&output, (0, 0).into());
+        let mut config = state.config.clone();
+        config.workspaces.count = 1;
+        config.workspaces.dynamic = true;
+        state.apply_config(config).unwrap();
+        assert_eq!(state.workspace_capabilities(), (true, true));
+        assert_eq!(state.create_workspace(String::new()), 2);
+        assert_eq!(state.create_workspace(String::new()), 3);
+        assert!(!state.destroy_workspace(1));
+        assert!(!state.destroy_workspace(4));
+        assert!(state.destroy_workspace(2));
+        assert_eq!(state.create_workspace(String::new()), 2);
+        assert!(state.switch_workspace(2));
+        assert!(!state.destroy_workspace(2));
+        assert!(state.switch_workspace(1));
+        assert_eq!(state.list_workspaces().len(), 2);
+        let mut config = state.config.clone();
+        config.workspaces.dynamic = false;
+        state.apply_config(config).unwrap();
+        assert_eq!(state.workspace_capabilities(), (false, false));
+        assert_eq!(state.create_workspace(String::new()), 0);
+        assert!(!state.destroy_workspace(3));
     }
 
     #[test]

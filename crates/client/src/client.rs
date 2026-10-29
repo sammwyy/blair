@@ -123,6 +123,18 @@ impl BlairClient {
         self.proxy.switch_workspace(id).await.map_err(Into::into)
     }
 
+    pub async fn destroy_workspace(&self, id: u64) -> zbus::Result<bool> {
+        self.proxy.destroy_workspace(id).await.map_err(Into::into)
+    }
+
+    /// `(create, destroy)` support for on-demand workspace management.
+    pub async fn workspace_capabilities(&self) -> zbus::Result<(bool, bool)> {
+        self.proxy
+            .workspace_capabilities()
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn move_window_to_workspace(
         &self,
         window: WindowId,

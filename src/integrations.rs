@@ -135,6 +135,14 @@ impl CompositorApi for BlairState {
         BlairState::create_workspace(self, name)
     }
 
+    fn destroy_workspace(&mut self, id: u64) -> bool {
+        BlairState::destroy_workspace(self, id)
+    }
+
+    fn workspace_capabilities(&self) -> (bool, bool) {
+        BlairState::workspace_capabilities(self)
+    }
+
     fn switch_workspace(&mut self, id: u64) -> bool {
         BlairState::switch_workspace(self, id)
     }
@@ -714,6 +722,31 @@ mod tests {
                         .collect::<Vec<_>>(),
                     workspaces
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn empty_dynamic_workspaces_prune_when_their_last_window_leaves() {
+        isolated_config_test(
+            concat!(
+                module_path!(),
+                "::empty_dynamic_workspaces_prune_when_their_last_window_leaves"
+            ),
+            |_| {
+                let (mut display, _event_loop, mut state) = fixture();
+                crate::test_support::add_output(&mut state, "test-0", (0, 0), (800, 600));
+                let mut config = state.config.clone();
+                config.workspaces.count = 1;
+                config.workspaces.dynamic = true;
+                state.apply_config(config).unwrap();
+                let mut client = crate::test_support::TestClient::new(&mut display, &mut state);
+                let (id, toplevel) = map_window(&mut client, &mut display, &mut state);
+                assert_eq!(state.create_workspace(String::new()), 2);
+                assert!(state.move_window_to_workspace(id, 2));
+                toplevel.destroy();
+                client.dispatch(&mut display, &mut state);
+                assert_eq!(state.list_workspaces().len(), 1);
             },
         );
     }

@@ -135,6 +135,8 @@ pub enum Command {
     ListWindows(oneshot::Sender<Vec<DbusWindow>>),
     ListWorkspaces(oneshot::Sender<Vec<DbusWorkspace>>),
     CreateWorkspace(String, oneshot::Sender<u64>),
+    DestroyWorkspace(u64, oneshot::Sender<bool>),
+    WorkspaceCapabilities(oneshot::Sender<(bool, bool)>),
     SwitchWorkspace(u64, oneshot::Sender<bool>),
     MoveWindowToWorkspace(u64, u64, oneshot::Sender<bool>),
     FocusWindow(u64, oneshot::Sender<bool>),
@@ -233,6 +235,8 @@ impl Command {
             Self::DisplayInfo(_)
             | Self::ListWindows(_)
             | Self::ListWorkspaces(_)
+            | Self::DestroyWorkspace(_, _)
+            | Self::WorkspaceCapabilities(_)
             | Self::SwitchWorkspace(_, _)
             | Self::MoveWindowToWorkspace(_, _, _)
             | Self::FocusWindow(_, _)

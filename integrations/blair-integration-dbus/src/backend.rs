@@ -78,6 +78,12 @@ fn execute(command: Command, backend: &mut dyn CompositorApi) {
         Command::CreateWorkspace(name, reply) => {
             let _ = reply.send(backend.create_workspace(name));
         }
+        Command::DestroyWorkspace(id, reply) => {
+            let _ = reply.send(backend.destroy_workspace(id));
+        }
+        Command::WorkspaceCapabilities(reply) => {
+            let _ = reply.send(backend.workspace_capabilities());
+        }
         Command::SwitchWorkspace(id, reply) => {
             let _ = reply.send(backend.switch_workspace(id));
         }

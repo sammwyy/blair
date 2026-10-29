@@ -62,6 +62,17 @@ impl CompositorInterface {
             .await
     }
 
+    /// Only empty, unshown workspaces created at runtime can be destroyed.
+    async fn destroy_workspace(&self, id: u64) -> zbus::fdo::Result<bool> {
+        self.call(|reply| Command::DestroyWorkspace(id, reply))
+            .await
+    }
+
+    /// `(create, destroy)` — both gated by `workspaces.dynamic`.
+    async fn workspace_capabilities(&self) -> zbus::fdo::Result<(bool, bool)> {
+        self.call(Command::WorkspaceCapabilities).await
+    }
+
     async fn switch_workspace(&self, id: u64) -> zbus::fdo::Result<bool> {
         self.call(|reply| Command::SwitchWorkspace(id, reply)).await
     }

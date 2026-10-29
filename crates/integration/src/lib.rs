@@ -54,6 +54,9 @@ pub trait CompositorApi {
     fn list_windows(&self) -> Vec<WindowInfo>;
     fn list_workspaces(&self) -> Vec<WorkspaceInfo>;
     fn create_workspace(&mut self, name: String) -> u64;
+    fn destroy_workspace(&mut self, id: u64) -> bool;
+    /// `(create, destroy)` support for on-demand workspace management.
+    fn workspace_capabilities(&self) -> (bool, bool);
     fn switch_workspace(&mut self, id: u64) -> bool;
     fn move_window_to_workspace(&mut self, window: WindowId, workspace_id: u64) -> bool;
     fn focus_window(&mut self, id: WindowId) -> bool;
