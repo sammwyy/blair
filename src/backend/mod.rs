@@ -228,7 +228,7 @@ fn init_integrations(
     handle: &LoopHandle<'static, BlairState>,
     config: &CompositorConfig,
     environment: Vec<(String, String)>,
-) -> Result<Arc<dyn EventChannel>> {
+) -> Result<(Arc<dyn EventChannel>, Option<blair_integration_dbus::ScreencopyAuth>)> {
     let (ping, source) =
         calloop::ping::make_ping().context("failed to create the integration wake-up source")?;
     let mut integrations = Integrations::start(
@@ -237,12 +237,13 @@ fn init_integrations(
         environment,
     );
     let events = integrations.event_channel();
+    let auth = integrations.screencopy_auth();
     handle
         .insert_source(source, move |_, _, state: &mut BlairState| {
             integrations.drain(state);
         })
         .map_err(|error| anyhow::anyhow!("integration source: {error}"))?;
-    Ok(events)
+    Ok((events, auth))
 }
 
 fn init_housekeeping(handle: &LoopHandle<'static, BlairState>) -> Result<()> {
@@ -265,7 +266,11 @@ fn setup(
     display: Display<BlairState>,
     config: &CompositorConfig,
     session: bool,
-) -> Result<(String, Arc<dyn EventChannel>)> {
+) -> Result<(
+    String,
+    Arc<dyn EventChannel>,
+    Option<blair_integration_dbus::ScreencopyAuth>,
+)> {
     let handle = event_loop.handle();
     let socket = init_wayland(&handle, display)?;
     let environment = if session {
@@ -278,11 +283,11 @@ fn setup(
     } else {
         Vec::new()
     };
-    let events = init_integrations(&handle, config, environment)?;
+    let (events, auth) = init_integrations(&handle, config, environment)?;
     init_housekeeping(&handle)?;
     schedule_first_frame(&handle);
     crate::config::watch(&handle, config)?;
-    Ok((socket, events))
+    Ok((socket, events, auth))
 }
 
 /// Renders screenshots queued by integrations since the last iteration.

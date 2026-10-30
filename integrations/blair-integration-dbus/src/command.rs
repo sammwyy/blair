@@ -184,6 +184,10 @@ pub enum Command {
     },
     ClientDisconnected(String),
     ThemeChanged,
+    ScreencopyVerdict {
+        token: u64,
+        allowed: bool,
+    },
     Quit,
 }
 
@@ -211,6 +215,7 @@ impl Command {
                         .saturating_add(binding.argument.as_ref().map_or(0, String::capacity))
                 },
             ),
+            Self::ScreencopyVerdict { .. } => 0,
             Self::BindShortcut {
                 client,
                 id,

@@ -225,7 +225,7 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         Display::new().context("failed to create the Wayland display")?;
     let display_handle = display.handle();
 
-    let (socket, events) = super::setup(&event_loop, display, &config, false)?;
+    let (socket, events, auth) = super::setup(&event_loop, display, &config, false)?;
     let mut state = BlairState::new(
         display_handle.clone(),
         event_loop.handle(),
@@ -234,6 +234,9 @@ pub fn run(config: CompositorConfig) -> Result<()> {
         events,
     );
     state.set_wayland_display(&socket);
+    if let Some(auth) = auth {
+        state.set_screencopy_auth(auth);
+    }
 
     let (mut backend, winit_source) = winit::init::<GlesRenderer>()
         .map_err(|error| anyhow::anyhow!("failed to init the winit backend: {error:?}"))?;

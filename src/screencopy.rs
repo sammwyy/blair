@@ -12,14 +12,15 @@ use smithay::{
         },
         wayland_server::{
             protocol::{wl_buffer::WlBuffer, wl_shm},
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+            backend::Credentials, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+            Resource,
         },
     },
     utils::{Physical, Rectangle, Size, Transform},
     wayland::shm,
 };
 
-use crate::state::BlairState;
+use crate::{config::ScreencopyPolicy, state::BlairState};
 
 const VERSION: u32 = 3;
 
@@ -229,6 +230,77 @@ struct PendingFrame {
     overlay_cursor: bool,
 }
 
+/// A capture parked while the permission service decides.
+pub struct ScreencopyAuthPending {
+    pub frame: ZwlrScreencopyFrameV1,
+    pub output: Output,
+    pub region: Rectangle<i32, Physical>,
+    pub overlay_cursor: bool,
+}
+
+/// Announces the capture geometry to the client and stores the request
+/// until `copy` arrives. Shared by the immediate path and by the verdict
+/// path once the permission service answers.
+fn announce(
+    frame: &ZwlrScreencopyFrameV1,
+    output: Output,
+    region: Rectangle<i32, Physical>,
+    overlay_cursor: bool,
+) {
+    frame.buffer(
+        wl_shm::Format::Xrgb8888,
+        region.size.w as u32,
+        region.size.h as u32,
+        region.size.w as u32 * 4,
+    );
+    if frame.version() >= 3 {
+        frame.buffer_done();
+    }
+    *frame
+        .data::<ScreencopyFrameData>()
+        .expect("initialized above")
+        .inner
+        .lock()
+        .expect("screencopy frame lock poisoned") = Some(PendingFrame {
+        output,
+        region,
+        overlay_cursor,
+    });
+}
+
+/// Resolves the verdict stored under `token` — either resumes the capture
+/// or fails it. Called from `CompositorApi::screencopy_verdict`.
+pub fn verdict(state: &mut BlairState, token: u64, allowed: bool) {
+    let Some(pending) = state.screencopy_auth_pending.remove(&token) else {
+        return;
+    };
+    let frame = pending.frame;
+    if !frame.is_alive() {
+        return;
+    }
+    if !allowed {
+        frame.failed();
+        return;
+    }
+    announce(&frame, pending.output, pending.region, pending.overlay_cursor);
+}
+
+/// Executable path or `flatpak:<app-id>` identifying the requesting client,
+/// used as the permission store subject.
+fn subject(credentials: &Credentials) -> Option<String> {
+    let pid = credentials.pid;
+    if let Ok(info) = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")) {
+        for line in info.lines() {
+            if let Some(name) = line.strip_prefix("name=") {
+                return Some(format!("flatpak:{name}"));
+            }
+        }
+    }
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for BlairState {
     fn bind(
         _state: &mut Self,
@@ -307,25 +379,42 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BlairState {
         };
         let region = logical.to_physical_precise_round(scale);
 
-        frame.buffer(
-            wl_shm::Format::Xrgb8888,
-            region.size.w as u32,
-            region.size.h as u32,
-            region.size.w as u32 * 4,
-        );
-        if frame.version() >= 3 {
-            frame.buffer_done();
+        match state.config.integrations.screencopy {
+            ScreencopyPolicy::Allow => {}
+            ScreencopyPolicy::Deny => {
+                frame.failed();
+                return;
+            }
+            policy @ (ScreencopyPolicy::Ask | ScreencopyPolicy::AskSafe) => {
+                let fallback = policy == ScreencopyPolicy::AskSafe;
+                let credentials = _client.get_credentials(_handle);
+                let (Some(subject), Some(auth)) = (
+                    credentials.ok().and_then(|c| subject(&c)),
+                    state.screencopy_auth.clone(),
+                ) else {
+                    if fallback {
+                        announce(&frame, output, region, overlay_cursor);
+                    } else {
+                        frame.failed();
+                    }
+                    return;
+                };
+                let token = state.next_screencopy_token();
+                state.screencopy_auth_pending.insert(
+                    token,
+                    ScreencopyAuthPending {
+                        frame: frame.clone(),
+                        output,
+                        region,
+                        overlay_cursor,
+                    },
+                );
+                auth.request(token, subject, fallback);
+                return;
+            }
         }
-        *frame
-            .data::<ScreencopyFrameData>()
-            .expect("initialized above")
-            .inner
-            .lock()
-            .expect("screencopy frame lock poisoned") = Some(PendingFrame {
-            output,
-            region,
-            overlay_cursor,
-        });
+
+        announce(&frame, output, region, overlay_cursor);
     }
 }
 
@@ -342,7 +431,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameData> for BlairState {
         let (buffer, with_damage) = match request {
             zwlr_screencopy_frame_v1::Request::Copy { buffer } => (buffer, false),
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
-            zwlr_screencopy_frame_v1::Request::Destroy => return,
+            zwlr_screencopy_frame_v1::Request::Destroy => {
+                state
+                    .screencopy_auth_pending
+                    .retain(|_, pending| pending.frame.id() != frame.id());
+                return;
+            }
             _ => return,
         };
         let Some(pending) = data

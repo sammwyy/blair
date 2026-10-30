@@ -36,6 +36,13 @@ curve = "ease-in-out"
 # Enables the built-in D-Bus transport integration.
 dbus = true
 
+# Who may capture the screen through `wlr-screencopy`:
+#   ask      - consult the Coconut permission service; deny if unreachable (default)
+#   ask-safe - consult the service; allow if unreachable
+#   allow    - every client may capture, no permission checks
+#   deny     - no client may capture
+screencopy = "ask"
+
 # Falls back to XCURSOR_THEME/XCURSOR_SIZE, then to the "default" theme at 24.
 [cursor]
 theme = "Adwaita"

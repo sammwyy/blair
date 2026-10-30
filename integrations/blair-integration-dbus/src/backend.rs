@@ -31,17 +31,25 @@ impl EventChannel for DbusEventChannel {
 
 impl DbusIntegration {
     /// `wake` is called after every queued request so the compositor's event
-    /// loop picks it up without polling.
-    pub fn start(wake: Arc<dyn Fn() + Send + Sync>, environment: Vec<(String, String)>) -> Self {
+    /// loop picks it up without polling. The returned `ScreencopyAuth` lets
+    /// the compositor forward consent requests to the permission service.
+    pub fn start(
+        wake: Arc<dyn Fn() + Send + Sync>,
+        environment: Vec<(String, String)>,
+    ) -> (Self, crate::auth::ScreencopyAuth) {
         let (commands_tx, commands) = CommandSender::channel(wake.clone());
         let (events_tx, events_rx) = events::channel();
-        let thread = crate::server::serve(commands_tx, events_rx, environment);
-        Self {
-            commands,
-            wake,
-            events: Arc::new(DbusEventChannel(events_tx)),
-            _thread: thread,
-        }
+        let (auth, auth_rx) = crate::auth::channel();
+        let thread = crate::server::serve(commands_tx, events_rx, environment, auth_rx);
+        (
+            Self {
+                commands,
+                wake,
+                events: Arc::new(DbusEventChannel(events_tx)),
+                _thread: thread,
+            },
+            auth,
+        )
     }
 
     pub fn event_channel(&self) -> Arc<dyn EventChannel> {
@@ -215,6 +223,9 @@ fn execute(command: Command, backend: &mut dyn CompositorApi) {
         }
         Command::ClientDisconnected(client) => backend.unregister_client(&client),
         Command::ThemeChanged => backend.theme_changed(),
+        Command::ScreencopyVerdict { token, allowed } => {
+            backend.screencopy_verdict(token, allowed)
+        }
         Command::Quit => backend.quit(),
     }
 }

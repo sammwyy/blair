@@ -12,6 +12,7 @@ use crate::state::BlairState;
 pub struct Integrations {
     transports: Vec<Box<dyn Transport>>,
     events: Arc<dyn EventChannel>,
+    screencopy_auth: Option<blair_integration_dbus::ScreencopyAuth>,
 }
 
 impl Integrations {
@@ -24,19 +25,28 @@ impl Integrations {
     ) -> Self {
         let mut transports: Vec<Box<dyn Transport>> = Vec::new();
         let mut event_channels = Vec::new();
+        let mut screencopy_auth = None;
         if dbus_enabled {
-            let dbus = DbusIntegration::start(wake, environment);
+            let (dbus, auth) = DbusIntegration::start(wake, environment);
+            screencopy_auth = Some(auth);
             event_channels.push(dbus.event_channel());
             transports.push(Box::new(dbus));
         }
         Self {
             transports,
             events: Arc::new(EventFanout::new(event_channels)),
+            screencopy_auth,
         }
     }
 
     pub fn event_channel(&self) -> Arc<dyn EventChannel> {
         self.events.clone()
+    }
+
+    /// Channel the screencopy dispatcher uses to reach the permission
+    /// service; absent when D-Bus is disabled.
+    pub fn screencopy_auth(&self) -> Option<blair_integration_dbus::ScreencopyAuth> {
+        self.screencopy_auth.clone()
     }
 
     pub fn drain(&mut self, state: &mut BlairState) {
@@ -447,6 +457,10 @@ impl CompositorApi for BlairState {
 
     fn theme_changed(&mut self) {
         self.reload_system_theme();
+    }
+
+    fn screencopy_verdict(&mut self, token: u64, allowed: bool) {
+        crate::screencopy::verdict(self, token, allowed);
     }
 
     fn quit(&mut self) {

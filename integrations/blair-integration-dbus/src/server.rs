@@ -17,11 +17,13 @@ use creamui_theme_watch::{
 };
 
 /// Starts the D-Bus service thread. `environment` is published to the bus so
-/// D-Bus activated services inherit the session variables.
+/// D-Bus activated services inherit the session variables. `auth` receives
+/// screencopy consent requests headed for `org.coconut.Permissions1`.
 pub fn serve(
     commands: CommandSender,
     events: EventReceiver,
     environment: Vec<(String, String)>,
+    auth: tokio::sync::mpsc::UnboundedReceiver<crate::auth::AuthRequest>,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("blair-integration-dbus".into())
@@ -40,7 +42,7 @@ pub fn serve(
             let result = runtime.block_on(async move {
                 tokio::select! {
                     _ = stopped.closed() => Ok(()),
-                    result = run(commands, events, environment) => result,
+                    result = run(commands, events, environment, auth) => result,
                 }
             });
             if let Err(err) = result {
@@ -54,6 +56,7 @@ async fn run(
     commands: CommandSender,
     mut events: EventReceiver,
     environment: Vec<(String, String)>,
+    auth: tokio::sync::mpsc::UnboundedReceiver<crate::auth::AuthRequest>,
 ) -> zbus::Result<()> {
     let interface = CompositorInterface::new(commands.clone());
     let connection = zbus::connection::Builder::session()?
@@ -159,6 +162,12 @@ async fn run(
         if let Err(error) = monitor_sleep(sleep_commands).await {
             tracing::warn!(%error, "could not monitor logind sleep preparation");
         }
+    });
+
+    let auth_commands = commands.clone();
+    let auth_connection = connection.clone();
+    monitors.spawn(async move {
+        crate::auth::run(auth_connection, auth, auth_commands).await;
     });
 
     let result = forward_events(&mut events, |item| emit_item(&iface_ref, item));

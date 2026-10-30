@@ -52,7 +52,9 @@ pub fn is_modifier_keycode(code: u32) -> bool {
 }
 
 fn is_media_keycode(code: u32) -> bool {
-    matches!(code, 113..=115 | 163..=166 | 224 | 225 | 248)
+    // 99 is Print Screen: like media keys it is safe to bind without a
+    // modifier because no application uses it as regular text input.
+    matches!(code, 99 | 113..=115 | 163..=166 | 224 | 225 | 248)
 }
 
 pub fn shortcut_keycode(name: &str) -> Option<u32> {

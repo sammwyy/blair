@@ -279,6 +279,21 @@ impl AutostartConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct IntegrationsConfig {
     pub dbus: bool,
+    /// Who may capture the screen through `wlr-screencopy`.
+    /// `allow` admits every client; `ask` asks the permission service and
+    /// denies when it is unreachable; `ask-safe` falls back to allow;
+    /// `deny` rejects everything.
+    pub screencopy: ScreencopyPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScreencopyPolicy {
+    Allow,
+    #[default]
+    Ask,
+    AskSafe,
+    Deny,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -912,7 +927,10 @@ impl Default for GeneralConfig {
 
 impl Default for IntegrationsConfig {
     fn default() -> Self {
-        Self { dbus: true }
+        Self {
+            dbus: true,
+            screencopy: ScreencopyPolicy::Ask,
+        }
     }
 }
 

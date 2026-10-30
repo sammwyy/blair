@@ -102,6 +102,9 @@ pub trait CompositorApi {
     fn unregister_client(&mut self, client: &str);
     /// The CreamUI system theme changed and should be reloaded.
     fn theme_changed(&mut self);
+    /// The permission service answered a `screencopy` consent request:
+    /// resume or fail the pending capture identified by `token`.
+    fn screencopy_verdict(&mut self, token: u64, allowed: bool);
     fn quit(&mut self);
 }
 

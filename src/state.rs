@@ -238,6 +238,12 @@ pub struct BlairState {
     pub pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     pub screenshots: Screenshots,
     pub pending_captures: Vec<ScreencopyRequest>,
+    /// Captures parked while the permission service decides.
+    pub screencopy_auth_pending: std::collections::HashMap<u64, crate::screencopy::ScreencopyAuthPending>,
+    /// Handle the D-Bus integration uses to reach `org.coconut.Permissions1`.
+    /// Absent when the D-Bus integration is disabled.
+    pub screencopy_auth: Option<blair_integration_dbus::ScreencopyAuth>,
+    screencopy_auth_token: u64,
     pub input_config_changed: bool,
     pub input_devices: crate::input_devices::InputDevices,
     pub pending_display_requests: Vec<crate::outputs::DisplayRequest>,
@@ -435,6 +441,9 @@ impl BlairState {
             pending_dmabuf_imports: Vec::new(),
             screenshots: Screenshots::default(),
             pending_captures: Vec::new(),
+            screencopy_auth_pending: std::collections::HashMap::new(),
+            screencopy_auth: None,
+            screencopy_auth_token: 0,
             input_config_changed: false,
             input_devices: crate::input_devices::InputDevices::default(),
             pending_display_requests: Vec::new(),
@@ -660,6 +669,17 @@ impl BlairState {
         self.child_env.retain(|(key, _)| key != "WAYLAND_DISPLAY");
         self.child_env
             .push(("WAYLAND_DISPLAY".into(), socket.to_owned()));
+    }
+
+    /// Installs the channel screencopy requests use to reach the permission
+    /// service. Called once during backend setup when D-Bus is enabled.
+    pub fn set_screencopy_auth(&mut self, auth: blair_integration_dbus::ScreencopyAuth) {
+        self.screencopy_auth = Some(auth);
+    }
+
+    pub(crate) fn next_screencopy_token(&mut self) -> u64 {
+        self.screencopy_auth_token += 1;
+        self.screencopy_auth_token
     }
 
     pub(crate) fn replace_static_bindings(&mut self, bindings: &[BindingConfig]) {
