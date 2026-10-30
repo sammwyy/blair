@@ -9,20 +9,29 @@ use blair_protocol::{ShortcutBinding, ShortcutCommand};
 
 pub struct CompositorInterface {
     commands: CommandSender,
+    auth: crate::auth::ScreencopyAuth,
+    pending: tokio::sync::Semaphore,
 }
 
 #[cfg(test)]
 mod tests;
 
 impl CompositorInterface {
-    pub fn new(commands: CommandSender) -> Self {
-        Self { commands }
+    pub fn new(commands: CommandSender, auth: crate::auth::ScreencopyAuth) -> Self {
+        Self {
+            commands,
+            auth,
+            pending: tokio::sync::Semaphore::new(128),
+        }
     }
 
     async fn call<T>(
         &self,
         build: impl FnOnce(oneshot::Sender<T>) -> Command,
     ) -> zbus::fdo::Result<T> {
+        let _permit = self.pending.try_acquire().map_err(|_| {
+            zbus::fdo::Error::LimitsExceeded("Too many pending compositor calls".into())
+        })?;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.commands.send(build(reply_tx))?;
         reply_rx
@@ -31,10 +40,8 @@ impl CompositorInterface {
     }
 }
 
-// Serialized dispatch bounds the tasks waiting for compositor replies.
 #[interface(
     interface = "org.blair.Compositor1",
-    spawn = false,
     proxy(
         async_name = "CompositorProxy",
         gen_blocking = false,
@@ -164,10 +171,70 @@ impl CompositorInterface {
 
     /// Writes a PNG screenshot of `output` (empty selects the focused one)
     /// to the absolute `path`.
-    async fn screenshot(&self, output: &str, path: &str) -> zbus::fdo::Result<bool> {
+    async fn screenshot(
+        &self,
+        output: &str,
+        path: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<bool> {
+        use blair_integration::CapturePolicy;
+        if !std::path::Path::new(path).is_absolute()
+            || output.len().saturating_add(path.len()) > 65536
+        {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Invalid screenshot output or path".into(),
+            ));
+        }
+        let policy = self.call(Command::ScreenCapturePolicy).await?;
+        match policy {
+            CapturePolicy::Deny => return Ok(false),
+            CapturePolicy::Allow => {}
+            CapturePolicy::Ask | CapturePolicy::AskSafe => {
+                let owner = header
+                    .sender()
+                    .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing caller".into()))?
+                    .to_string();
+                let fallback = policy == CapturePolicy::AskSafe;
+                let subject = async {
+                    let reply = connection
+                        .call_method(
+                            Some("org.freedesktop.DBus"),
+                            "/org/freedesktop/DBus",
+                            Some("org.freedesktop.DBus"),
+                            "GetConnectionUnixProcessID",
+                            &owner,
+                        )
+                        .await?;
+                    let pid: u32 = reply.body().deserialize()?;
+                    Ok::<_, zbus::Error>(crate::auth::capture_subject(pid))
+                }
+                .await;
+                let allowed = match subject {
+                    Ok(Some(subject)) => {
+                        match self.auth.authorize(subject, fallback, owner).await {
+                            Ok(allowed) => allowed,
+                            Err(crate::auth::AdmissionError::Unavailable) => fallback,
+                            Err(crate::auth::AdmissionError::Full) => {
+                                return Err(zbus::fdo::Error::LimitsExceeded(
+                                    "Capture permission queue is full".into(),
+                                ))
+                            }
+                        }
+                    }
+                    result => {
+                        tracing::warn!(?result, "could not identify screenshot caller");
+                        fallback
+                    }
+                };
+                if !allowed {
+                    return Ok(false);
+                }
+            }
+        }
         self.call(|reply| Command::Screenshot {
-            output: output.to_owned(),
-            path: path.to_owned(),
+            output: output.into(),
+            path: path.into(),
             reply,
         })
         .await

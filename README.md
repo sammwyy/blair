@@ -181,11 +181,57 @@ for the full schema.
 Blair supports the core Wayland protocols plus xdg-shell, xdg-decoration,
 layer-shell, linux-dmabuf, presentation-time, fractional-scale, screencopy,
 data control, and KDE server decoration. Tools that use `wlr-screencopy`, such
-as `grim` and `wf-recorder`, work out of the box.
+as `grim` and `wf-recorder`, use the configured screen-capture permission policy.
 
 The D-Bus service is `org.blair.Compositor` at `/org/blair/Compositor`, using
 the `org.blair.Compositor1` interface. It exposes window and workspace control,
 outputs, settings, shortcuts, screenshots, and render statistics.
+
+## Screen capture permissions
+
+`integrations.screencopy` governs both `wlr-screencopy` requests and the
+`org.blair.Compositor1.Screenshot` D-Bus method:
+
+| Policy | Behavior |
+| --- | --- |
+| `ask` (default) | Ask Coconut's permission service; deny if unavailable. |
+| `ask-safe` | Ask the service; allow if unavailable. |
+| `allow` | Allow capture without a permission prompt. |
+| `deny` | Reject requests without contacting the permission service. |
+
+Install the current Coconut permission portal alongside Blair. The cancellable
+native protocol uses `BeginRequest`, `WaitRequest`, and `CancelRequest` on
+`org.coconut.Permissions1`. An older portal without those methods is treated as
+unavailable. Install the updated portal before running the updated compositor.
+
+The compositor identifies Wayland clients from their socket credentials and
+D-Bus callers from their bus credentials. Subjects are executable paths or
+Flatpak application IDs. The caller cannot supply a different application's
+identity to the screenshot method.
+
+Authorization is asynchronous, with at most 64 outstanding requests. A prompt
+for one application does not block requests for another or unrelated D-Bus
+methods. Admission rejects overload under every policy that uses the service;
+`ask-safe` does not bypass a full local authorization queue. Ordinary D-Bus
+calls have a separate limit of 128 pending compositor replies.
+
+Capture verdicts use a bounded completion table and the compositor's wakeup
+source, so a full general command queue cannot discard them. Transport shutdown
+resolves pending requests using their configured unavailable-service policy.
+Frame destruction and client disconnection cancel the corresponding request.
+The portal closes a shared prompt only after its final waiter is cancelled.
+D-Bus client disconnection cancels its pending screenshot consent as well.
+
+Validation includes private D-Bus service tests and Wayland protocol tests:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets --no-deps -- -D warnings
+cargo fmt --all -- --check
+```
+
+The capture lifecycle tests do not require a GPU. Tests marked as requiring EGL
+remain opt-in for native rendering validation.
 
 ## Recovery
 

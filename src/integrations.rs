@@ -189,8 +189,23 @@ impl CompositorApi for BlairState {
         BlairState::outputs(self)
     }
 
+    fn screen_capture_policy(&self) -> blair_integration::CapturePolicy {
+        use crate::config::ScreencopyPolicy;
+        use blair_integration::CapturePolicy;
+        match self.config.integrations.screencopy {
+            ScreencopyPolicy::Allow => CapturePolicy::Allow,
+            ScreencopyPolicy::Deny => CapturePolicy::Deny,
+            ScreencopyPolicy::Ask => CapturePolicy::Ask,
+            ScreencopyPolicy::AskSafe => CapturePolicy::AskSafe,
+        }
+    }
+
     fn screenshot(&mut self, output: &str, path: &str, reply: Box<dyn FnOnce(bool) + Send>) {
-        self.request_screenshot(output, path, reply);
+        if self.config.integrations.screencopy == crate::config::ScreencopyPolicy::Deny {
+            reply(false);
+        } else {
+            self.request_screenshot(output, path, reply);
+        }
     }
 
     fn render_stats(&self) -> RenderStats {

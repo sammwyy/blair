@@ -279,7 +279,7 @@ impl AutostartConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct IntegrationsConfig {
     pub dbus: bool,
-    /// Who may capture the screen through `wlr-screencopy`.
+    /// Who may capture the screen through Wayland or D-Bus.
     /// `allow` admits every client; `ask` asks the permission service and
     /// denies when it is unreachable; `ask-safe` falls back to allow;
     /// `deny` rejects everything.

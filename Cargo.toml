@@ -108,6 +108,7 @@ tracy-client = { version = "0.18", optional = true }
 delib = { version = "0.1.0", path = "../delib" }
 
 [dev-dependencies]
+blair-integration-dbus = { workspace = true, features = ["test-support"] }
 blair-window-integration-protocol = { workspace = true, features = ["client"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }

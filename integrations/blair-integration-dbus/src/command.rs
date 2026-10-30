@@ -184,10 +184,7 @@ pub enum Command {
     },
     ClientDisconnected(String),
     ThemeChanged,
-    ScreencopyVerdict {
-        token: u64,
-        allowed: bool,
-    },
+    ScreenCapturePolicy(oneshot::Sender<blair_integration::CapturePolicy>),
     Quit,
 }
 
@@ -215,7 +212,6 @@ impl Command {
                         .saturating_add(binding.argument.as_ref().map_or(0, String::capacity))
                 },
             ),
-            Self::ScreencopyVerdict { .. } => 0,
             Self::BindShortcut {
                 client,
                 id,
@@ -237,7 +233,8 @@ impl Command {
             Self::UnbindShortcut { client, id } | Self::UnregisterWindowRule { client, id } => {
                 client.capacity().saturating_add(id.capacity())
             }
-            Self::DisplayInfo(_)
+            Self::ScreenCapturePolicy(_)
+            | Self::DisplayInfo(_)
             | Self::ListWindows(_)
             | Self::ListWorkspaces(_)
             | Self::DestroyWorkspace(_, _)

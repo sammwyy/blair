@@ -17,6 +17,7 @@ pub struct DbusIntegration {
     wake: Arc<dyn Fn() + Send + Sync>,
     events: Arc<DbusEventChannel>,
     _thread: JoinHandle<()>,
+    auth: crate::auth::ScreencopyAuth,
 }
 
 struct DbusEventChannel(EventSender);
@@ -39,14 +40,16 @@ impl DbusIntegration {
     ) -> (Self, crate::auth::ScreencopyAuth) {
         let (commands_tx, commands) = CommandSender::channel(wake.clone());
         let (events_tx, events_rx) = events::channel();
-        let (auth, auth_rx) = crate::auth::channel();
-        let thread = crate::server::serve(commands_tx, events_rx, environment, auth_rx);
+        let (auth, auth_rx) = crate::auth::channel(wake.clone());
+        let thread =
+            crate::server::serve(commands_tx, events_rx, environment, auth_rx, auth.clone());
         (
             Self {
                 commands,
                 wake,
                 events: Arc::new(DbusEventChannel(events_tx)),
                 _thread: thread,
+                auth: auth.clone(),
             },
             auth,
         )
@@ -59,6 +62,8 @@ impl DbusIntegration {
 
 impl Transport for DbusIntegration {
     fn drain(&mut self, compositor: &mut dyn CompositorApi) {
+        self.auth
+            .drain(|token, allowed| compositor.screencopy_verdict(token, allowed));
         dispatch_batch(&mut self.commands, self.wake.as_ref(), |command| {
             execute(command, compositor)
         });
@@ -148,6 +153,9 @@ fn execute(command: Command, backend: &mut dyn CompositorApi) {
                 let _ = reply.send(result);
             }),
         ),
+        Command::ScreenCapturePolicy(reply) => {
+            let _ = reply.send(backend.screen_capture_policy());
+        }
         Command::RenderStats(reply) => {
             let _ = reply.send(backend.render_stats());
         }
@@ -223,9 +231,6 @@ fn execute(command: Command, backend: &mut dyn CompositorApi) {
         }
         Command::ClientDisconnected(client) => backend.unregister_client(&client),
         Command::ThemeChanged => backend.theme_changed(),
-        Command::ScreencopyVerdict { token, allowed } => {
-            backend.screencopy_verdict(token, allowed)
-        }
         Command::Quit => backend.quit(),
     }
 }

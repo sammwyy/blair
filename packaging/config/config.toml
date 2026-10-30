@@ -36,7 +36,7 @@ curve = "ease-in-out"
 # Enables the built-in D-Bus transport integration.
 dbus = true
 
-# Who may capture the screen through `wlr-screencopy`:
+# Who may capture the screen through wlr-screencopy or D-Bus:
 #   ask      - consult the Coconut permission service; deny if unreachable (default)
 #   ask-safe - consult the service; allow if unreachable
 #   allow    - every client may capture, no permission checks

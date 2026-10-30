@@ -228,7 +228,10 @@ fn init_integrations(
     handle: &LoopHandle<'static, BlairState>,
     config: &CompositorConfig,
     environment: Vec<(String, String)>,
-) -> Result<(Arc<dyn EventChannel>, Option<blair_integration_dbus::ScreencopyAuth>)> {
+) -> Result<(
+    Arc<dyn EventChannel>,
+    Option<blair_integration_dbus::ScreencopyAuth>,
+)> {
     let (ping, source) =
         calloop::ping::make_ping().context("failed to create the integration wake-up source")?;
     let mut integrations = Integrations::start(

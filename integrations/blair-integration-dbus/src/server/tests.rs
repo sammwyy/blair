@@ -66,7 +66,10 @@ async fn wire_signals_preserve_coalesced_lifecycles_and_expose_resets() {
         let (commands, _receiver) = CommandSender::channel(Arc::new(|| {}));
         let server = bus
             .builder()
-            .serve_at(OBJECT_PATH, CompositorInterface::new(commands))
+            .serve_at(
+                OBJECT_PATH,
+                CompositorInterface::new(commands, crate::auth::channel(Arc::new(|| {})).0),
+            )
             .unwrap()
             .build()
             .await
@@ -122,6 +125,85 @@ async fn wire_signals_preserve_coalesced_lifecycles_and_expose_resets() {
             .unwrap();
         let message = signals.next().await.unwrap();
         assert_eq!(message.header().member().unwrap().as_str(), "EventsReset");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn real_client_disconnect_cancels_capture_but_forged_signals_do_not() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (bus, _portal, server, mut portal_events, _release) =
+            crate::auth::tests::fixture_with(true, true).await;
+        let (commands, mut queued) = CommandSender::channel(Arc::new(|| {}));
+        let (_events, events_rx) = events::channel();
+        let (auth, auth_rx) = crate::auth::channel(Arc::new(|| {}));
+        let server_copy = server.clone();
+        let service = tokio::spawn(run_connection(
+            server_copy,
+            commands,
+            events_rx,
+            Vec::new(),
+            auth_rx,
+            auth,
+        ));
+        let client = bus.builder().build().await.unwrap();
+        let bus_proxy = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        while !bus_proxy
+            .name_has_owner(SERVICE_NAME.try_into().unwrap())
+            .await
+            .unwrap()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let proxy = crate::CompositorProxy::new(&client).await.unwrap();
+        let capture =
+            tokio::spawn(async move { proxy.screenshot("screen", "/tmp/capture.png").await });
+        let Command::ScreenCapturePolicy(reply) = queued.recv().await.unwrap().command else {
+            panic!("missing policy check");
+        };
+        reply.send(blair_integration::CapturePolicy::Ask).unwrap();
+        let subject = crate::capture_subject(std::process::id()).unwrap();
+        assert_eq!(
+            portal_events.recv().await.unwrap(),
+            format!("begin:{subject}")
+        );
+        let attacker = bus.builder().build().await.unwrap();
+        attacker
+            .emit_signal(
+                None::<&str>,
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameOwnerChanged",
+                &(
+                    client.unique_name().unwrap().as_str(),
+                    client.unique_name().unwrap().as_str(),
+                    "",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), portal_events.recv())
+                .await
+                .is_err()
+        );
+        assert!(!capture.is_finished());
+        client.close().await.unwrap();
+        assert_eq!(
+            portal_events.recv().await.unwrap(),
+            format!("cancel:{subject}")
+        );
+        loop {
+            match queued.recv().await.unwrap().command {
+                Command::ClientDisconnected(_) => break,
+                Command::Screenshot { .. } => panic!("disconnected caller was allowed to capture"),
+                _ => {}
+            }
+        }
+        let _ = capture.await;
+        service.abort();
+        let _ = service.await;
     })
     .await
     .unwrap();

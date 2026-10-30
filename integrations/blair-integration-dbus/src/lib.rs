@@ -9,7 +9,7 @@ mod wire;
 #[doc(hidden)]
 pub mod test_support;
 
-pub use auth::ScreencopyAuth;
+pub use auth::{capture_subject, AdmissionError, AuthTicket, ScreencopyAuth};
 pub use backend::DbusIntegration;
 pub use interface::{CompositorInterface, CompositorProxy};
 pub use server::serve;

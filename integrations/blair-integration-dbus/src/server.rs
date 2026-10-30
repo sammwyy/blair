@@ -23,7 +23,8 @@ pub fn serve(
     commands: CommandSender,
     events: EventReceiver,
     environment: Vec<(String, String)>,
-    auth: tokio::sync::mpsc::UnboundedReceiver<crate::auth::AuthRequest>,
+    auth: crate::auth::AuthReceiver,
+    auth_handle: crate::auth::ScreencopyAuth,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("blair-integration-dbus".into())
@@ -42,7 +43,7 @@ pub fn serve(
             let result = runtime.block_on(async move {
                 tokio::select! {
                     _ = stopped.closed() => Ok(()),
-                    result = run(commands, events, environment, auth) => result,
+                    result = run(commands, events, environment, auth, auth_handle) => result,
                 }
             });
             if let Err(err) = result {
@@ -54,16 +55,38 @@ pub fn serve(
 
 async fn run(
     commands: CommandSender,
+    events: EventReceiver,
+    environment: Vec<(String, String)>,
+    auth: crate::auth::AuthReceiver,
+    auth_handle: crate::auth::ScreencopyAuth,
+) -> zbus::Result<()> {
+    let connection = zbus::Connection::session().await?;
+    run_connection(connection, commands, events, environment, auth, auth_handle).await
+}
+
+async fn run_connection(
+    connection: zbus::Connection,
+    commands: CommandSender,
     mut events: EventReceiver,
     environment: Vec<(String, String)>,
-    auth: tokio::sync::mpsc::UnboundedReceiver<crate::auth::AuthRequest>,
+    auth: crate::auth::AuthReceiver,
+    auth_handle: crate::auth::ScreencopyAuth,
 ) -> zbus::Result<()> {
-    let interface = CompositorInterface::new(commands.clone());
-    let connection = zbus::connection::Builder::session()?
-        .name(SERVICE_NAME)?
-        .serve_at(OBJECT_PATH, interface)?
-        .build()
+    let rule = MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .build();
+    let mut disconnects = MessageStream::for_match_rule(rule, &connection, Some(256)).await?;
+    connection
+        .object_server()
+        .at(
+            OBJECT_PATH,
+            CompositorInterface::new(commands.clone(), auth_handle.clone()),
+        )
         .await?;
+    connection.request_name(SERVICE_NAME).await?;
 
     let iface_ref = connection
         .object_server()
@@ -84,29 +107,9 @@ async fn run(
     let mut monitors = tokio::task::JoinSet::new();
 
     let disconnect_commands = commands.clone();
-    let disconnect_connection = connection.clone();
+    let disconnect_auth = auth_handle;
     monitors.spawn(async move {
-        let rule = match MatchRule::builder()
-            .msg_type(MessageType::Signal)
-            .interface("org.freedesktop.DBus")
-            .and_then(|builder| builder.member("NameOwnerChanged"))
-            .map(|builder| builder.build())
-        {
-            Ok(rule) => rule,
-            Err(err) => {
-                tracing::warn!(%err, "failed to subscribe to D-Bus client disconnects");
-                return;
-            }
-        };
-        let mut stream =
-            match MessageStream::for_match_rule(rule, &disconnect_connection, None).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    tracing::warn!(%err, "failed to monitor D-Bus client disconnects");
-                    return;
-                }
-            };
-        while let Some(Ok(message)) = stream.next().await {
+        while let Some(Ok(message)) = disconnects.next().await {
             let Some(signal) = NameOwnerChanged::from_message(message) else {
                 continue;
             };
@@ -116,6 +119,7 @@ async fn run(
             if !args.name().as_str().starts_with(':') || args.new_owner().is_some() {
                 continue;
             }
+            disconnect_auth.disconnect(args.name().as_str());
             if let Err(error) = disconnect_commands
                 .send_control(Command::ClientDisconnected(args.name().to_string()))
                 .await
@@ -164,10 +168,9 @@ async fn run(
         }
     });
 
-    let auth_commands = commands.clone();
     let auth_connection = connection.clone();
     monitors.spawn(async move {
-        crate::auth::run(auth_connection, auth, auth_commands).await;
+        crate::auth::run(auth_connection, auth).await;
     });
 
     let result = forward_events(&mut events, |item| emit_item(&iface_ref, item));

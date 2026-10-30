@@ -11,9 +11,9 @@ use smithay::{
             zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
         },
         wayland_server::{
+            backend::ClientId,
             protocol::{wl_buffer::WlBuffer, wl_shm},
-            backend::Credentials, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
-            Resource,
+            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
     utils::{Physical, Rectangle, Size, Transform},
@@ -236,6 +236,7 @@ pub struct ScreencopyAuthPending {
     pub output: Output,
     pub region: Rectangle<i32, Physical>,
     pub overlay_cursor: bool,
+    pub _ticket: blair_integration_dbus::AuthTicket,
 }
 
 /// Announces the capture geometry to the client and stores the request
@@ -278,27 +279,29 @@ pub fn verdict(state: &mut BlairState, token: u64, allowed: bool) {
     if !frame.is_alive() {
         return;
     }
-    if !allowed {
+    if !allowed || state.config.integrations.screencopy == ScreencopyPolicy::Deny {
         frame.failed();
         return;
     }
-    announce(&frame, pending.output, pending.region, pending.overlay_cursor);
+    announce(
+        &frame,
+        pending.output,
+        pending.region,
+        pending.overlay_cursor,
+    );
 }
 
-/// Executable path or `flatpak:<app-id>` identifying the requesting client,
-/// used as the permission store subject.
-fn subject(credentials: &Credentials) -> Option<String> {
-    let pid = credentials.pid;
-    if let Ok(info) = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")) {
-        for line in info.lines() {
-            if let Some(name) = line.strip_prefix("name=") {
-                return Some(format!("flatpak:{name}"));
-            }
-        }
-    }
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned())
+fn cancel_frame(state: &mut BlairState, frame: &ZwlrScreencopyFrameV1, data: &ScreencopyFrameData) {
+    state
+        .screencopy_auth_pending
+        .retain(|_, pending| pending.frame.id() != frame.id());
+    state
+        .pending_captures
+        .retain(|pending| pending.frame.id() != frame.id());
+    data.inner
+        .lock()
+        .expect("screencopy frame lock poisoned")
+        .take();
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for BlairState {
@@ -389,7 +392,10 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BlairState {
                 let fallback = policy == ScreencopyPolicy::AskSafe;
                 let credentials = _client.get_credentials(_handle);
                 let (Some(subject), Some(auth)) = (
-                    credentials.ok().and_then(|c| subject(&c)),
+                    credentials
+                        .ok()
+                        .and_then(|c| u32::try_from(c.pid).ok())
+                        .and_then(blair_integration_dbus::capture_subject),
                     state.screencopy_auth.clone(),
                 ) else {
                     if fallback {
@@ -399,17 +405,27 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BlairState {
                     }
                     return;
                 };
-                let token = state.next_screencopy_token();
-                state.screencopy_auth_pending.insert(
-                    token,
-                    ScreencopyAuthPending {
-                        frame: frame.clone(),
-                        output,
-                        region,
-                        overlay_cursor,
-                    },
-                );
-                auth.request(token, subject, fallback);
+                match auth.request(subject, fallback) {
+                    Ok(ticket) => {
+                        state.screencopy_auth_pending.insert(
+                            ticket.token(),
+                            ScreencopyAuthPending {
+                                frame: frame.clone(),
+                                output,
+                                region,
+                                overlay_cursor,
+                                _ticket: ticket,
+                            },
+                        );
+                    }
+                    Err(blair_integration_dbus::AdmissionError::Unavailable) if fallback => {
+                        announce(&frame, output, region, overlay_cursor);
+                    }
+                    Err(error) => {
+                        tracing::warn!(?error, "capture authorization could not be queued");
+                        frame.failed();
+                    }
+                }
                 return;
             }
         }
@@ -432,9 +448,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameData> for BlairState {
             zwlr_screencopy_frame_v1::Request::Copy { buffer } => (buffer, false),
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
             zwlr_screencopy_frame_v1::Request::Destroy => {
-                state
-                    .screencopy_auth_pending
-                    .retain(|_, pending| pending.frame.id() != frame.id());
+                cancel_frame(state, frame, data);
                 return;
             }
             _ => return,
@@ -451,6 +465,10 @@ impl Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameData> for BlairState {
             );
             return;
         };
+        if state.config.integrations.screencopy == ScreencopyPolicy::Deny {
+            frame.failed();
+            return;
+        }
         state.pending_captures.push(ScreencopyRequest {
             frame: frame.clone(),
             buffer,
@@ -460,5 +478,14 @@ impl Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameData> for BlairState {
             with_damage,
         });
         state.request_redraw();
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        frame: &ZwlrScreencopyFrameV1,
+        data: &ScreencopyFrameData,
+    ) {
+        cancel_frame(state, frame, data);
     }
 }

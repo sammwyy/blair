@@ -53,6 +53,7 @@ fn protocol_captures_reuse_the_frame_and_preserve_cursor_fallbacks() {
     let egl = EglTest::new();
     let mut renderer = egl.renderer();
     let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    state.config.integrations.screencopy = crate::config::ScreencopyPolicy::Allow;
     state.config.accessibility.zoom = true;
     state.config.accessibility.zoom_factor = 2.0;
     let output = crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));

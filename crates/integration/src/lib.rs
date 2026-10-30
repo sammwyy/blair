@@ -6,6 +6,14 @@ use blair_protocol::{
     CompositorEvent, Rect, RenderStats, ShortcutBinding, WindowId, WindowInfo, WorkspaceInfo,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapturePolicy {
+    Allow,
+    Deny,
+    Ask,
+    AskSafe,
+}
+
 /// Receives compositor events. Integrations provide implementations for their
 /// own transport; the compositor never needs to know the transport details.
 pub trait EventChannel: Send + Sync {
@@ -66,6 +74,7 @@ pub trait CompositorApi {
     fn move_resize_window(&mut self, id: WindowId, geometry: Rect) -> bool;
     fn work_area(&self, output: &str) -> Rect;
     fn outputs(&self) -> Vec<String>;
+    fn screen_capture_policy(&self) -> CapturePolicy;
     /// Renders `output` (empty selects the focused one) into a PNG at `path`.
     fn screenshot(&mut self, output: &str, path: &str, reply: Box<dyn FnOnce(bool) + Send>);
     /// Frame timings of the most recent reporting interval.

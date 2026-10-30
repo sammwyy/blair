@@ -157,3 +157,173 @@ fn framebuffer_readback_matches_canonical_pixels_for_every_output_transform() {
         }
     }
 }
+
+#[test]
+fn closed_authorization_transport_resolves_frames_according_to_policy() {
+    use crate::test_support::TestClient;
+    use wayland_client::protocol::wl_output::WlOutput;
+    use wayland_protocols_wlr::screencopy::v1::client::{
+        zwlr_screencopy_frame_v1::Event, zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    };
+    for (policy, allowed) in [
+        (ScreencopyPolicy::Ask, false),
+        (ScreencopyPolicy::AskSafe, true),
+    ] {
+        let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+        state.config.integrations.screencopy = policy;
+        crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
+        let (auth, rx) = blair_integration_dbus::test_support::capture_auth();
+        drop(rx);
+        state.set_screencopy_auth(auth);
+        let mut client = TestClient::new(&mut display, &mut state);
+        let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
+        let output = client.bind::<WlOutput>(4);
+        let _frame = manager.capture_output(0, &output, &client.handle(), 0u32);
+        client.dispatch(&mut display, &mut state);
+        assert!(state.screencopy_auth_pending.is_empty());
+        assert_eq!(
+            client
+                .events
+                .screencopy
+                .iter()
+                .any(|(_, event)| matches!(event, Event::Buffer { .. })),
+            allowed
+        );
+        assert_eq!(
+            client
+                .events
+                .screencopy
+                .iter()
+                .any(|(_, event)| matches!(event, Event::Failed)),
+            !allowed
+        );
+    }
+}
+
+#[test]
+fn transport_shutdown_delivers_a_terminal_verdict_for_pending_frames() {
+    use crate::test_support::TestClient;
+    use wayland_client::protocol::wl_output::WlOutput;
+    use wayland_protocols_wlr::screencopy::v1::client::{
+        zwlr_screencopy_frame_v1::Event, zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    };
+    let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
+    let (auth, rx) = blair_integration_dbus::test_support::capture_auth();
+    state.set_screencopy_auth(auth.clone());
+    let mut client = TestClient::new(&mut display, &mut state);
+    let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
+    let output = client.bind::<WlOutput>(4);
+    let _frame = manager.capture_output(0, &output, &client.handle(), 0u32);
+    client.dispatch(&mut display, &mut state);
+    assert_eq!(state.screencopy_auth_pending.len(), 1);
+    drop(rx);
+    for (token, allowed) in blair_integration_dbus::test_support::capture_verdicts(&auth) {
+        verdict(&mut state, token, allowed);
+    }
+    client.dispatch(&mut display, &mut state);
+    assert!(state.screencopy_auth_pending.is_empty());
+    assert!(client
+        .events
+        .screencopy
+        .iter()
+        .any(|(_, event)| matches!(event, Event::Failed)));
+}
+
+#[test]
+fn frame_destruction_and_client_disconnect_cancel_authorization() {
+    use crate::test_support::TestClient;
+    use wayland_client::protocol::wl_output::WlOutput;
+    use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+    for explicit in [false, true] {
+        let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+        crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
+        let (auth, rx) = blair_integration_dbus::test_support::capture_auth();
+        state.set_screencopy_auth(auth.clone());
+        {
+            let mut client = TestClient::new(&mut display, &mut state);
+            let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
+            let output = client.bind::<WlOutput>(4);
+            let frame = manager.capture_output(0, &output, &client.handle(), 0u32);
+            client.dispatch(&mut display, &mut state);
+            assert_eq!(state.screencopy_auth_pending.len(), 1);
+            if explicit {
+                frame.destroy();
+                client.dispatch(&mut display, &mut state);
+                assert!(state.screencopy_auth_pending.is_empty());
+            }
+        }
+        display.dispatch_clients(&mut state).unwrap();
+        assert!(state.screencopy_auth_pending.is_empty());
+        drop(rx);
+        assert!(blair_integration_dbus::test_support::capture_verdicts(&auth).is_empty());
+    }
+}
+
+#[test]
+fn pending_capture_admission_is_bounded_even_under_ask_safe() {
+    use crate::test_support::TestClient;
+    use wayland_client::protocol::wl_output::WlOutput;
+    use wayland_protocols_wlr::screencopy::v1::client::{
+        zwlr_screencopy_frame_v1::Event, zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    };
+    let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    state.config.integrations.screencopy = ScreencopyPolicy::AskSafe;
+    crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
+    let (auth, _rx) = blair_integration_dbus::test_support::capture_auth();
+    state.set_screencopy_auth(auth);
+    let mut client = TestClient::new(&mut display, &mut state);
+    let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
+    let output = client.bind::<WlOutput>(4);
+    let _frames: Vec<_> = (0..65)
+        .map(|label| manager.capture_output(0, &output, &client.handle(), label))
+        .collect();
+    client.dispatch(&mut display, &mut state);
+    assert_eq!(state.screencopy_auth_pending.len(), 64);
+    assert_eq!(
+        client
+            .events
+            .screencopy
+            .iter()
+            .filter(|(_, event)| matches!(event, Event::Failed))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn deny_policy_rejects_a_pending_authorization_even_if_its_verdict_allows() {
+    use crate::test_support::TestClient;
+    use wayland_client::protocol::wl_output::WlOutput;
+    use wayland_protocols_wlr::screencopy::v1::client::{
+        zwlr_screencopy_frame_v1::Event, zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    };
+    let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    state.config.integrations.screencopy = ScreencopyPolicy::AskSafe;
+    crate::test_support::add_output(&mut state, "capture", (0, 0), (8, 6));
+    let (auth, rx) = blair_integration_dbus::test_support::capture_auth();
+    state.set_screencopy_auth(auth.clone());
+    let mut client = TestClient::new(&mut display, &mut state);
+    let manager = client.bind::<ZwlrScreencopyManagerV1>(3);
+    let output = client.bind::<WlOutput>(4);
+    let _frame = manager.capture_output(0, &output, &client.handle(), 0u32);
+    client.dispatch(&mut display, &mut state);
+    state.config.integrations.screencopy = ScreencopyPolicy::Deny;
+    drop(rx);
+    for (token, allowed) in blair_integration_dbus::test_support::capture_verdicts(&auth) {
+        assert!(allowed);
+        verdict(&mut state, token, allowed);
+    }
+    client.dispatch(&mut display, &mut state);
+    assert!(state.screencopy_auth_pending.is_empty());
+    assert!(client
+        .events
+        .screencopy
+        .iter()
+        .any(|(_, event)| matches!(event, Event::Failed)));
+    assert!(!client
+        .events
+        .screencopy
+        .iter()
+        .any(|(_, event)| matches!(event, Event::Buffer { .. })));
+}

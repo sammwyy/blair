@@ -38,3 +38,13 @@ impl Drop for Bus {
         let _ = self.child.wait();
     }
 }
+
+pub fn capture_auth() -> (crate::ScreencopyAuth, crate::auth::AuthReceiver) {
+    crate::auth::channel(std::sync::Arc::new(|| {}))
+}
+
+pub fn capture_verdicts(auth: &crate::ScreencopyAuth) -> Vec<(u64, bool)> {
+    let mut verdicts = Vec::new();
+    auth.drain(|token, allowed| verdicts.push((token, allowed)));
+    verdicts
+}
