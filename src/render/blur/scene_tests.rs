@@ -132,6 +132,147 @@ fn filtered(renderer: &mut GlesRenderer, shaders: &Shaders, pixels: &[u8]) -> Ve
 
 #[test]
 #[ignore = "requires an EGL device with OpenGL ES support"]
+fn window_and_titlebar_blur_stay_inside_rounded_content() {
+    use crate::config::TitlebarColorMode;
+    use crate::render::{output_elements, window_frame};
+    use smithay::backend::renderer::{damage::OutputDamageTracker, Color32F, Offscreen};
+
+    let egl = EglTest::new();
+    let (mut display, _event_loop, mut state) = crate::state::tests::fixture();
+    let mut config = state.config.clone();
+    config.animations.enabled = false;
+    config.window.layout = WindowLayout::Floating;
+    config.decorations.corner_radius = 12;
+    config.decorations.titlebar_color = TitlebarColorMode::Theme;
+    config.blur.radius = 2;
+    state.apply_config(config).unwrap();
+    let output = add_output(&mut state, "test", (0, 0), (128, 128));
+    let mut client = TestClient::new(&mut display, &mut state);
+    let surface = client
+        .bind::<WlCompositor>(6)
+        .create_surface(&client.handle(), ());
+    let shell = client
+        .bind::<XdgWmBase>(6)
+        .get_xdg_surface(&surface, &client.handle(), ());
+    let _toplevel = shell.get_toplevel(&client.handle(), ());
+    surface.commit();
+    client.dispatch(&mut display, &mut state);
+    attach_transparent(&client, &surface, 40, 32);
+    client
+        .bind::<BlairBlurManagerV1>(1)
+        .get_blur(&surface, &client.handle(), ())
+        .commit();
+    client.dispatch(&mut display, &mut state);
+    let id = *state.windows.keys().next().unwrap();
+    let window = state.windows[&id].window.clone();
+    let mut renderer = egl.renderer();
+    let shaders = Shaders::compile(&mut renderer).unwrap();
+
+    for (mode, titlebar_height) in [
+        (DecorationModeConfig::Server, 16),
+        (DecorationModeConfig::Server, 0),
+        (DecorationModeConfig::Client, 0),
+        (DecorationModeConfig::Hybrid, 0),
+    ] {
+        let mut config = state.config.clone();
+        config.decorations.mode = mode;
+        config.decorations.titlebar_height = titlebar_height;
+        state.apply_config(config).unwrap();
+        state.windows.get_mut(&id).unwrap().rules.opacity = Some(0.55);
+        for scale in [1.0, 1.25, 2.0] {
+            output.change_current_state(
+                None,
+                None,
+                Some(smithay::output::Scale::Fractional(scale)),
+                None,
+            );
+            state.output_changed(&output);
+            state.move_window(&window, (12, 24).into());
+            let frame = window_frame(&state, &window).unwrap();
+            let elements = output_elements(
+                &mut renderer,
+                &mut state,
+                &output,
+                Some(&shaders),
+                CursorMode::Hidden,
+            );
+            let blurs: Vec<_> = elements
+                .into_iter()
+                .filter(|element| matches!(element, OutputRenderElement::Blur(_)))
+                .collect();
+            assert_eq!(blurs.len(), if titlebar_height > 0 { 2 } else { 1 });
+            for element in blurs {
+                let bounds = element.geometry(scale.into());
+                let titlebar = bounds.loc.y < frame.client.to_physical_precise_round(scale).loc.y;
+                let mut texture = Offscreen::<GlesTexture>::create_buffer(
+                    &mut renderer,
+                    Fourcc::Abgr8888,
+                    (128, 128).into(),
+                )
+                .unwrap();
+                let mut target = renderer.bind(&mut texture).unwrap();
+                OutputDamageTracker::new((128, 128), scale, Transform::Normal)
+                    .render_output(
+                        &mut renderer,
+                        &mut target,
+                        0,
+                        &[element],
+                        Color32F::new(0.0, 0.0, 0.0, 0.0),
+                    )
+                    .unwrap();
+                let mapping = renderer
+                    .copy_framebuffer(
+                        &target,
+                        Rectangle::from_size((128, 128).into()),
+                        Fourcc::Abgr8888,
+                    )
+                    .unwrap();
+                let pixels = renderer.map_texture(&mapping).unwrap().to_vec();
+                drop(target);
+                let alpha = |x, y| pixels[((y * 128 + x) * 4 + 3) as usize];
+                let left = bounds.loc.x;
+                let right = left + bounds.size.w - 1;
+                let top = bounds.loc.y;
+                let bottom = top + bounds.size.h - 1;
+                assert_eq!(alpha((left + right) / 2, (top + bottom) / 2), 255);
+                let inset = if frame.has_border {
+                    state.decoration_theme().border_width
+                } else {
+                    0
+                };
+                let radius =
+                    (state.corner_radius(frame.frame) - inset).max(0) as f32 * scale as f32;
+                for (at_right, at_bottom, rounded) in [
+                    (false, false, titlebar || !frame.has_titlebar),
+                    (true, false, titlebar || !frame.has_titlebar),
+                    (false, true, !titlebar),
+                    (true, true, !titlebar),
+                ] {
+                    if !rounded {
+                        continue;
+                    }
+                    for dy in 0..(radius.ceil() as i32).min(bounds.size.h) {
+                        for dx in 0..(radius.ceil() as i32).min(bounds.size.w) {
+                            let x = if at_right { right - dx } else { left + dx };
+                            let y = if at_bottom { bottom - dy } else { top + dy };
+                            let distance =
+                                (dx as f32 + 0.5 - radius).hypot(dy as f32 + 0.5 - radius) - radius;
+                            let expected = ((0.5 - distance).clamp(0.0, 1.0) * 255.0).round() as u8;
+                            assert!(
+                                alpha(x, y).abs_diff(expected) <= 1,
+                                "mode={mode:?}, scale={scale}, titlebar={titlebar}, pixel=({x},{y}), alpha={}, expected={expected}",
+                                alpha(x, y)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an EGL device with OpenGL ES support"]
 fn windows_and_layers_capture_blurred_predecessors_in_stacking_order() {
     let egl = EglTest::new();
     let mut renderer = egl.renderer();

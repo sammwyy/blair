@@ -459,6 +459,17 @@ fn push_theme_titlebar_blur(
         frame.client.loc - Point::from((0, theme.titlebar_height)) - ctx.output_geo.loc,
         (frame.client.size.w, theme.titlebar_height).into(),
     );
+    let radius =
+        (state.corner_radius(frame.frame) - theme.border_width).max(0) as f32 * ctx.scale as f32;
+    let clip = RoundedClip {
+        rect: Rectangle::new(
+            coverage.loc,
+            (coverage.size.w, coverage.size.h + frame.client.size.h).into(),
+        )
+        .to_physical_precise_round(ctx.scale),
+        radii: [radius; 4],
+        viewport: ctx.viewport,
+    };
     blur::push_backdrop(
         renderer,
         state,
@@ -467,7 +478,7 @@ fn push_theme_titlebar_blur(
         backdrop,
         coverage,
         &[coverage],
-        None,
+        Some(clip),
         elements,
     );
 }
@@ -761,9 +772,33 @@ fn push_window_blur(
     let Some(frame_rect) = coverage.iter().copied().reduce(|a, b| a.merge(b)) else {
         return;
     };
+    let clip = window_content_clip(state, &frame, ctx);
     blur::push_backdrop(
-        renderer, state, ctx, shaders, backdrop, frame_rect, &coverage, None, elements,
+        renderer, state, ctx, shaders, backdrop, frame_rect, &coverage, clip, elements,
     );
+}
+
+fn window_content_clip(
+    state: &BlairState,
+    frame: &WindowFrame,
+    ctx: &FrameContext,
+) -> Option<RoundedClip> {
+    if !frame.has_border && !frame.has_content_outline {
+        return None;
+    }
+    let inset = if frame.has_border {
+        state.decoration_theme().border_width
+    } else {
+        0
+    };
+    let radius = (state.corner_radius(frame.frame) - inset).max(0) as f32 * ctx.scale as f32;
+    let top = if frame.has_titlebar { 0.0 } else { radius };
+    Some(RoundedClip {
+        rect: Rectangle::new(frame.client.loc - ctx.output_geo.loc, frame.client.size)
+            .to_physical_precise_round(ctx.scale),
+        radii: [top, top, radius, radius],
+        viewport: ctx.viewport,
+    })
 }
 
 fn surface_blur_rects(
@@ -981,17 +1016,7 @@ fn window_elements(
     // the client elements begin so the hybrid controls can be placed ahead of
     // them after their buffers have been prepared below.
     let content_start = elements.len();
-    let clip = decorated.then(|| {
-        let radius = state.corner_radius(frame.frame);
-        let inner = (radius - state.decoration_theme().border_width).max(0) as f32 * scale as f32;
-        let top = if frame.has_titlebar { 0.0 } else { inner };
-        RoundedClip {
-            rect: Rectangle::new(frame.client.loc - origin, frame.client.size)
-                .to_physical_precise_round(scale),
-            radii: [top, top, inner, inner],
-            viewport: ctx.viewport,
-        }
-    });
+    let clip = shaders.and_then(|_| window_content_clip(state, &frame, ctx));
     let content: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
         renderer,
         &surface,
